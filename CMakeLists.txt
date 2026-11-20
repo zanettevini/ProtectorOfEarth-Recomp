@@ -97,7 +97,9 @@ add_subdirectory(thirdparty/PS2Recomp)
 if(NOT MSVC)
     foreach(BEN10_FAST_TARGET ps2_runtime ps2_iop)
         if(TARGET ${BEN10_FAST_TARGET})
-            target_compile_options(${BEN10_FAST_TARGET} PRIVATE -O2)
+            # -g keeps them debuggable: the boot work reads the EE
+            # scheduler's thread table with gdb (findings/15 s.14).
+            target_compile_options(${BEN10_FAST_TARGET} PRIVATE -O2 -g)
         endif()
     endforeach()
 endif()

@@ -268,14 +268,35 @@ driver and `CDARB`: to confirm).
 - Fix: the script now treats `addiu $x, $x, 0` (a no-op) as padding too.
   One more function (4,785 in total).
 
-## 14. Where it stops now
+## 14. Blocker 11: the game's main thread ends in `std::terminate`
 
-- The game runs about 2,900 VBlanks (the frame counter at `0x0026854C`),
-  then the counter stops and no guest code is running: every guest thread
-  waits. Nothing has appeared on screen so far (a capture of the virtual
-  display is black).
-- Next: find what the waiting threads wait for (the EE scheduler's thread
-  states), and whether the runtime presents the GS output on this setup.
+- After ~2,900 frames no guest code runs. The EE scheduler's thread table
+  (read with gdb; the runtime and IOP targets are now built with `-g`)
+  holds only two threads: the interrupt-invocation thread and the main
+  thread, **dormant** at `0x0010029C`, inside `FUN_00100280`, which calls
+  `ExitDeleteThread` (syscall 0x23). So the game exited, it did not hang.
+- A breakpoint on the generated exit (`FUN_001fab20`) gives the call chain:
+  the loader `FUN_001977c0` (the one that prints "Opening %d:"%s"") →
+  `FUN_0010b1c0` → a virtual method `FUN_001d5fb8` → ... →
+  `FUN_001d7240` → an indirect call to `0x001A4C58`, a thunk to
+  `FUN_001a5c18`, which calls the terminate handler stored at
+  `0x00225788` (`FUN_001a5c08` → exit). This is C++ `std::terminate`;
+  `0x001A4C58` is most likely the pure-virtual-call stub.
+- `FUN_001d7240` is a chunk parser over a stream object: it reads 4-byte
+  IDs and checks for `RIFF` and `LIST`; any other ID is looked up in a
+  table of chunk handlers and the handler's method (vtable +0x14) is
+  called. The handler it found has the stub in that slot.
+- The data being parsed comes from the native CDARB reads
+  (`BEN10_TRACE_CDARB=1` logs them): six 32-sector reads from
+  `GAME.DIR` entry 422, the 306 MB `99_99.pss`, which starts with the
+  4 bytes `BIGB` ([16](16-game-dir-and-wad.md) s.5), and one 65-sector read
+  of the same file into SPU2 RAM. The sectors match `GAME.DIR`, so the
+  reads look right.
+- Not known yet: which chunk ID was looked up, and why its handler is the
+  abstract one. Candidates: a handler registry that C++ static
+  constructors fill and that is incomplete (constructors reached only
+  through pointers, like s.10 and s.13), or data the parser should not
+  have seen.
 
 ## 15. What was not checked
 

@@ -6,8 +6,9 @@ starts running on Linux; the boot gets through SIF, RPC, CD init, the IOP
 reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 `GAME.WAD`, loads the 8 IOP modules, sets the video mode, opens the pads,
 reads the game's data through a native replacement of CDARB's EE reads,
-runs about 2,900 frames, and then every guest thread waits; nothing on
-screen yet (findings/15 s.14, findings/17 s.7).
+runs about 2,900 frames, and then the game exits through C++
+`std::terminate` while parsing `99_99.pss`; nothing on screen yet
+(findings/15 s.14, findings/17 s.7).
 
 Read first: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (what is known about the
 game) and the [README](../README.md#-going-native) board.

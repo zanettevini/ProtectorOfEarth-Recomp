@@ -43,6 +43,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -73,6 +74,8 @@ namespace
     constexpr uint32_t kDestSpu2Alt = 4u;  // same transfer, another check path
 
     std::mutex g_mutex;
+    // Set BEN10_TRACE_CDARB=1 to log every request (findings/17 s.7).
+    const bool g_trace = std::getenv("BEN10_TRACE_CDARB") != nullptr;
     std::ifstream g_wad;
     uint32_t g_nextRequestId = 1u;
 
@@ -145,6 +148,9 @@ namespace
 
         uint32_t requestId = 0u;
         uint32_t result = 0u;
+        if (g_trace)
+            std::fprintf(stderr, "[CDARB:native] read handle=0x%X lsn=0x%X (wad sector %d) count=%d dest=0x%08X kind=%u callback=0x%08X\n",
+                         handle, lsn, static_cast<int>(lsn - wadLsn), count, destination, kind, callback);
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             requestId = g_nextRequestId++;

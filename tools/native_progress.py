@@ -49,7 +49,7 @@ MILESTONES = [
     ("Per-instruction tests", "in progress",
      "33 end-to-end tests; 4 translator bugs found and fixed (findings/14)"),
     ("Boot", "in progress",
-     "loads the 8 IOP modules, sets the video mode; with native CDARB reads it runs ~2,900 frames (about 48 s), then waits; nothing on screen yet (findings/15, findings/17)"),
+     "loads the 8 IOP modules, sets the video mode; with native CDARB reads it runs ~2,900 frames, then exits via std::terminate in a data parser (findings/15)"),
     ("First frame", "pending", "the game's first picture on screen"),
     ("Main menu", "pending", ""),
     ("Playable level", "pending", ""),

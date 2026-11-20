@@ -60,13 +60,14 @@ boundaries, with no header; `GAME.DIR` is its index.
 
 | Extension | Files | Note |
 |---|---|---|
-| `.pss` | 177 | Sony's PS2 MPEG-2 stream container: video for the IPU (findings/09 s.7: `libipu` is linked) |
+| `.pss` | 177 | **not MPEG video** (corrected, [15](15-first-boot.md) s.14): the game loads `99_99.pss` through its map/strat loader, and the file starts with `BIGB`; most likely the engine's "strats" packs, next to the `.psm` maps (name TBD) |
 | `.psm` | 175 | (format TBD) |
-| `.bik` | 69 | Bink video names; whether the PS2 build plays them is TBD (they may be leftovers of the shared multi-platform data, findings/03 s.4) |
+| `.bik` | 69 | Bink videos: the executable has a `CBinkPlayer` (strings "CBinkPlayer::Play(%s)"...) and resets the IPU DMA channels for it, so the PS2 build plays them |
 | `.txt` | 2 | text (one probably holds the debug options TCRF describes, findings/03 s.4) |
 
-This corrects findings/09 s.7 ("no video strings"): the executable has no
-`.pss` names because the file names live in `GAME.DIR`.
+The game's videos are Bink files (`.bik`), played by `CBinkPlayer`; there
+is also a `SKIP_MOVIES` debug option. The `.pss` files are not PS2 MPEG
+streams, despite the extension.
 
 ## 6. What this means for the port
 
@@ -79,5 +80,5 @@ This corrects findings/09 s.7 ("no video strings"): the executable has no
 ## 7. Open
 
 - The `.psm` format; what a level loads first.
-- Whether the `.bik` files are used on the PS2.
+- The `BIGB` container format of the `.pss` files.
 - The `.txt` files' role (debug options).

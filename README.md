@@ -45,7 +45,7 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
 | Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
 | Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
-| Boot | 🔧 | loads the 8 IOP modules, sets the video mode; with native CDARB reads it runs ~2,900 frames (about 48 s), then waits; nothing on screen yet (findings/15, findings/17) |
+| Boot | 🔧 | loads the 8 IOP modules, sets the video mode; with native CDARB reads it runs ~2,900 frames, then exits via std::terminate in a data parser (findings/15) |
 | First frame | ⏳ | the game's first picture on screen |
 | Main menu | ⏳ |  |
 | Playable level | ⏳ |  |

@@ -2,11 +2,12 @@
 
 ## For the agent
 
-1. **Next boot blocker: every guest thread waits after ~2,900 frames.**
-   Find what they wait for (EE scheduler thread states: semaphores, RPC
-   replies, VSync), and check whether the runtime shows the GS output on
-   this setup (a capture of the virtual display is black)
-   (findings/15 s.14).
+1. **Next boot blocker: `std::terminate` in the chunk parser.** The main
+   thread exits while `FUN_001d7240` parses `99_99.pss`: a chunk handler
+   with a pure-virtual method (findings/15 s.14). Break on `FUN_001d7240`
+   with gdb, log the chunk IDs it reads, find the handler table and who
+   fills it (C++ static constructors from crt0's `0x001A5BF8`?), and check
+   that every constructor is in the function list.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.
