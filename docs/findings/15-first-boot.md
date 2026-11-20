@@ -130,7 +130,81 @@ driver and `CDARB`: to confirm).
   loop moved on) and the game waits on `GAME.WAD`, which the test machine
   still does not have (B8).
 
-## 9. What was not checked
+- `GAME.WAD` (2,456,123,392 bytes) was then copied from the maintainer's
+  disc in 350 MiB parts and joined; its SHA-1 matches the one computed on
+  the original. The search succeeds (the runtime reports the file at disc
+  sector `0x100000`) and the boot moves on.
+
+## 9. Blocker 6: IOP heap and IOP module loading
+
+- Next stop: `0x001C9A70`, in `FUN_001c9a50`, binding SID `0x80000003`,
+  the IOP heap server (IOP ROM again).
+- `rpc_calls.py` shows one bind and two calls on the same client struct
+  (`0x00277B40`): function 1 and function 2, 4 bytes each way. That is the
+  PS2SDK's iopheap: `SifInitIopHeap`, `SifAllocIopHeap`, `SifFreeIopHeap`.
+- The loader client (`0x00277F00`, SID `0x80000006`) is next in the same
+  area. Its shared worker `FUN_001ca248` takes the function number as an
+  argument; `FUN_001ca470` calls it with 0 (`LF_F_MOD_LOAD`), which is
+  `SifLoadModule(path, arg_len, args)`. `FUN_001c9d80` sends function 6
+  (`LF_F_MOD_BUF_LOAD`); its wrapper `FUN_001ca220` is
+  `SifLoadModuleBuffer`. Function 7 (`FUN_001c9f88`, stop) and 8
+  (`FUN_001ca190`, unload) have no runtime handler and stay game code;
+  their only caller is `FUN_001b2af8`. If it runs, it will spin in the
+  loader bind: a known gap.
+- Fix: bind the heap family and the two load entry points.
+- Result: the game loads exactly the 8 modules [10](10-iop-modules.md)
+  found named in the executable, in this order: SIO2MAN, MTAPMAN, PADMAN,
+  MCMAN, MCSERV, LIBSD, CDARB, ALASD. They run in PS2Recomp's IOP
+  interpreter (temporary debt T1). Then the video mode is set
+  (`GsSetCrt`: interlaced, NTSC, frame mode) and the GS interrupt mask
+  written (`GsPutIMR`).
+
+## 10. Blocker 7: a function the function list did not have
+
+- The runtime stopped with `guest-branch:missing-target`: an indirect call
+  (`JALR` at `0x001A08A0`) to `0x0014B820`, which was in no function of the
+  Ghidra list.
+- `0x0014B820` starts with a stack-frame prologue and is referenced only by
+  a word in `.data` (`0x00236124`): a function reached only through a
+  pointer (a virtual table or callback table). Ghidra's auto-analysis
+  follows calls, so it missed it, like the script API functions
+  ([12](12-ghidra-analysis.md) s.4).
+- New Ghidra script `tools/ghidra_scripts/CreatePointerTargetFunctions.java`,
+  run by `tools/ghidra_analyze.sh` / `.ps1` after `ApplyScriptApiNames.java`:
+  every word in a loaded data block that points into code outside any
+  function becomes a function if the target starts with
+  `addiu $sp, $sp, -N` or directly follows a `jr $ra` and its delay slot
+  (allowing nop padding). Of 3,673 distinct pointer targets, 2,863 were
+  already inside functions, 364 functions were created, 446 were rejected
+  (mostly switch-table targets and numbers that happen to look like code
+  addresses; they are listed in the Ghidra log).
+- Wrong turns: the first version read every memory block, including
+  non-loaded ones, and stopped on an unreadable address; the second
+  accepted only prologues and created 13 functions, missing 351 leaf
+  functions (small getters with no stack frame).
+- Result: 4,784 functions (was 4,420); the recompiler still reports 0
+  unsupported instructions and 0 errors, and the missing-target stop is
+  gone.
+
+## 11. Where it stops now: the pad library
+
+- The game thread loops in game code `FUN_00123180`, calling
+  `FUN_001c1830` again and again. `FUN_001c1830(port, slot)` reads byte
+  0x70 of the pad's DMA frame (6 = stable) and byte 0x71 (2 = request
+  busy) and returns 5 in that case: that is `scePadGetState`.
+  `FUN_001c1660` copies the newest of the two 128-byte frames (compares
+  their counters at +0x58 and +0xD8) after `InvalidDCache`
+  (`FUN_001c5620`, with the cache loop `FUN_001c5578`).
+- The PADMAN module runs in the IOP interpreter, but the frame it should
+  write over SIF DMA never says "stable", so the game waits.
+- Next: identify the libpad family (`FUN_001c10c8` binds SIDs
+  `0x80000100`/`0x80000101` and prints the libpad/padman version
+  mismatch message; `FUN_001c1478` is the port open, by its error strings;
+  every RPC is function 1 with a 128-byte command buffer, so the command
+  number in the buffer tells the functions apart) and bind it whole to the
+  runtime's `scePad*` handlers.
+
+## 12. What was not checked
 
 - Whether each runtime handler behaves like the Sony function it replaces
   for this game (the boot moving past a loop is the only check so far).

@@ -6,7 +6,7 @@
 |---|---|---|---|
 | B6 | The boot does not reach the first frame yet | phases 3-7 | [findings/15](findings/15-first-boot.md) |
 | B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
-| B8 | The test machine has `SLUS_216.61`, `SYSTEM.CNF`, the IRX modules, `GAME.DIR` and `IOPRP300.IMG`, but not `GAME.WAD` (2.4 GB) | the boot waits in `sceCdSearchFile("\\GAME.WAD;1")` | [findings/15](findings/15-first-boot.md) s.8 |
+| B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 
 ## Temporary debts (they break the master prompt on purpose, for now)
 

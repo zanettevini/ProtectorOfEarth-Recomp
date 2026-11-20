@@ -7,7 +7,8 @@
 #      the .zip from Extensions\Ghidra\ into Ghidra\Extensions\), if it is not
 #      there yet;
 #   2. imports game\SLUS_216.61 with the r5900:LE:32:default processor,
-#      analyses it and runs tools\ghidra_scripts\ApplyScriptApiNames.java;
+#      analyses it and runs tools\ghidra_scripts\ApplyScriptApiNames.java and
+#      CreatePointerTargetFunctions.java (findings/15 s.10);
 #   3. re-analyses and exports with PS2Recomp's ExportPS2Functions.java to
 #      generated\ghidra\functions.csv.
 #
@@ -57,7 +58,8 @@ $env:GHIDRA_MAXMEM = "4G"
 # --- 2. Import, analyse, name the script API -------------------------------
 Write-Host "Importing and analysing (a few minutes)..."
 & $headless $project ben10 -import $elf -processor "r5900:LE:32:default" `
-    -scriptPath $scripts -postScript ApplyScriptApiNames.java -overwrite `
+    -scriptPath $scripts -postScript ApplyScriptApiNames.java `
+    -postScript CreatePointerTargetFunctions.java -overwrite `
     *> (Join-Path $out "step1.log")
 if ($LASTEXITCODE -ne 0) { throw "analyzeHeadless failed (see generated\ghidra\step1.log)" }
 
@@ -69,5 +71,5 @@ Write-Host "Re-analysing and exporting..."
 if ($LASTEXITCODE -ne 0) { throw "analyzeHeadless failed (see generated\ghidra\step2.log)" }
 
 Select-String -Path (Join-Path $out "step1.log"), (Join-Path $out "step2.log") `
-    -Pattern "ApplyScriptApiNames.java>|ExportPS2Functions.java>" | ForEach-Object { $_.Line }
+    -Pattern "ApplyScriptApiNames.java>|CreatePointerTargetFunctions.java> pointer|ExportPS2Functions.java>" | ForEach-Object { $_.Line }
 Write-Host "Done: generated\ghidra\functions.csv"

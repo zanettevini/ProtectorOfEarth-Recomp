@@ -49,7 +49,7 @@ MILESTONES = [
     ("Per-instruction tests", "in progress",
      "33 end-to-end tests; 4 translator bugs found and fixed (findings/14)"),
     ("Boot", "in progress",
-     "through SIF, RPC, CD init, IOP reboot and file I/O; reads GAME.DIR (findings/15, findings/16)"),
+     "through SIF, CD, IOP reboot, file I/O, IOP heap; loads the 8 IOP modules, sets the video mode; waits on libpad (findings/15)"),
     ("First frame", "pending", "the game's first picture on screen"),
     ("Main menu", "pending", ""),
     ("Playable level", "pending", ""),

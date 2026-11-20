@@ -3,8 +3,9 @@
 **Phases 0 and 1: done. Phase 2 (recompiler): in progress. Phase 7 (first
 execution): started.** The game's code is translated, compiles, links and
 starts running on Linux; the boot gets through SIF, RPC, CD init, the IOP
-reboot and the file I/O library, reads `GAME.DIR`, and now waits for
-`GAME.WAD` (findings/15 s.8, findings/16).
+reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
+`GAME.WAD`, loads the 8 IOP modules, sets the video mode, and now waits
+for the pad library (findings/15 s.11, findings/16).
 
 Read first: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (what is known about the
 game) and the [README](../README.md#-going-native) board.
@@ -41,7 +42,8 @@ game) and the [README](../README.md#-going-native) board.
 **Untested**: everything on Windows except the study version of the disc
 collection (MSVC, `ghidra_analyze.ps1`, the repository version of
 `collect_disc.ps1`); an optimised build; a run with the full disc
-(`GAME.WAD` is still missing on the test machine: KNOWN_ISSUES B8).
+(the full disc data is now on the test machine; nothing past the pad
+wait has run yet).
 
 ## Unresolved
 

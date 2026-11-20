@@ -205,6 +205,42 @@ stubs = [
   "sceRead@0x001C94C0",
   # Creates "SceStdioWriteSema"; a0 = fd, a1 = buffer, a2 = size.
   "sceWrite@0x001C9730",
+
+  # --- IOP heap (SID 0x80000003) -------------------------------------------
+  # Why: with GAME.WAD present, boot next spun in 0x001C9A50 binding SID
+  # 0x80000003, the IOP heap server (in the IOP ROM, so never published).
+  # The runtime keeps its own IOP memory allocator and answers by name
+  # (findings/15 s.9).
+  # How we found them: tools/analyzer/rpc_calls.py: one bind and two calls
+  # on the same client struct (0x00277B40), matching the PS2SDK's iopheap
+  # (SifInitIopHeap binds; SifAllocIopHeap = function 1, SifFreeIopHeap =
+  # function 2, each 4 bytes each way).
+
+  # Binds SID 0x80000003 on client 0x00277B40.
+  "sceSifInitIopHeap@0x001C9A50",
+  # Function 1, 4 bytes sent (the size), 4 back (the IOP address).
+  "sceSifAllocIopHeap@0x001C9AD8",
+  # Function 2, 4 bytes sent (the address), 4 back. The 28-byte 0x001C9BC0
+  # only calls this one, so it stays game code.
+  "sceSifFreeIopHeap@0x001C9B48",
+
+  # --- IOP module loading (SID 0x80000006) ---------------------------------
+  # Why: the next RPC client the boot binds (0x001C9BF0, SID 0x80000006) is
+  # the IOP module loader, also in the IOP ROM. Binding the two load entry
+  # points hands the IRX to the runtime's IOP side (temporary debt T1).
+  # How we found them: rpc_calls.py on client 0x00277F00, compared with the
+  # PS2SDK's loadfile function numbers: the shared worker 0x001CA248 takes
+  # the function number as an argument; the 32-byte 0x001CA470 calls it with
+  # number 0 (LF_F_MOD_LOAD) and a stack slot for the result, which is the
+  # PS2SDK's SifLoadModule(path, arg_len, args). 0x001C9D80 sends function 6
+  # (LF_F_MOD_BUF_LOAD); its 28-byte wrapper 0x001CA220 is
+  # SifLoadModuleBuffer(buffer, arg_len, args).
+  # Not bound: 0x001C9F88 (function 7, stop module) and 0x001CA190
+  # (function 8, unload module): the runtime has no handler for them. Their
+  # only caller is 0x001B2AF8; if it runs, it will spin in the loader bind
+  # (findings/15 s.9).
+  "sceSifLoadModule@0x001CA470",
+  "sceSifLoadModuleBuffer@0x001CA220",
 ]
 
 # No function skipped.

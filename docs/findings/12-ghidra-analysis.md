@@ -75,7 +75,14 @@ game binary.
   is already left out. Risk R7 in [KNOWN_ISSUES](../KNOWN_ISSUES.md) is
   mitigated.
 
-## 7. Open
+## 7. Functions reached only through pointers (added later)
+
+The first boot runs found a function missing from this inventory
+([15](15-first-boot.md) s.10). `CreatePointerTargetFunctions.java` now adds
+the functions referenced only by pointers in data: **4,784 functions** in
+total (364 more). The same 20 KB data region stays outside every function.
+
+## 8. Open
 
 - What the 20 KB table is (who reads those addresses).
 - Check the three functions above 11 KB (they may be several functions glued

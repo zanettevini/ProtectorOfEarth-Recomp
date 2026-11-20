@@ -8,7 +8,9 @@
 #      (unzips the .zip into Ghidra/Extensions/), if it is not there yet;
 #   2. imports game/SLUS_216.61 with the r5900:LE:32:default processor and runs
 #      auto-analysis; then tools/ghidra_scripts/ApplyScriptApiNames.java
-#      (creates and names the ~1,586 script API functions);
+#      (creates and names the ~1,586 script API functions) and
+#      tools/ghidra_scripts/CreatePointerTargetFunctions.java (creates the
+#      functions only reached through pointers in data, findings/15 s.10);
 #   3. re-analyses (to follow the calls out of the new functions) and exports
 #      with PS2Recomp's ExportPS2Functions.java to generated/ghidra/functions.csv.
 #
@@ -42,7 +44,8 @@ export GHIDRA_MAXMEM="${GHIDRA_MAXMEM:-4G}"
 
 echo "Importing and analysing..."
 "$headless" "$project" ben10 -import "$elf" -processor "r5900:LE:32:default" \
-    -scriptPath "$scripts" -postScript ApplyScriptApiNames.java -overwrite \
+    -scriptPath "$scripts" -postScript ApplyScriptApiNames.java \
+    -postScript CreatePointerTargetFunctions.java -overwrite \
     > "$out/step1.log" 2>&1
 
 echo "Re-analysing and exporting..."
@@ -50,5 +53,5 @@ echo "Re-analysing and exporting..."
     -postScript ExportPS2Functions.java "$out/ghidra_export.toml" "$out/functions.csv" \
     > "$out/step2.log" 2>&1
 
-grep -h -E "ApplyScriptApiNames.java>|ExportPS2Functions.java>" "$out/step1.log" "$out/step2.log"
+grep -h -E "ApplyScriptApiNames.java>|CreatePointerTargetFunctions.java> pointer|ExportPS2Functions.java>" "$out/step1.log" "$out/step2.log"
 echo "Done: $out/functions.csv"
