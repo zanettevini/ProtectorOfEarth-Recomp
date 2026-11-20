@@ -200,7 +200,7 @@ claiming something works that wasn't run is not (master prompt s.10).
 | `tests/` | GoogleTest; `tests/tools/make_test_elf.py` builds the test ELF |
 | `tools/collect_disc.ps1` | takes the ELF and IRX modules from the `.iso` into `game/` |
 | `tools/ghidra_analyze.sh` / `.ps1`, `tools/ghidra_scripts/` | headless Ghidra: the function list for the recompiler |
-| `tools/analyzer/` | ELF audit, per-function call/string map, RPC call map |
+| `tools/analyzer/` | ELF audit, per-function call/string map, RPC call map, IRX imports/exports |
 | `tools/native_progress.py` | the README board and milestones |
 | `patches/ps2recomp/` | our PS2Recomp fixes |
 | `thirdparty/PS2Recomp/` | submodule: recompiler + runtime |

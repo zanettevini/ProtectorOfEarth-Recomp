@@ -103,3 +103,18 @@ Each decision: what, why, alternatives, and status
   hardware level. Each function is identified with evidence and bound with
   `"name@0xADDRESS"` in `ben10_poe.toml`, a whole library family at a time
   ([findings/15](findings/15-first-boot.md)).
+
+## D12. The game's IOP modules become native services, CDARB first
+
+- **Status**: accepted (maintainer: native code is always the priority).
+- **What**: `CDARB.IRX` and `ALASD.IRX` stop running in the IOP interpreter
+  and are replaced by native services in `src/iop/`
+  ([findings/17](findings/17-cdarb-and-alasd.md)). CDARB first, because
+  the boot is stuck in its disc reads; while ALASD still runs interpreted,
+  the two `CDArb` exports it imports are provided natively.
+- **How**: a `ps2xIOP` patch adds an extension point so the game can
+  register native services by module name, preferred over loading the
+  IRX. The services reproduce each module's RPC protocol, read from the
+  IRX with `tools/analyzer/irx_imports.py`.
+- **Instead of**: fixing the interpreter's disc-read path, which would only
+  make the temporary debt T1 run better.

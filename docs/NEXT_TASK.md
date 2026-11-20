@@ -2,13 +2,18 @@
 
 ## For the agent
 
-1. **Next boot blocker: an IOP disc read that never finishes.** After
-   ~30 frames the game waits in its draw wait (`FUN_0012e580`) while the
-   IOP interpreter spends its time in `IopCdvd::Impl::readSectors` /
-   `IopMemory::ownsRamRange` (findings/15 s.12). Trace the read results
-   (lsn, sector count, destination, success) and the IOP module's retry
-   loop; fix with a PS2Recomp patch or move `CDARB`/`ALASD` to native
-   services (D2).
+1. **Native CDARB (D12).** The boot stalls in disc reads done by the
+   game's interpreted IOP modules (findings/15 s.12). Replace `CDARB.IRX`
+   with a native service:
+   - finish reading the protocol (findings/17 s.6): the request struct
+     (`.text+0xDD4` queue insert, `.text+0x884` serve), the parameters of
+     functions 2 and 7, the completion SIF command;
+   - patch `ps2xIOP` with an extension point for game-registered native
+     services, preferred over loading the IRX (with a test);
+   - write the service in `src/iop/` (functions 0, 2, 7; reads from
+     `GAME.WAD` into EE RAM; the completion command), plus native `CDArb:4`
+     and `CDArb:6` for the still-interpreted ALASD;
+   - run, and record the result in findings/17.
 2. Keep going one blocker at a time; record each in findings/15. Update the
    "Boot" milestone in `tools/native_progress.py` when it changes.
 3. More per-instruction tests for the game's instructions still untested
