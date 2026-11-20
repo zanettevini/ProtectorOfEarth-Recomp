@@ -49,7 +49,7 @@ MILESTONES = [
     ("Per-instruction tests", "in progress",
      "33 end-to-end tests; 4 translator bugs found and fixed (findings/14)"),
     ("Boot", "in progress",
-     "the game code runs through SIF, RPC and CD init; Sony library functions bound to the runtime (findings/15)"),
+     "through SIF, RPC, CD init, IOP reboot and file I/O; reads GAME.DIR (findings/15, findings/16)"),
     ("First frame", "pending", "the game's first picture on screen"),
     ("Main menu", "pending", ""),
     ("Playable level", "pending", ""),

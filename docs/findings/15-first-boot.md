@@ -13,6 +13,7 @@ gets, diagnosing one failure at a time without masking it.
 - Only these disc files were available on the test machine:
   `SLUS_216.61`, `SYSTEM.CNF` and `MODULES/*.IRX`. `GAME.DIR`, `GAME.WAD`
   and `IOPRP300.IMG` were not (KNOWN_ISSUES B8).
+  `GAME.DIR` and `IOPRP300.IMG` were added before the run in s.8.
 - Each run: 60-90 s with `timeout -s TERM`, then `gdb -p <pid> -batch -ex
   "thread apply all bt"`, sampled 3-4 times. The generated functions are
   named after their PS2 address (`entry_001c7dc0_0x1c7dc0`), so a native
@@ -98,15 +99,38 @@ driver and `CDARB`: to confirm).
   `sceSifSyncIop` (reads SIF register 4 and tests bit `0x40000`).
 - Fix: bind both. The boot moves on.
 
-## 7. Where it stops now
+## 7. Blocker 4: the file I/O server
 
-- The game thread waits at `0x001C8E70`, in `FUN_001c8de0`, which binds SID
-  `0x80000001`: the IOP file I/O server (the PS2SDK's fileio, used by
-  `sceOpen`/`sceRead`...). This is the next family to identify and bind.
-- After that, reading `GAME.DIR`/`GAME.WAD` needs the real files in
-  `game/`, which this test machine does not have (B8).
+- The game thread waited at `0x001C8E70`, in `FUN_001c8de0`, which binds SID
+  `0x80000001` (the IOP file I/O server) and spins while the bind returns
+  server 0. Same cause as blocker 2: that server lives in the IOP ROM.
+- `function_map.py --string SceStdio` found the library: Sony's EE-side file
+  I/O, where each call creates a semaphore named after itself:
+  `FUN_001c90b0` "SceStdioOpenSema", `FUN_001c9340` "SceStdioCloseSema",
+  `FUN_001c94c0` "SceStdioReadSema", `FUN_001c9730` "SceStdioWriteSema".
+  All four go through one RPC wrapper (`FUN_001c87e8`); `FUN_001c8de0` (the
+  server bind) is only called from the open function; nothing else in the
+  game calls the wrapper or the library's fd table (`FUN_001c88d8`,
+  `FUN_001c8760`). No lseek or ioctl is linked.
+- Arguments, from the generated code's disassembly: open keeps `a0` (path)
+  and `a1` (flags) and saves the variadic registers; read and write take
+  `a0` = fd, `a1` = buffer, `a2` = size. That is the runtime's `sceOpen` /
+  `sceRead` / `sceWrite` / `sceClose` signature.
+- Fix: bind the four together (`ben10_poe.toml`). Mixing them would hand
+  runtime file descriptors to the library's own table.
 
-## 8. What was not checked
+## 8. Blocker 5: the game's file system (`GAME.DIR`, `GAME.WAD`)
+
+- Next stop: `FUN_0012b7a0` (it prints "InitFilesystem"). It opens
+  `cdrom0:\GAME.DIR` in a loop until the open succeeds, reads a 4-byte
+  count, allocates count × 72 bytes, reads the table, then calls
+  `sceCdSearchFile("\GAME.WAD;1")` in a loop until it returns 1. The
+  layout of both files is in [16](16-game-dir-and-wad.md).
+- With `GAME.DIR` copied into `game/`, the open and both reads succeed (the
+  loop moved on) and the game waits on `GAME.WAD`, which the test machine
+  still does not have (B8).
+
+## 9. What was not checked
 
 - Whether each runtime handler behaves like the Sony function it replaces
   for this game (the boot moving past a loop is the only check so far).

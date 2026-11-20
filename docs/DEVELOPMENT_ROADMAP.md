@@ -19,6 +19,6 @@ s.6). This page lists what each depends on and the first concrete step.
 ## Immediate priorities
 
 1. Keep the boot moving, one blocker at a time (findings/15).
-2. A run with the full disc (`GAME.DIR`, `GAME.WAD`, `IOPRP300.IMG`): needs
-   the maintainer's PC or a Windows build (B7, B8).
+2. A run with `GAME.WAD` on the test machine, or a Windows build on the
+   maintainer's PC (B7, B8).
 3. More per-instruction tests (R13).

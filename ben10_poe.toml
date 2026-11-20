@@ -180,6 +180,31 @@ stubs = [
   # Reads SIF register 4 (SMFLAG) and tests bit 0x40000 (BOOTEND): the
   # SifIopSync pattern of the PS2SDK.
   "sceSifSyncIop@0x001CA610",
+
+  # --- fileio (sceOpen / sceClose / sceRead / sceWrite) --------------------
+  # Why: sceOpen first calls an init routine (0x001C8DE0) that binds the IOP
+  # file I/O server, SID 0x80000001, and spins until the bind returns a
+  # server. That server lives in the console's IOP ROM, so the runtime never
+  # publishes it and boot stopped there (findings/15 s.7). The runtime
+  # answers these four calls by name, reading from game/ (cdrom0:) and the
+  # memory card folder.
+  # The four are bound together: each one turns its fd into an entry of the
+  # library's own table (0x001C88D8 for close/read/write, 0x001C8760 for
+  # open), so mixing runtime fds with game-code fds would break.
+  # How we found them: tools/analyzer/function_map.py --string SceStdio. Each
+  # function creates a semaphore named after itself; all four go through the
+  # shared RPC wrapper 0x001C87E8; nothing else in the game calls that
+  # wrapper or the fd table.
+
+  # Creates "SceStdioOpenSema"; a0 = path, a1 = flags (varargs mode saved to
+  # the stack); calls the server init 0x001C8DE0 when not initialised yet.
+  "sceOpen@0x001C90B0",
+  # Creates "SceStdioCloseSema"; a0 = fd.
+  "sceClose@0x001C9340",
+  # Creates "SceStdioReadSema"; a0 = fd, a1 = buffer, a2 = size.
+  "sceRead@0x001C94C0",
+  # Creates "SceStdioWriteSema"; a0 = fd, a1 = buffer, a2 = size.
+  "sceWrite@0x001C9730",
 ]
 
 # No function skipped.

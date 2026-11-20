@@ -31,3 +31,4 @@ again. Format of each finding: see [AGENTS.md](../../AGENTS.md) s.3.
 | [13](13-first-recompilation.md) | First recompilation with PS2Recomp: 0 unsupported instructions, the C++ compiles (sample) | measured |
 | [14](14-repository-build-and-tests.md) | Repository, full build (links), per-instruction tests; 4 translator bugs fixed | measured |
 | [15](15-first-boot.md) | First boot: Sony libraries identified by RPC SID and bound to runtime handlers, one blocker at a time | in progress |
+| [16](16-game-dir-and-wad.md) | `GAME.DIR` / `GAME.WAD`: the index layout (423 entries of 72 bytes), sector-aligned archive, what is inside | measured |

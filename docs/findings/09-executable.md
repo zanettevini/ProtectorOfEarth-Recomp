@@ -157,6 +157,8 @@ Relevant strings (described, not copied in full):
   this engine build").
 - No video strings (`.pss`, MPEG). `libipu` is linked, but it is still
   unknown whether there are videos (probably inside `GAME.WAD`).
+  **Corrected in [16](16-game-dir-and-wad.md) s.5**: `GAME.DIR` lists 177
+  `.pss` streams; the names are in the index, not in the executable.
 
 ## 8. Code loaded at run time
 
