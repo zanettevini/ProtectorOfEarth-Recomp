@@ -1,0 +1,36 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] PADDUH/PSUBUH: saturar como no PS2
+
+O que quebrou:
+  PADDUH virava _mm_add_epi16 e PSUBUH _mm_sub_epi16: aritmetica que da a
+  volta (0x0001 - 0x0002 = 0xFFFF). No PS2 elas saturam (0xFFFF no maximo,
+  0 no minimo). O Ben 10 usa PSUBUH 27 vezes (docs/findings/09 s.5).
+
+Por que:
+  PCSX2 MMI.cpp _PADDUH / _PSUBUH: soma > 0xFFFF -> 0xFFFF; diferenca <= 0
+  -> 0. As versoes de 8 bits (PADDUB/PSUBUB) ja usavam as instrucoes SSE
+  com saturacao; as de 16 bits nao.
+
+A correcao:
+  _mm_adds_epu16 / _mm_subs_epu16.
+
+Como foi achado:
+  Teste PsubuhClampsAtZero; PADDUH achado lendo a mesma tabela.
+
+diff --git a/ps2xRecomp/src/lib/mmi_translation_helpers.cpp b/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
+index a2bcb77..1f801f7 100644
+--- a/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
+@@ -105,9 +105,10 @@ namespace ps2recomp
+         case MMI1_PEXTUW:
+             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUW(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+         case MMI1_PADDUH:
+-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_add_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
++            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_adds_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+         case MMI1_PSUBUH:
+-            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_sub_epi16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
++            // PADDUH/PSUBUH saturate (unsigned) like PADDUB/PSUBUB (PCSX2 MMI.cpp _PADDUH/_PSUBUH).
++            return fmt::format("SET_GPR_VEC(ctx, {}, _mm_subs_epu16(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+         case MMI1_PEXTUH:
+             return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXTUH(GPR_VEC(ctx, {}), GPR_VEC(ctx, {})));", rd, rs, rt);
+         case MMI1_PADDUB:

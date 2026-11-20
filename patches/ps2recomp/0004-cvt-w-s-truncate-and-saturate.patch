@@ -1,0 +1,44 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] CVT.W.S: truncar em direcao a zero e saturar
+
+O que quebrou:
+  FPU_CVT_W_S era (int32_t)nearbyintf(x): arredonda pelo modo atual do
+  processador (no EE recompilado, "mais proximo"). 1.75 dava 2 (PS2: 1),
+  -1.75 dava -2 (PS2: -1), 3e9 dava 0x80000000 (PS2: 0x7FFFFFFF).
+  O Ben 10 tem 566 CVT.W.S (docs/findings/09 s.5).
+
+Por que:
+  O CVT.W.S do PS2 sempre corta em direcao a zero e satura quando o
+  expoente passa de 2^31: PCSX2 FPU.cpp CVT_W (cast (s32), e 0x7FFFFFFF /
+  0x80000000 fora do intervalo). O runtime so muda o modo de arredondamento
+  dentro do codigo de VU (ps2_vu1_core.cpp), nao no EE.
+
+A correcao:
+  Nova funcao ps2_cvt_w_s() com a regra do PCSX2; FPU_CVT_W_S usa ela.
+
+Como foi achado:
+  Leitura do ps2_runtime_macros.h; confirmado pelos testes CvtWs*
+  (3 de 4 falhavam antes do patch), docs/findings/14 s.5.
+
+diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
+index 0485d50..7cefb73 100644
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -853,7 +853,16 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
+ #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
+ #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
+ #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
+-#define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
++// CVT.W.S always truncates toward zero, and saturates when the exponent is past 2^31
++// (PCSX2 FPU.cpp CVT_W). nearbyintf() used the host rounding mode (round to nearest).
++inline int32_t ps2_cvt_w_s(float a)
++{
++    const uint32_t bits = std::bit_cast<uint32_t>(a);
++    if ((bits & PS2_FLOAT_EXP_MASK) <= 0x4E800000u)
++        return static_cast<int32_t>(a); // C++ float -> int conversion truncates toward zero
++    return (bits & PS2_FLOAT_SIGN_MASK) ? INT32_MIN : INT32_MAX;
++}
++#define FPU_CVT_W_S(a) ps2_cvt_w_s((float)(a))
+ #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
+ #define FPU_C_F_S(a, b) (0)
+ #define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))

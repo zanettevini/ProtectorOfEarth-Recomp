@@ -1,0 +1,39 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] LQ/SQ: alinhar o endereco em 16 bytes
+
+O que quebrou:
+  LQ e SQ liam/escreviam 16 bytes a partir do endereco exato (rs + imm).
+
+Por que:
+  No R5900, LQ/SQ ignoram os 4 bits baixos do endereco em silencio, sem
+  excecao de alinhamento (EE Core Instruction Set Manual; PCSX2
+  R5900OpcodeImpl.cpp LQ/SQ: "addr & ~0xf", com comentario explicando).
+  O tradutor passava o endereco cru para READ128/WRITE128, que nao alinham.
+
+A correcao:
+  O endereco gerado vira (rs + imm) & ~0xF.
+  LQC2/SQC2 NAO foram mudados: o PCSX2 nao alinha esses dois e nao ha
+  evidencia sobre o hardware (docs/findings/14 s.5, em aberto).
+
+Como foi achado:
+  Testes LqIgnoresLowFourBits / SqIgnoresLowFourBits
+  (tests/instructions/test_ee_instructions.cpp), docs/findings/14 s.5.
+
+diff --git a/ps2xRecomp/src/lib/instruction_translator.cpp b/ps2xRecomp/src/lib/instruction_translator.cpp
+index 7684097..639c416 100644
+--- a/ps2xRecomp/src/lib/instruction_translator.cpp
++++ b/ps2xRecomp/src/lib/instruction_translator.cpp
+@@ -196,9 +196,11 @@ namespace ps2recomp
+         case OPCODE_SW:
+             return genWrite(32, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), fmt::format("GPR_U32(ctx, {})", inst.rt)) + ";";
+         case OPCODE_LQ:
+-            return fmt::format("SET_GPR_VEC(ctx, {}, {});", inst.rt, genRead(128, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate)));
++            // LQ/SQ ignore the low 4 address bits instead of raising an address error
++            // (EE Core manual; PCSX2 R5900OpcodeImpl.cpp LQ/SQ: addr & ~0xf).
++            return fmt::format("SET_GPR_VEC(ctx, {}, {});", inst.rt, genRead(128, fmt::format("(ADD32(GPR_U32(ctx, {}), {}) & ~0xFu)", inst.rs, inst.simmediate)));
+         case OPCODE_SQ:
+-            return genWrite(128, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), fmt::format("GPR_VEC(ctx, {})", inst.rt)) + ";";
++            return genWrite(128, fmt::format("(ADD32(GPR_U32(ctx, {}), {}) & ~0xFu)", inst.rs, inst.simmediate), fmt::format("GPR_VEC(ctx, {})", inst.rt)) + ";";
+         case OPCODE_LD:
+             return fmt::format("SET_GPR_U64(ctx, {}, {});", inst.rt, genRead(64, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate)));
+         case OPCODE_SD:

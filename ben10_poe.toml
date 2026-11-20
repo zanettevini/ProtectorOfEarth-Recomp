@@ -1,0 +1,99 @@
+# ben10_poe.toml: configuração do recompilador (PS2Recomp, ps2_recomp)
+#
+# É o equivalente do crash_mom_manifest.toml do Mind over Recomp: tudo que
+# muda o jogo que o recompilador gera passa por aqui, e TODA entrada tem um
+# comentário de "por que + como descobrimos" (AGENTS.md s.4).
+#
+# Os caminhos são relativos à raiz do repositório (o ps2_recomp roda a partir
+# dela; ver o alvo ben10_codegen no CMakeLists.txt).
+#
+# De onde vêm os arquivos:
+#   game/SLUS_216.61                 o ELF do SEU disco (tools/coletar_disco.ps1
+#                                    ou tools/extrair_disco.sh). Nunca versionado.
+#   generated/ghidra/functions.csv   lista de funções exportada do Ghidra
+#                                    (tools/ghidra_analisar.sh / .ps1,
+#                                    docs/findings/12). Derivada do binário do
+#                                    jogo: nunca versionada.
+#   generated/default/               o C++ gerado. É o código do jogo
+#                                    traduzido: nunca versionado.
+
+[general]
+input = "game/SLUS_216.61"
+ghidra_output = "generated/ghidra/functions.csv"
+output = "generated/default"
+
+# Um arquivo .cpp por função. Com um arquivo só, o compilador precisaria de
+# muitos GB de RAM de uma vez (são ~20 mil funções e pontos de entrada).
+single_file_output = false
+
+# SYSCALL fica como instrução recompilada que chama runtime->handleSyscall
+# (o próprio PS2Recomp não recomenda trocar por patch, README dele).
+patch_syscalls = false
+# COP0 e CACHE viram chamadas ao runtime em vez de instruções cruas: o jogo
+# usa 278 instruções COP0 e 13 CACHE (findings/09 s.5), que não fazem
+# sentido num PC.
+patch_cop0 = true
+patch_cache = true
+
+# Funções trocadas por tratadores do runtime (stubs do PS2Recomp).
+#
+# Por que: são os wrappers de syscall da libkernl da Sony (uma instrução
+# SYSCALL cada). A extensão ghidra-emotionengine-reloaded reconheceu e deu
+# nome a elas; o ExportPS2Functions.java do PS2Recomp listou as que o runtime
+# já sabe tratar.
+# Como achamos: análise headless do Ghidra, findings/12 s.3. Todas ficam no
+# bloco 0x001C49E0-0x001C5210.
+# Formato: "Nome@0xENDEREÇO" (o endereço desambigua nomes repetidos, como os
+# dois AddIntcHandler).
+stubs = [
+  "SetGsCrt@0x001C49E0",
+  "AddIntcHandler@0x001C4AC0",
+  "AddIntcHandler@0x001C4AD0",
+  "RemoveIntcHandler@0x001C4AE0",
+  "AddDmacHandler@0x001C4AF0",
+  "RemoveDmacHandler@0x001C4B10",
+  "EnableIntc@0x001C4B20",
+  "DisableIntc@0x001C4B30",
+  "EnableDmac@0x001C4B40",
+  "DisableDmac@0x001C4B50",
+  "CreateThread@0x001C4BE0",
+  "StartThread@0x001C4C00",
+  "ChangeThreadPriority@0x001C4C70",
+  "RotateThreadReadyQueue@0x001C4C90",
+  "GetThreadId@0x001C4CD0",
+  "ReferThreadStatus@0x001C4CE0",
+  "WakeupThread@0x001C4D10",
+  "iWakeupThread@0x001C4D20",
+  "SuspendThread@0x001C4D50",
+  "EndOfHeap@0x001C4DC0",
+  "CreateSema@0x001C4DE0",
+  "DeleteSema@0x001C4DF0",
+  "SignalSema@0x001C4E00",
+  "iSignalSema@0x001C4E10",
+  "WaitSema@0x001C4E20",
+  "PollSema@0x001C4E30",
+  "SetOsdConfigParam@0x001C4E80",
+  "GetOsdConfigParam@0x001C4E90",
+  "FlushCache@0x001C5060",
+  "iFlushCache@0x001C5090",
+  "sceSifStopDma@0x001C50B0",
+  "GsGetIMR@0x001C5100",
+  "GsPutIMR@0x001C5120",
+  "SetVSyncFlag@0x001C5150",
+  "sceSifDmaStat@0x001C5180",
+  "sceSifSetDma@0x001C51A0",
+  "isceSifSetDma@0x001C51B0",
+  "sceSifSetDChain@0x001C51C0",
+  "isceSifSetDChain@0x001C51D0",
+  "sceSifSetReg@0x001C51E0",
+  "sceSifGetReg@0x001C51F0",
+  "Deci2Call@0x001C5210",
+]
+
+# Nenhuma função pulada.
+# A tabela de dados de 20 KB em 0x001002E0-0x00105200, dentro do .text, não
+# precisa de skip: ela não pertence a nenhuma função do CSV, então o
+# recompilador nunca a traduz (findings/12 s.6).
+skip = []
+
+untracked_stubs = []

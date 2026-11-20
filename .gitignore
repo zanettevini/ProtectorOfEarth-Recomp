@@ -1,0 +1,71 @@
+# =====================================================================
+# NUNCA versione nada que saiu do disco, nem nada gerado a partir dele.
+# Este repositório só guarda o código e as notas do PRÓPRIO projeto.
+# Cada pessoa monta o port a partir da sua própria cópia do jogo.
+# (AGENTS.md s.2)
+# =====================================================================
+
+# Imagens de disco
+*.iso
+*.bin
+*.cue
+*.chd
+*.cso
+
+# Arquivos tirados do disco: o ELF, os IRX, GAME.DIR/GAME.WAD...
+/game/
+/iso/
+/ISO/
+SLUS_*
+SLES_*
+*.IRX
+*.irx
+
+# BIOS do PS2 (só para o PCSX2 de referência; o port não usa)
+/bios/
+*.rom0
+*.nvm
+*.mec
+
+# Tudo em generated/ vem do binário do jogo:
+#   generated/default/  o C++ gerado pelo ps2_recomp (é o código do jogo)
+#   generated/ghidra/   CSV de funções e o projeto do Ghidra
+# Só o README explica a pasta.
+/generated/*
+!/generated/README.md
+
+# Builds
+/out/
+/build/
+cmake-build-*/
+CMakeUserPresets.json
+/compile_commands.json
+/.cache/
+
+# Arquivos do jogador quando roda da árvore de código: saves, memory cards,
+# configurações, logs. Nunca no repositório.
+/user/
+/logs/
+/captures/
+
+# Capturas e dumps brutos (frames, memória, GS)
+*.ppm
+*.dmp
+*.gs
+*.p2s
+
+# Projeto do Ghidra (contém o binário do jogo)
+*.gpr
+*.rep/
+
+# Scratch local
+__pycache__/
+*.pyc
+/notes/
+/CLAUDE.md
+
+# Editores
+.vs/
+.vscode/
+.idea/
+*.swp
