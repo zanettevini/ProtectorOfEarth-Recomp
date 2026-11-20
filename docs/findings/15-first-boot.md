@@ -186,7 +186,7 @@ driver and `CDARB`: to confirm).
   unsupported instructions and 0 errors, and the missing-target stop is
   gone.
 
-## 11. Where it stops now: the pad library
+## 11. Blocker 8: the pad library
 
 - The game thread loops in game code `FUN_00123180`, calling
   `FUN_001c1830` again and again. `FUN_001c1830(port, slot)` reads byte
@@ -197,14 +197,55 @@ driver and `CDARB`: to confirm).
   (`FUN_001c5620`, with the cache loop `FUN_001c5578`).
 - The PADMAN module runs in the IOP interpreter, but the frame it should
   write over SIF DMA never says "stable", so the game waits.
-- Next: identify the libpad family (`FUN_001c10c8` binds SIDs
-  `0x80000100`/`0x80000101` and prints the libpad/padman version
-  mismatch message; `FUN_001c1478` is the port open, by its error strings;
-  every RPC is function 1 with a 128-byte command buffer, so the command
-  number in the buffer tells the functions apart) and bind it whole to the
-  runtime's `scePad*` handlers.
+- Identification, against the PS2SDK's libpad (commit `cf9557d`): every
+  RPC is function 1 with a 128-byte buffer, and the command number each
+  function stores in the buffer's first word is the new padman's: 0x01
+  open (`FUN_001c1478`, also by its error strings), 0x06 set main mode
+  (`FUN_001c1c20`), 0x08 set actuator align (`FUN_001c1da0`), 0x0A set
+  button info (`FUN_001c1e78`), 0x10 init (inside `scePadInit`,
+  `FUN_001c10c8`, which also binds both SIDs and checks the padman major
+  version), 0x12 module version (`FUN_001c2018`). The functions without an
+  RPC were matched by which fields of the PS2SDK's `struct pad_data_new`
+  they read: `FUN_001c17b8` read (copies `length` bytes), `FUN_001c18b0`
+  and `FUN_001c1968` set/get request state (+0x71), `FUN_001c19c8` info
+  act (+0x6A, +0x30), `FUN_001c1ae8` info mode (+0x65, +0x69, +0x68,
+  +0x50), `FUN_001c1f28` info press mode (model +0x66 bit 1),
+  `FUN_001c1fa8` enter press mode (SetButtonInfo with 0xFFF),
+  `FUN_001c1cd8` set actuator direct (through the DMA helper that prints
+  "sceSifSetDma faild").
+- Fix: the 15 functions bound together to the runtime's `scePad*`
+  handlers, which model the pad state machine (`ben10_poe.toml` has the
+  evidence per function). Only the game's `FUN_00123180` and
+  `FUN_00123348` call them.
+- Result: the pad wait is gone.
 
-## 12. What was not checked
+## 12. Where it stops now: the draw wait
+
+- The game thread loops in `FUN_0012e580(state)`: while bit 0x10 of
+  `state+8` is set and the frame counter `state+0xC` has not advanced by 10
+  since entry. On a timeout it prints the VIF1/GIF DMA registers
+  (`FUN_001bf478`, a libgraph debug dump). `state` is the global
+  `0x00268540`.
+- Who changes those fields: the VBlank handler `FUN_0012e5f8` adds 1 to
+  `+0xC` every frame and flips buffers when a frame is ready; the VIF1 DMA
+  end handler `FUN_0012e670` (registered with `AddDmacHandler(1, ..)`)
+  clears bits 0x8 and 0x10. The VBlank handler is registered through
+  `FUN_001c00d0`, libgraph's `sceGsSyncVCallback` (it calls
+  `AddIntcHandler(2, func, -1)` and `EnableIntc(2)` and returns the
+  previous callback).
+- Measured by reading guest RAM through `/proc/<pid>/mem` while the game
+  runs: `state+8` = 0x16 and `state+0xC` = 3, unchanged for seconds. The
+  VBlank handler ran three times and then stopped being called, so the
+  wait never times out, and the VIF1 DMA end never clears bit 0x10.
+- Tried: binding `FUN_001c00d0` to the runtime's `sceGsSyncVCallback` (the
+  runtime calls such a callback at every VBlank start). Same result
+  (counter stuck at 3), so the binding was not kept.
+- Next: find why the runtime stops delivering the VBlank interrupt (and the
+  VIF1 DMA end) after the first frames: the EE scheduler's interrupt
+  invocations (`EeScheduler::processEvent`, the pending invocation queue)
+  and the guest interrupt-enable state around the wait.
+
+## 13. What was not checked
 
 - Whether each runtime handler behaves like the Sony function it replaces
   for this game (the boot moving past a loop is the only check so far).

@@ -241,6 +241,65 @@ stubs = [
   # (findings/15 s.9).
   "sceSifLoadModule@0x001CA470",
   "sceSifLoadModuleBuffer@0x001CA220",
+
+  # --- libpad (controllers, padman SIDs 0x80000100 / 0x80000101) -----------
+  # Why: the game loops on scePadGetState waiting for a "stable" pad. The
+  # library reads a 128-byte frame that padman should write over SIF DMA;
+  # the frame never says stable, so boot stopped there (findings/15 s.11).
+  # The runtime models the pad state machine and answers by name.
+  # The whole family is bound together: open, read, state and the setters
+  # all share the library's open-slot table (0x00272010) and its DMA frames,
+  # which the runtime does not fill.
+  # How we found them: tools/analyzer/function_map.py and rpc_calls.py on
+  # 0x001C10C8-0x001C2088, compared with the PS2SDK's libpad (commit
+  # cf9557d). Every RPC is function 1 with a 128-byte buffer; the command
+  # number stored in the buffer's first word names the function (the new
+  # padman numbers). Functions without an RPC were matched by the fields of
+  # the frame they read (the PS2SDK's struct pad_data_new: +0x58 frame,
+  # +0x60 length, +0x64 modeConfig, +0x65 modeCurId, +0x66 model,
+  # +0x68 nrOfModes, +0x69 modeCurOffs, +0x6A nrOfActuators, +0x70 state,
+  # +0x71 reqState, +0x72 currentTask). Only the game's FUN_00123180 (init)
+  # and FUN_00123348 (per frame) call them.
+  # Not bound (only called by the functions below): 0x001C1218 (SIF command
+  # handler), 0x001C1260 (port init, command 0x10), 0x001C1360 (actuator
+  # DMA helper), 0x001C1660 (copies the newest frame).
+
+  # Binds both SIDs, checks the padman version (prints the "libpad: Module
+  # version mismatch" message) and sends the init command.
+  "scePadInit@0x001C10C8",
+  # Command 0x01 (OPEN); prints "buffer addr is not 64 byte align" and
+  # "pad port is already open".
+  "scePadPortOpen@0x001C1478",
+  # Copies "length" (+0x60) bytes of the frame to the caller's buffer.
+  "scePadRead@0x001C17B8",
+  # Returns state (+0x70), or 5 (EXECCMD) when stable (6) and request busy (2).
+  "scePadGetState@0x001C1830",
+  # Writes reqState (+0x71); called after every command that returns 1.
+  "scePadSetReqState@0x001C18B0",
+  # Reads reqState (+0x71).
+  "scePadGetReqState@0x001C1968",
+  # Reads nrOfActuators (+0x6A) and the actuator table (+0x30).
+  "scePadInfoAct@0x001C19C8",
+  # Reads modeCurId (+0x65, 0xF3 check), modeCurOffs, nrOfModes and the mode
+  # table (+0x50).
+  "scePadInfoMode@0x001C1AE8",
+  # Command 0x06 (SET_MMODE).
+  "scePadSetMainMode@0x001C1C20",
+  # Writes the actuator values and sends them with the DMA helper (the
+  # helper prints "libpad: sceSifSetDma faild").
+  "scePadSetActDirect@0x001C1CD8",
+  # Command 0x08 (SET_ACTALIGN).
+  "scePadSetActAlign@0x001C1DA0",
+  # Command 0x0A (SET_BTNINFO).
+  "scePadSetButtonInfo@0x001C1E78",
+  # 1 when currentTask is 1, modeConfig >= 2 and model (+0x66) bit 1 is set:
+  # the pad supports pressure-sensitive buttons.
+  "scePadInfoPressMode@0x001C1F28",
+  # Calls scePadSetButtonInfo(port, slot, 0xFFF), the PS2SDK's
+  # padEnterPressMode.
+  "scePadEnterPressMode@0x001C1FA8",
+  # Command 0x12 (GET_MODVER); its caller compares the major version with 4.
+  "scePadGetModVersion@0x001C2018",
 ]
 
 # No function skipped.

@@ -45,7 +45,7 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
 | Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
 | Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
-| Boot | 🔧 | through SIF, CD, IOP reboot, file I/O, IOP heap; loads the 8 IOP modules, sets the video mode; waits on libpad (findings/15) |
+| Boot | 🔧 | through SIF, CD, IOP reboot, file I/O, IOP heap and pads; loads the 8 IOP modules, sets the video mode; stops in the first draw wait (findings/15) |
 | First frame | ⏳ | the game's first picture on screen |
 | Main menu | ⏳ |  |
 | Playable level | ⏳ |  |
