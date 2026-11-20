@@ -2,13 +2,13 @@
 
 ## For the agent
 
-1. **Next blocker: the world is still mostly black** (KNOWN_ISSUES B11,
-   findings/18 s.10). Textured models now get their colours (patch 0007).
-   Dump the frame buffer (page 80) and the Z buffer (page 220) of one frame
-   to images; check the Z clear (640x224 into page 220) against the 3D
-   draws (640x448, Z GEQUAL), and the VU1 packets that still carry RGB = 0
-   (the clipping program around 0x2000). `tools/analyzer/vu_disasm.py`
-   reads VU micro memory dumps.
+1. **Next blocker: giant triangles over the scene** (KNOWN_ISSUES B11,
+   findings/18 s.10). The scene is drawn, then covered by triangles with
+   vertices behind the camera. Check the VU1 clip path: CLIP/FCGET/FCAND
+   results and the clipping routine around VU address 0x2000 (dump VU1
+   state before and after one clipped triangle; `tools/analyzer/vu_disasm.py`
+   reads the code). The fix may be in the VU1 interpreter (T2), or the
+   start of the native VU1 translation.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.

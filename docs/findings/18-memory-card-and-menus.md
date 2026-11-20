@@ -198,14 +198,37 @@ program's colours were checked in gdb: about 100-117 per channel before
 `FTOI0`). On screen, one piece of textured ground appears in the lower left;
 the rest of the picture is still black (s.10).
 
-## 10. Still black after the fix
+## 10. Still black after the fix: what one frame does
 
-- Not explained yet. Candidates: the Z buffer clear (a 640x224 sprite into
-  page 220 with its own context, while the 3D scissor is 640x448), the
-  remaining 66 of 400 packets with RGB = 0 (from another VU1 program, a
-  clipping path around `0x2000`-`0x24B0`), or the copy to the 16-bit
-  display buffer. Next: dump the frame buffer and the Z buffer of one frame
-  to images.
+Measured in gdb on the running level (the frame buffer read from the GS
+backend's VRAM with the CT32 page/block/column layout):
+
+- Textures are fine at draw time: every texture checked had data in VRAM
+  when the triangle using it was drawn. (Read at the end of the frame they
+  look empty: the game copies the finished frame, 640x448, into pages
+  371-510, over its texture area, and re-uploads its textures every frame.
+  Wrong turn: that end-of-frame read first suggested missing uploads.)
+- Z is not the problem: the Z buffer at page 220 stays near 0 and the 3D
+  test is GEQUAL.
+- Following two pixels of the frame buffer (page 80) through one frame
+  (about 10,600 draws):
+  1. the sky clear paints them blue (`0x00FF8A40`);
+  2. the first group of textured triangles draws the scene correctly
+     (e.g. `0x7F648694`, `0x7FD2FAE0`), up to about draw 4,500;
+  3. an alpha-only pass (sprites with `FBMSK = 0x00FFFFFF`) clears alpha;
+  4. a second group of textured triangles then covers both pixels with
+     black (`0x7F000000`): **giant triangles** spanning more than the screen
+     (vertices such as (-552, -1552), (645, 551), (412, 1720), (1688, -70)
+     after the 1728/1824 offset) with depths near 2^24 (e.g. 16,649,703),
+     i.e. vertices behind the camera whose depth wrapped;
+  5. the alpha pass again, the HUD, and the copy to the 16-bit display
+     buffer.
+- So the scene is drawn, then overdrawn by triangles that should have been
+  clipped or culled. The game's VU1 programs clip with `CLIP`/`FCGET`/
+  `FCAND` and a clipping routine (around `0x2000`-`0x24B0`, s.9), and mark
+  culled vertices with the ADC bit (the GS front end honours ADC). Most
+  likely the VU1 interpreter's clip flags or the clipping routine go wrong
+  (debt T2). Not proven yet.
 
 ## 11. Open
 
