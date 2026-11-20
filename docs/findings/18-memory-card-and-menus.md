@@ -229,6 +229,15 @@ backend's VRAM with the CT32 page/block/column layout):
   culled vertices with the ADC bit (the GS front end honours ADC). Most
   likely the VU1 interpreter's clip flags or the clipping routine go wrong
   (debt T2). Not proven yet.
+- First check, on 8 triangles of the program at `0x2028` (gdb on
+  `VU1Interpreter::execLower`): the three `CLIPw.xyz` results read back by
+  `FCGET` match the values computed by hand from the vertices and `w`
+  (`0x01`, `0x41`, `0x41`: x outside on the + side, shifted by 6 bits per
+  judgement), with the 4-instruction distance the program relies on. In
+  that program only the z+ judgement (mask 16) sends a triangle to the
+  clipping routine at `0x2300`; x/y judgements go to `0x24B0`. So the flags
+  themselves look right in this sample; the giant triangles' origin (which
+  program, which vertices) is the next thing to pin down.
 
 ## 11. Open
 
