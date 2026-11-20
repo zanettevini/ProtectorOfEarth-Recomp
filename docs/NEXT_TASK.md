@@ -5,9 +5,9 @@
 1. **Native CDARB (D12).** The boot stalls in disc reads done by the
    game's interpreted IOP modules (findings/15 s.12). Replace `CDARB.IRX`
    with a native service:
-   - finish reading the protocol (findings/17 s.6): the request struct
-     (`.text+0xDD4` queue insert, `.text+0x884` serve), the parameters of
-     functions 2 and 7, the completion SIF command;
+   - finish reading the protocol (findings/17 s.7): what parameter words
+     1-5 of a request mean (buffer routines `.text+0xF30`, `.text+0x11EC`,
+     `.text+0x1C38`), and where the completion command number comes from;
    - patch `ps2xIOP` with an extension point for game-registered native
      services, preferred over loading the IRX (with a test);
    - write the service in `src/iop/` (functions 0, 2, 7; reads from

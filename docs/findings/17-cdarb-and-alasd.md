@@ -66,7 +66,33 @@ existing for ALASD.
   (`.text+0x300`), index 6 = queue a request with flag 8 (`.text+0x57C`,
   the audio path).
 
-## 5. What a native replacement needs
+## 5. CDARB's request queue (read so far)
+
+The queue insert (`.text+0xDD4`) fills a 0x2C-byte request and returns its
+sequence number (the request id):
+
+| Offset | Value |
+|---|---|
+| +0x00 | first argument: for function 2 the EE's first word; negative values are special requests (`0x80000001`, function 7, asks for `sceCdStatus` into +0x18) |
+| +0x04, +0x08, +0x0C | words 1-3 of the parameters |
+| +0x10 | request id (a global counter) |
+| +0x14 | word 5 of the parameters (word 4 is not copied) |
+| +0x18 | result, set by the worker |
+| +0x1C | flags: 0 from the EE, 8 from ALASD (`CDArb:6`) |
+| +0x20, +0x24 | completion: with flag 8, an IOP callback and its argument; otherwise two words handed back to the EE |
+| +0x28 | semaphore of a waiter (function 3) |
+
+The worker (`.text+0x884`) treats +0x08 as a count: positive and negative
+values take different paths through a pool of buffers (`.text+0xF30`,
+`.text+0x11EC`, `.text+0x1C38`, the last one doing the `sceSifSetDma` /
+`sceSdVoiceTrans` transfers). When a request is done it either calls the
+IOP callback (flag 8) or sends the EE a 0x18-byte SIF command, whose
+command number is the one CDARB registered at init (`.bss+0x2370`), with
++0x0C = the result, +0x10/+0x14 = the two EE words. The meaning of words
+1-5 (disc position, size, EE address...) is still to read in those three
+routines.
+
+## 6. What a native replacement needs
 
 For CDARB (needed to get past the current stall):
 
@@ -74,8 +100,8 @@ For CDARB (needed to get past the current stall):
    the EE uses), whose reply layout matches the 16-byte reply.
 2. The request semantics: the request struct (0x2C bytes) and the meaning
    of the parameters of functions 2 and 7 (disc sector, size, EE address,
-   ...). **Still to read** in `.text+0xDD4` (queue insert) and
-   `.text+0x884` (serve).
+   ...). The struct is in s.5; the meaning of
+   the parameter words is still open (s.7).
 3. Reads from `GAME.WAD` straight into EE RAM, then the completion SIF
    command to the EE, as the module does.
 4. While ALASD still runs in the interpreter: `CDArb:4` and `CDArb:6` as
@@ -90,10 +116,11 @@ from `cdrom0:` is always run in the interpreter first. A small patch to
 `ps2xIOP` is needed: let the game register native services by module
 name, and prefer them over loading the IRX.
 
-## 6. Open
+## 7. Open
 
-- The request struct and the parameters of functions 2 and 7 (s.5 item 2).
-- The SIF command number CDARB sends on completion, and its payload.
+- The meaning of parameter words 1-5 (s.5): the buffer routines
+  `.text+0xF30`, `.text+0x11EC`, `.text+0x1C38`.
+- Where the completion command number at `.bss+0x2370` comes from.
 - The ALASD RPC protocol (handler at `.text+0x17F8`).
 - Why the interpreted read loops (the s.12 stall of finding 15): a failing
   read retried forever, or just slow. Moot if CDARB becomes native.
