@@ -6,6 +6,16 @@
 - **Claude** (Anthropic), via Claude Code: AI assistant that wrote most of
   the code, tools and documentation.
 
+## The game
+
+*Ben 10: Protector of Earth* (PlayStation 2, 2007) was developed by High
+Voltage Software and published by D3 Publisher. *Ben 10* and its characters
+are trademarks of Cartoon Network. This project is unofficial and is not
+affiliated with or endorsed by any of them. The screenshots in
+[docs/images/screenshots/](docs/images/screenshots/README.md) show the
+game's own content as run by this port; that content is their work, not
+this project's.
+
 ## Software the port is built on
 
 | Project | Used for | License |

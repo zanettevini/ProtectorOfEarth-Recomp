@@ -118,3 +118,16 @@ Each decision: what, why, alternatives, and status
   IRX with `tools/analyzer/irx_imports.py`.
 - **Instead of**: fixing the interpreter's disc-read path, which would only
   make the temporary debt T1 run better.
+
+## D13. Screenshots of the port may be published, credited
+
+- **Status**: accepted (maintainer approval, with the condition that the
+  credit is correct and says the content is not the maintainer's work).
+- **What**: a few screenshots captured from the port go in
+  `docs/images/screenshots/` and the README, to document milestones and
+  findings.
+- **How**: each is listed in `docs/images/screenshots/README.md`, which
+  credits the game's developer, publisher and trademark owner and says the
+  content is theirs, not the project's; `CREDITS.md` says the same.
+- **Instead of**: describing the screen in words only. Everything else in
+  the "no game data" rule stays (AGENTS.md s.2).

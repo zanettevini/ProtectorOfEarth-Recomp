@@ -18,7 +18,8 @@ rules. The short version is below.
 2. **No game data in the repository.** No disc images, the game's ELF, IRX
    modules, BIOS, nothing from `game/` or `generated/` (the generated C++ is
    the game's code), no textures, audio or text from the game. Describe,
-   don't paste.
+   don't paste. The one exception: a few screenshots captured from the
+   port, in `docs/images/screenshots/`, credited there (decision D13).
 3. **Write down what you learn.** If your change needed you to figure out how
    part of the game or the PS2 works, add a finding in
    [docs/findings/](docs/findings/README.md) (a new numbered file, or a

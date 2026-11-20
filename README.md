@@ -12,14 +12,14 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-green)
 ![Built with PS2Recomp](https://img.shields.io/badge/built%20with-PS2Recomp-8A2BE2)
 
-**[About](#-about)** · **[Going native](#-going-native)** · **[Building](#%EF%B8%8F-building)** · **[Documentation](#-documentation)** · **[Contributing](#-contributing)**
+**[About](#-about)** · **[Screenshots](#-screenshots)** · **[Going native](#-going-native)** · **[Building](#%EF%B8%8F-building)** · **[Documentation](#-documentation)** · **[Contributing](#-contributing)**
 
 </div>
 
 <br>
 
 > [!WARNING]
-> **Not playable yet.** The game's code is translated to C++, compiles in full and starts running, but the boot does not reach the first frame yet. See the milestones below.
+> **Not playable yet.** The game's code is translated to C++, compiles in full, runs, and draws its first screen. See the milestones below.
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own disc of *Ben 10: Protector of Earth* (PS2, **USA**, SLUS-21661) dumped to an `.iso`. The game is built on your computer from it.
@@ -31,6 +31,17 @@
 It isn't an emulator: the PS2 program is [translated into C++ ahead of time](docs/02-how-the-port-works.md) by [PS2Recomp](https://github.com/ran-j/PS2Recomp) and built as a native Windows or Linux program. The parts that still pretend to be a PS2 (the I/O processor, the vector units, the graphics chip, the sound) are then replaced, one by one, with the port's own code.
 
 The project follows the organisation of [Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp): everything learned about the game becomes a note in [docs/findings/](docs/findings/README.md).
+
+## 📸 Screenshots
+
+<div align="center">
+
+<img src="docs/images/screenshots/01-first-screen-memory-card.png" alt="The game's memory card warning, drawn by the port" width="480"><br>
+<sub>The first screen the port drew (Linux): the game's own memory card warning. <a href="docs/findings/15-first-boot.md">findings/15</a> s.16</sub>
+
+</div>
+
+<sub>Screenshots show content from *Ben 10: Protector of Earth* (High Voltage Software / D3 Publisher, 2007; *Ben 10* is a trademark of Cartoon Network). It is their work, not this project's or its maintainer's; see [docs/images/screenshots/](docs/images/screenshots/README.md).</sub>
 
 ## 🧩 Going native
 

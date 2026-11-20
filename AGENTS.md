@@ -56,6 +56,10 @@ only the project's own code, notes and art.
   it** (an address, a size, a field layout, what it does).
 - `assets/` is only for original art or free-licensed third-party art with
   its licence and source credited in `CREDITS.md`.
+- Exception (decision D13): screenshots captured **from this port** may go
+  in `docs/images/screenshots/`, a few, to document milestones and
+  findings, each listed in that folder's README with the credit to the
+  game's owners and the note that it is not the project's work.
 - Before every commit: `git diff --cached --name-only` and check the list.
 
 ## 3. Write down what you find (findings)
