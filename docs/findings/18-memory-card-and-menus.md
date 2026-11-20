@@ -159,11 +159,59 @@ runtime's limit for this game.
   world does not show is not known yet (wrong buffer, wrong blending,
   geometry from the VU programs, which run interpreted, T2).
 
-## 9. Open
+## 9. Black models: VU1 MAX flushed integer colours
+
+How it was found (gdb on the running level):
+
+- A tally of 6,000 calls to the GS rasteriser (`GSCpuBackend::DrawPrimitive`)
+  showed that almost all draws are textured triangles into the frame
+  buffer at page 80 (640x448, 32-bit), Z buffer at page 220 (Z24, test
+  GEQUAL). Their vertex colour was **RGBA = 0**, while untextured
+  triangles had sane colours (e.g. 112, 105, 80, 128). With texture
+  function MODULATE (`tfx = 0`) that gives black; alpha 0 then fails the
+  alpha test, whose fail mode (`AFAIL = FB_ONLY`) still writes the black
+  colour. The display buffer is page 0, 16-bit (`DISPFB1/2`, `PMODE
+  0x8027`); the game copies page 80 into it with a textured sprite.
+- The black triangles come from VU1 (`VU1Interpreter::finishXgkick` →
+  `GS::processGIFPacket`); their GIF tags are `PRIM 0x5C` (triangles,
+  Gouraud, textured, blended) with registers ST, RGBAQ, XYZF2.
+- The VIF1 streams (decoded in gdb) unpack the vertex colours as V4-8
+  unsigned, with `CL = 3, WL = 1`; that part is right.
+- VU1 micro memory dumped at an XGKICK and read with the new
+  `tools/analyzer/vu_disasm.py`: the unlit textured program (around
+  `0x0400`-`0x0640`) loads the colour (`LQ vf07, 2(vi02)`), converts only
+  the alpha (`ITOF0.w`, `MUL.w`, `FTOI0.w`) and copies the vector into the
+  packet with **`MAX.xyzw vf09, vf07, vf07`**. R, G, B are still integers
+  (0-255), whose bit patterns are denormal floats.
+- The runtime's VU1 interpreter passed MAX/MINI operands through its
+  denormal flush (`normalizeOperand`), so the copy turned R, G, B into 0.
+  MAX/MINI are comparisons that return one operand unchanged; the game's
+  use of MAX as a move depends on that.
+
+Fix: PS2Recomp patch `0007-vu-max-mini-raw-bits.patch`: MAX/MINI (all six
+forms) compare raw bit patterns in sign-magnitude order and return the
+chosen operand's bits. New PS2Recomp test (fails before, passes after);
+`ps2x_tests` 447/447, project `ctest` 35/35.
+
+Result: 324 of 400 VU1 packets sampled now carry colours (the lit
+program's colours were checked in gdb: about 100-117 per channel before
+`FTOI0`). On screen, one piece of textured ground appears in the lower left;
+the rest of the picture is still black (s.10).
+
+## 10. Still black after the fix
+
+- Not explained yet. Candidates: the Z buffer clear (a 640x224 sprite into
+  page 220 with its own context, while the 3D scissor is 640x448), the
+  remaining 66 of 400 packets with RGB = 0 (from another VU1 program, a
+  clipping path around `0x2000`-`0x24B0`), or the copy to the 16-bit
+  display buffer. Next: dump the frame buffer and the Z buffer of one frame
+  to images.
+
+## 11. Open
 
 - Where saves should live: next to the disc files is not a good place for
   players' data; a per-user folder is the plan (KNOWN_ISSUES R21).
-- The black world in the first level (s.8), and the speed there.
+- The world in the first level is still mostly black (s.10), and slow.
 - The heap: 36 KB left under `0x01FE0000` in the first level (R19).
 - The memory card is still the runtime's generic handler (status
   "emulated" on the README board); the native goal is the port's own save

@@ -2,13 +2,13 @@
 
 ## For the agent
 
-1. **Next blocker: the black world in the first level** (KNOWN_ISSUES B11,
-   findings/18 s.8). The HUD is drawn, the 3D world is not, and the game
-   runs at about 1 frame per second (software GS rasteriser, IOP
-   interpreter disc reads). Dump the GS state and draws of one frame
-   (frame buffers, what each draw targets, the display buffer) to see
-   whether the world is drawn somewhere else or not at all; check the
-   VU1 path (T2).
+1. **Next blocker: the world is still mostly black** (KNOWN_ISSUES B11,
+   findings/18 s.10). Textured models now get their colours (patch 0007).
+   Dump the frame buffer (page 80) and the Z buffer (page 220) of one frame
+   to images; check the Z clear (640x224 into page 220) against the 3D
+   draws (640x448, Z GEQUAL), and the VU1 packets that still carry RGB = 0
+   (the clipping program around 0x2000). `tools/analyzer/vu_disasm.py`
+   reads VU micro memory dumps.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.
@@ -17,7 +17,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0006 upstream to PS2Recomp.
+5. Send patches 0002-0007 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

@@ -8,8 +8,8 @@ reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 reads the game's data through a native replacement of CDARB's EE reads,
 finds the memory card (libmc bound to the runtime's card, findings/18),
 creates its save, shows the title screen and the main menu, and loads the
-first level, where it draws the HUD but not yet the 3D world
-(findings/18 s.8).
+first level, where it draws the HUD and a first piece of the 3D world;
+most of the picture is still black (findings/18 s.8-10).
 On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
 because the game's heap needs the memory the runtime kept at the top of RAM
 (findings/15 s.15).
@@ -41,12 +41,12 @@ game) and the [README](../README.md#-going-native) board.
 | What | Where | Result |
 |---|---|---|
 | `ctest` (36 cases: 33 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **35/35 pass** |
-| PS2Recomp's own `ps2x_tests` with patches 0001-0006 (built separately) | Linux, GCC 13 | **446/446 pass** (run from `ps2xTest/`) |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0007 (built separately) | Linux, GCC 13 | **447/447 pass** (run from `ps2xTest/`) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 0001-0006 apply in order on a clean checkout of the pinned commit (`git apply` on a worktree) |
+| Patches applied by CMake | Linux | 0001-0007 apply in order on a clean checkout of the pinned commit (`git apply` on a worktree) |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 
 **Untested**: everything on Windows except the study version of the disc

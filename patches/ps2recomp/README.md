@@ -14,8 +14,9 @@ fix and how it was found.
 | `0004-cvt-w-s-truncate-and-saturate.patch` | CVT.W.S truncates toward zero and saturates | findings/14 s.5 |
 | `0005-padduh-psubuh-saturate.patch` | PADDUH/PSUBUH saturate | findings/14 s.5 |
 | `0006-kernel-data-in-kernel-ram.patch` | The runtime's own guest data (RPC/TLS pools, SIF command packets, callback stacks) moves to EE kernel RAM; the game's heap may grow up to the main stack | findings/15 s.15 |
+| `0007-vu-max-mini-raw-bits.patch` | VU1 MAX/MINI compare raw bits and do not flush denormals (games use MAX as a move of integer data) | findings/18 s.9 |
 
-Patches 0002-0006 fix PS2 behaviour and should also go to upstream
+Patches 0002-0007 fix PS2 behaviour and should also go to upstream
 PS2Recomp.
 
 To undo them all: `git -C thirdparty/PS2Recomp checkout .`, then

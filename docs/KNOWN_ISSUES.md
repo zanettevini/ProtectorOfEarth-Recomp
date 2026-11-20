@@ -7,7 +7,7 @@
 | B6 | ~~The boot does not reach the first frame yet~~ resolved: the first screen (memory card warning) is drawn; next, the game sees no memory card | | [findings/15](findings/15-first-boot.md) s.16 |
 | B9 | ~~The game reports no memory card in slot 1~~ resolved: libmc bound to the runtime's memory card | | [findings/18](findings/18-memory-card-and-menus.md) |
 | B10 | ~~The first level shows a solid blue picture~~ resolved: the main thread had stopped on a switch case and an empty virtual method missing from the function list | | [findings/18](findings/18-memory-card-and-menus.md) s.6-7 |
-| B11 | The first level draws the HUD over a black picture, at about 1 frame per second | gameplay | [findings/18](findings/18-memory-card-and-menus.md) s.8 |
+| B11 | The first level draws the HUD and one piece of ground over a black picture, at about 1 frame per second (textured models were black: fixed by patch 0007; the rest is not explained yet) | gameplay | [findings/18](findings/18-memory-card-and-menus.md) s.8-10 |
 | B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
 | B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 

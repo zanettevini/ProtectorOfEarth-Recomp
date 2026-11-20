@@ -1,0 +1,181 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 MAX/MINI: compare raw bits, do not flush denormals
+
+What broke:
+  In Ben 10's first level every textured model drawn by its VU1 programs
+  came out black. The program copies the VIF-unpacked vertex colour (four
+  small integers, e.g. 103, 86, 66, 128) into the GIF packet with
+  "MAX.xyzw vf09, vf07, vf07". The interpreter ran MAX/MINI on operands
+  passed through normalizeOperand, which flushes denormals to zero; those
+  integers are denormal float patterns, so the colour became 0 and the
+  textured triangles were drawn black (texture x vertex colour, alpha 0
+  failing the alpha test with AFAIL = FB_ONLY).
+
+Why:
+  MAX and MINI are comparisons, not arithmetic: they return one of their
+  operands unchanged and do not flush denormals, which is why the game can
+  use "MAX vfA, vfB, vfB" as a move: the game's own code relies on it.
+  (PCSX2's VU interpreter is believed to compare raw 32-bit values the same
+  way; not re-checked against its source when this patch was written.)
+
+The fix:
+  MAXbc/MINIbc/MAXi/MINIi/MAX/MINI compare the raw bit patterns of the
+  registers (sign-magnitude order: both negative -> the smaller integer is
+  the larger float) and return the chosen operand's bits.
+  New ps2xTest case: "MAX and MINI move raw bit patterns without flushing
+  denormals" (fails before the fix, passes after).
+
+How it was found:
+  A gdb tally of GS draws in the level showed the textured triangles with
+  vertex RGBA = 0; their GIF packets come from VU1 XGKICK. A dump of VU1
+  micro memory, read with tools/analyzer/vu_disasm.py, showed the MAX move
+  of the integer colour (findings/18 s.9).
+
+diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
+index 6974254..95d1440 100644
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
+@@ -16,6 +16,35 @@ namespace
+             return std::numeric_limits<int32_t>::min();
+         return static_cast<int32_t>(scaled);
+     }
++
++    // MAX/MINI compare the raw 32-bit patterns, as sign-magnitude numbers
++    // (the order of IEEE floats), and return one operand unchanged. They do
++    // not flush denormals to zero like the arithmetic ops: games use
++    // "MAX.xyzw vfA, vfB, vfB" as a plain move of integer data (Ben 10 copies
++    // its VIF-unpacked vertex colours, small integers whose bit patterns are
++    // denormal floats, into the GIF packet that way; flushing them made every
++    // textured model black).
++    float vuRawMax(float a, float b)
++    {
++        int32_t ia, ib;
++        std::memcpy(&ia, &a, 4);
++        std::memcpy(&ib, &b, 4);
++        const int32_t r = (ia < 0 && ib < 0) ? (ia < ib ? ia : ib) : (ia > ib ? ia : ib);
++        float out;
++        std::memcpy(&out, &r, 4);
++        return out;
++    }
++
++    float vuRawMin(float a, float b)
++    {
++        int32_t ia, ib;
++        std::memcpy(&ia, &a, 4);
++        std::memcpy(&ib, &b, 4);
++        const int32_t r = (ia < 0 && ib < 0) ? (ia > ib ? ia : ib) : (ia < ib ? ia : ib);
++        float out;
++        std::memcpy(&out, &r, 4);
++        return out;
++    }
+ }
+ 
+ // ============================================================================
+@@ -99,9 +128,10 @@ void VU1Interpreter::execUpper(uint32_t instr)
+     case 0x12:
+     case 0x13: // MAXbc
+     {
+-        float bc = broadcast(vt, op & 3);
++        // Raw operands, not the normalised copies (see vuRawMax).
++        const float bc = m_state.vf[ft][op & 3];
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > bc) ? vs[c] : bc;
++            result[c] = vuRawMax(m_state.vf[fs][c], bc);
+         applyDest(vd, result, dest);
+         return;
+     }
+@@ -110,9 +140,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
+     case 0x16:
+     case 0x17: // MINIbc
+     {
+-        float bc = broadcast(vt, op & 3);
++        const float bc = m_state.vf[ft][op & 3];
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < bc) ? vs[c] : bc;
++            result[c] = vuRawMin(m_state.vf[fs][c], bc);
+         applyDest(vd, result, dest);
+         return;
+     }
+@@ -134,7 +164,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x1D: // MAXi
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > i) ? vs[c] : i;
++            result[c] = vuRawMax(m_state.vf[fs][c], m_state.i);
+         applyDest(vd, result, dest);
+         return;
+     case 0x1E: // MULi
+@@ -144,7 +174,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x1F: // MINIi
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < i) ? vs[c] : i;
++            result[c] = vuRawMin(m_state.vf[fs][c], m_state.i);
+         applyDest(vd, result, dest);
+         return;
+     case 0x20: // ADDq
+@@ -204,7 +234,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x2B: // MAX
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] > vt[c]) ? vs[c] : vt[c];
++            result[c] = vuRawMax(m_state.vf[fs][c], m_state.vf[ft][c]);
+         applyDest(vd, result, dest);
+         return;
+     case 0x2C: // SUB
+@@ -226,7 +256,7 @@ void VU1Interpreter::execUpper(uint32_t instr)
+         return;
+     case 0x2F: // MINI
+         for (int c = 0; c < 4; c++)
+-            result[c] = (vs[c] < vt[c]) ? vs[c] : vt[c];
++            result[c] = vuRawMin(m_state.vf[fs][c], m_state.vf[ft][c]);
+         applyDest(vd, result, dest);
+         return;
+ 
+diff --git a/ps2xTest/src/ps2_vu1_tests.cpp b/ps2xTest/src/ps2_vu1_tests.cpp
+index 0754b69..241ecea 100644
+--- a/ps2xTest/src/ps2_vu1_tests.cpp
++++ b/ps2xTest/src/ps2_vu1_tests.cpp
+@@ -309,6 +309,42 @@ void register_ps2_vu1_tests()
+                      "ITOF0 should convert negative fixed-point source bits");
+         });
+ 
++        tc.Run("MAX and MINI move raw bit patterns without flushing denormals", [](TestCase &t)
++        {
++            // Games copy integer data with "MAX.xyzw vfA, vfB, vfB" (Ben 10
++            // moves its vertex colours into the GIF packet that way). Small
++            // integers are denormal float patterns: they must pass unchanged.
++            Vu1Fixture fx;
++            t.IsTrue(fx.initialize(), "VU1 fixture should initialize");
++
++            writeVuInstructionPair(fx.code, 0u, 0u, makeVuUpper(0x2Bu, 0xFu, 7u, 7u, 9u));  // MAX.xyzw vf9, vf7, vf7
++            writeVuInstructionPair(fx.code, 8u, 0u, makeVuUpper(0x2Fu, 0xFu, 6u, 5u, 10u)); // MINI.xyzw vf10, vf5, vf6
++
++            VU1Interpreter vu1;
++            const int32_t colour[4] = {103, 86, 66, 128};
++            std::memcpy(vu1.state().vf[7], colour, sizeof(colour));
++            const float a[4] = {-2.0f, 3.0f, -0.5f, 0.0f};
++            const float b[4] = {-1.0f, 4.0f, 0.25f, -0.0f};
++            std::memcpy(vu1.state().vf[5], a, sizeof(a));
++            std::memcpy(vu1.state().vf[6], b, sizeof(b));
++            vu1.execute(fx.code, PS2_VU1_CODE_SIZE,
++                        fx.data, PS2_VU1_DATA_SIZE, fx.gs, &fx.mem,
++                        0u, 0u, 0u, 8u);
++
++            int32_t moved[4];
++            std::memcpy(moved, vu1.state().vf[9], sizeof(moved));
++            t.Equals(moved[0], 103, "MAX must keep a denormal-looking integer pattern (x)");
++            t.Equals(moved[1], 86, "MAX must keep a denormal-looking integer pattern (y)");
++            t.Equals(moved[2], 66, "MAX must keep a denormal-looking integer pattern (z)");
++            t.Equals(moved[3], 128, "MAX must keep a denormal-looking integer pattern (w)");
++            t.Equals(vu1.state().vf[10][0], -2.0f, "MINI orders negative values");
++            t.Equals(vu1.state().vf[10][1], 3.0f, "MINI orders positive values");
++            t.Equals(vu1.state().vf[10][2], -0.5f, "MINI orders mixed signs");
++            uint32_t zeroBits = 0;
++            std::memcpy(&zeroBits, &vu1.state().vf[10][3], 4);
++            t.Equals(zeroBits, 0x80000000u, "MINI picks -0 below +0");
++        });
++
+         tc.Run("MTIR decodes fsf as a component selector", [](TestCase &t)
+         {
+             Vu1Fixture fx;
