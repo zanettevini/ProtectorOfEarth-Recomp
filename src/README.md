@@ -1,8 +1,17 @@
 # src/
 
 The port's **own** native code: what replaces, piece by piece, the parts of
-the PS2 that PS2Recomp still emulates. For now it is empty: the executable
-uses PS2Recomp's `main` and runtime.
+the PS2 that PS2Recomp still emulates. The executable uses PS2Recomp's
+`main` and runtime; every `.cpp` under `src/` is built into it (CMake
+globs the folder), and game overrides register themselves with
+`PS2_REGISTER_GAME_OVERRIDE`.
+
+Today:
+
+| File | What |
+|---|---|
+| `src/iop/cdarb_native.cpp` | the EE's disc reads through CDARB, done natively from `GAME.WAD` (findings/17 s.7) |
+| `src/audio/spu2_memory.cpp` | the SPU2's 2 MB sound RAM, filled by the native CDARB |
 
 Each subject goes in its own folder once it exists, as in Mind over Recomp,
 for example:

@@ -35,3 +35,4 @@
 | R14 | A Sony library function bound to the wrong handler | wrong behaviour that looks like a game bug | bind only with evidence, a family at a time, each entry commented ([findings/15](findings/15-first-boot.md)) |
 | R15 | With MSVC, Debug builds keep the runtime and the IOP library unoptimised (`/O2` clashes with `/RTC1`), so the boot may be extremely slow there | the Windows boot looks frozen | build Windows as RelWithDebInfo, or adjust the flags for those two targets ([findings/15](findings/15-first-boot.md) s.12) |
 | R16 | IOP module stop/unload (`0x001C9F88`, `0x001CA190`) stay game code with no runtime handler | if the game calls them, it spins in the loader bind | bind when a handler exists ([findings/15](findings/15-first-boot.md) s.9) |
+| R17 | Native CDARB reads ignore requests with a count <= 0 and destination kind 8 (logged) | a load that never completes | read CDARB's other path ([findings/17](findings/17-cdarb-and-alasd.md) s.7) |

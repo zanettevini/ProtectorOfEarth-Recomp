@@ -45,19 +45,19 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
 | Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
 | Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
-| Boot | 🔧 | through SIF, CD, IOP reboot, file I/O, IOP heap and pads; loads the 8 IOP modules, sets the video mode; runs ~30 frames, then stalls in an IOP disc read (findings/15) |
+| Boot | 🔧 | loads the 8 IOP modules, sets the video mode; with native CDARB reads it runs ~2,900 frames (about 48 s), then waits; nothing on screen yet (findings/15, findings/17) |
 | First frame | ⏳ | the game's first picture on screen |
 | Main menu | ⏳ |  |
 | Playable level | ⏳ |  |
 
-**PS2 pieces replaced by the port's own code: 0 of 25 (0%)** `▱▱▱▱▱▱▱▱▱▱`
+**PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 
 | PS2 piece | Replaced | Becomes |
 |---|---|---|
-| IOP modules | `▱▱▱▱▱▱▱▱▱▱` 0 / 8 | port services answering each request (RPC) of the game, without running the IRX |
+| IOP modules | `▰▱▱▱▱▱▱▱▱▱` 1 / 9 | port services answering each request (RPC) of the game, without running the IRX |
 | VU microprograms | `▱▱▱▱▱▱▱▱▱▱` 0 / 9 | C++ translated at build time from the .DVP.ovlytab table (findings/11) |
 | Graphics (GS) | `▱▱▱▱▱▱▱▱▱▱` 0 / 4 | the port's Vulkan renderer |
-| Sound | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | each audio frame straight to the PC's output |
+| Sound | `▰▰▰▰▰▱▱▱▱▱` 1 / 2 | each audio frame straight to the PC's output |
 | Controllers | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | SDL3: keyboard, mouse and any controller |
 | Saves | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | save files on the PC, no memory card |
 | Videos | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | the PC's video decoder (if the game has MPEG videos) |

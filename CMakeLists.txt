@@ -132,7 +132,7 @@ if(BEN10_BUILD_GAME AND BEN10_GENERATED_SOURCES)
     # main() is PS2Recomp's runner: it loads the ELF, sets up the runtime and
     # calls the recompiled entry point. The port will have its own in src/
     # when it needs one (window, options, saves).
-    file(GLOB BEN10_PORT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
+    file(GLOB_RECURSE BEN10_PORT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
 
     add_executable(ben10_poe
         ${BEN10_GENERATED_SOURCES}

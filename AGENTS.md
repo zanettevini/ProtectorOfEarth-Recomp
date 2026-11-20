@@ -196,7 +196,7 @@ claiming something works that wasn't run is not (master prompt s.10).
 |---|---|
 | `ben10_poe.toml` | recompiler config: stubs, bindings, skips, all commented |
 | `CMakeLists.txt`, `CMakePresets.json` | the build: patches, codegen, game, tests |
-| `src/` | the port's native code (empty for now; see src/README.md) |
+| `src/` | the port's native code (see src/README.md) |
 | `tests/` | GoogleTest; `tests/tools/make_test_elf.py` builds the test ELF |
 | `tools/collect_disc.ps1` | takes the ELF and IRX modules from the `.iso` into `game/` |
 | `tools/ghidra_analyze.sh` / `.ps1`, `tools/ghidra_scripts/` | headless Ghidra: the function list for the recompiler |

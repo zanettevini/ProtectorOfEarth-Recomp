@@ -219,7 +219,7 @@ driver and `CDARB`: to confirm).
   `FUN_00123348` call them.
 - Result: the pad wait is gone.
 
-## 12. Where it stops now: the draw wait and the IOP disc reads
+## 12. Blocker 9: the draw wait and the IOP disc reads
 
 - The game thread loops in `FUN_0012e580(state)`: while bit 0x10 of
   `state+8` is set and the frame counter `state+0xC` has not advanced by 10
@@ -254,11 +254,30 @@ driver and `CDARB`: to confirm).
   that read fails the ownership check (the destination was never written
   or allocated through the IOP allocator) and the module retries it
   forever.
-- Next: trace `readSectors` results and the IOP module's retry loop; then
-  decide between a PS2Recomp patch (the ownership rule) and native
-  services for `CDARB`/`ALASD` (decision D2).
+- Resolved by replacing CDARB's EE reads with native code (decision D12,
+  [17](17-cdarb-and-alasd.md) s.7) rather than fixing the interpreter.
 
-## 13. What was not checked
+## 13. Blocker 10: another function reached only through a pointer
+
+- With CDARB's EE reads native ([17](17-cdarb-and-alasd.md) s.7), the next
+  stop was again `guest-branch:missing-target`, an indirect call to
+  `0x00208EC8`, referenced by 10 words in `.data` (virtual tables). It is
+  a leaf function placed after `jr $ra`, its delay slot and one word
+  `addiu $v0, $v0, 0`, which `CreatePointerTargetFunctions.java` did not
+  count as padding.
+- Fix: the script now treats `addiu $x, $x, 0` (a no-op) as padding too.
+  One more function (4,785 in total).
+
+## 14. Where it stops now
+
+- The game runs about 2,900 VBlanks (the frame counter at `0x0026854C`),
+  then the counter stops and no guest code is running: every guest thread
+  waits. Nothing has appeared on screen so far (a capture of the virtual
+  display is black).
+- Next: find what the waiting threads wait for (the EE scheduler's thread
+  states), and whether the runtime presents the GS output on this setup.
+
+## 15. What was not checked
 
 - Whether each runtime handler behaves like the Sony function it replaces
   for this game (the boot moving past a loop is the only check so far).

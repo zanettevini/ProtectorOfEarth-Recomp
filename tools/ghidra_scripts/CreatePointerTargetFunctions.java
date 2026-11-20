@@ -17,8 +17,9 @@
 //      a. its first instruction is a stack-frame prologue,
 //         "addiu $sp, $sp, -N" (0x27BDxxxx with a negative immediate): how
 //         the game's compiler starts every non-leaf function; or
-//      b. it follows a "jr $ra" and its delay slot, with at most 3 zero
-//         words (nop padding) in between: a leaf function (no stack frame)
+//      b. it follows a "jr $ra" and its delay slot, with at most 3 padding
+//         words in between (zero, or "addiu $x, $x, 0", a no-op the
+//         toolchain also uses as padding): a leaf function (no stack frame)
 //         placed right after the previous function's return.
 //      Anything else is rejected: pointers that land in a switch's jump
 //      targets, in the data table at the start of .text (findings/12 s.6),
@@ -116,7 +117,7 @@ public class CreatePointerTargetFunctions extends GhidraScript {
     }
 
     // True when "jr $ra" (0x03E00008) sits 2..5 words before v, and every word
-    // between its delay slot and v is zero (nop padding between functions).
+    // between its delay slot and v is padding (see isPadding).
     private boolean followsReturn(Memory mem, long v) {
         try {
             for (long back = 8; back <= 20; back += 4) {
@@ -125,7 +126,7 @@ public class CreatePointerTargetFunctions extends GhidraScript {
                 }
                 boolean padding = true;
                 for (long a = v - back + 8; a < v; a += 4) {
-                    if (mem.getInt(toAddr(a)) != 0) {
+                    if (!isPadding(mem.getInt(toAddr(a)))) {
                         padding = false;
                         break;
                     }
@@ -138,5 +139,19 @@ public class CreatePointerTargetFunctions extends GhidraScript {
             return false;
         }
         return false;
+    }
+
+    // A word the toolchain leaves between functions: zero (nop), or
+    // "addiu $x, $x, 0" (opcode 0x09, rs == rt, immediate 0), which does
+    // nothing. The second form was found before the leaf function at
+    // 0x00208EC8 (findings/15 s.13).
+    private static boolean isPadding(int w) {
+        if (w == 0) {
+            return true;
+        }
+        int op = w >>> 26;
+        int rs = (w >>> 21) & 31;
+        int rt = (w >>> 16) & 31;
+        return op == 0x09 && rs == rt && (w & 0xFFFF) == 0;
     }
 }

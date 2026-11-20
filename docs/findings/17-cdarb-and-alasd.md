@@ -116,11 +116,53 @@ from `cdrom0:` is always run in the interpreter first. A small patch to
 `ps2xIOP` is needed: let the game register native services by module
 name, and prefer them over loading the IRX.
 
-## 7. Open
+## 7. The native replacement of the EE's reads
+
+- The EE talks to CDARB through two small functions, so those are what was
+  replaced, with a game override (`src/iop/cdarb_native.cpp`,
+  `PS2_REGISTER_GAME_OVERRIDE`):
+  - `0x0012C1F8` (queue a read, RPC function 2): the EE passes a file
+    handle word, a params struct and a completion callback. Params, read
+    from the EE side (`FUN_00197600` and `FUN_001977c0` build them):
+    +0x00 start sector (absolute LSN), +0x04 sector count, +0x08
+    destination, +0x0C receives the request id, +0x10 destination kind.
+  - `0x0012C2C8` (RPC function 7, called by `ass_CheckCDDoorOpen`): CDARB
+    answers 1 when `sceCdStatus()` is 1 (tray open). Native: always 0.
+- Completion is delivered as CDARB does it: SIF command 0 (the number at
+  CDARB's `.bss+0x2370`, never written, so 0; the EE registers command 0
+  with handler `0x0012C040` in `FUN_0012c068`), 0x18-byte packet with
+  +0x0C result, +0x10 callback, +0x14 argument. The runtime's
+  `dispatchSifCommand` runs the game's own handler, which calls
+  `callback(result, params)`. The result is the number of bytes moved, as
+  CDARB counts them (request +0x18).
+- The read itself: the byte offset in `GAME.WAD` is
+  `(lsn - [0x002662E8]) * 2048`, using the GAME.WAD start LSN the game
+  saved (findings/16 s.4), so it does not depend on how the runtime numbers
+  its virtual disc. Destination kinds: 0 = EE RAM (written through the
+  runtime's `Ps2FastWrite8`), 2 and 4 = SPU2 sound RAM. PS2Recomp has no
+  SPU2 RAM, so the port now keeps its own 2 MB model
+  (`src/audio/spu2_memory.cpp`); the first sound-bank load (65 sectors to
+  SPU2 address `0x15010`, kind 2) goes there.
+- The module itself still loads and runs in the interpreter: its init (RPC
+  function 0, still called by the EE) and the audio streams it serves to
+  ALASD.
+
+Result: the boot stall in interpreted disc reads is gone. The game now
+runs about 2,900 frames (about 48 s of VBlanks), then every guest thread
+waits and the frame counter stops ([15](15-first-boot.md) s.14).
+
+Not handled, reported in the log instead: counts <= 0 (CDARB has another
+path for them, not read yet) and destination kind 8 (IOP memory, used only
+by ALASD).
+
+## 8. Open
 
 - The meaning of parameter words 1-5 (s.5): the buffer routines
   `.text+0xF30`, `.text+0x11EC`, `.text+0x1C38`.
 - Where the completion command number at `.bss+0x2370` comes from.
 - The ALASD RPC protocol (handler at `.text+0x17F8`).
-- Why the interpreted read loops (the s.12 stall of finding 15): a failing
-  read retried forever, or just slow. Moot if CDARB becomes native.
+- Why the interpreted read looped (finding 15 s.12). A likely cause, seen
+  in the IOP side of PS2Recomp: `sceSifSendCmd` refuses a packet whose
+  bytes the IOP never wrote (`IopMemory::ownsRamRange`), and CDARB retries
+  a refused send forever; not confirmed, and moot for the EE's reads now.
+- Counts <= 0 and kind 8 requests (s.7).
