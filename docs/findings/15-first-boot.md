@@ -292,13 +292,85 @@ driver and `CDARB`: to confirm).
   4 bytes `BIGB` ([16](16-game-dir-and-wad.md) s.5), and one 65-sector read
   of the same file into SPU2 RAM. The sectors match `GAME.DIR`, so the
   reads look right.
-- Not known yet: which chunk ID was looked up, and why its handler is the
-  abstract one. Candidates: a handler registry that C++ static
-  constructors fill and that is incomplete (constructors reached only
-  through pointers, like s.10 and s.13), or data the parser should not
-  have seen.
+- Resolved in s.15: the game's heap ran out at the runtime's limit, an
+  allocation returned NULL and the handler table was built at address 0.
 
-## 15. What was not checked
+## 15. Blocker 12: the game's heap ran into the runtime's 1 MB reserve
+
+How it was found (gdb on the `-g` build, guest registers read through the
+`R5900Context` argument of the generated functions):
+
+- A hardware watchpoint on the handler object (`0x01FEF860`, a stack
+  address) showed `FUN_001d9bc8` building it with the vtable `0x002370A0`
+  and resetting it to the base vtable `0x00237158` on return (inlined
+  destructor), many times. The failing parse is a later one, from
+  `FUN_001dca08` → `FUN_001d77b8` → `FUN_001d7240`, after
+  `FUN_001d9bc8` returned: the object was dead.
+- The parser's lookup (non-`RIFF`/`LIST` path, from `0x001D76AC`):
+  `ctx+0x24` points to a registry; its table is `{begin, count}` at
+  `+0x18`/`+0x1C`, entries of 8 bytes `{4CC, handler*}`, the last entry
+  a terminator. A handler is called as `vtable+0x14(handler, stream,
+  header)`. Each parse function (`FUN_001d9bc8`, `FUN_001dca08`) builds its
+  handlers on its own stack and grows its table on the heap: allocate
+  `count*8 + 8`, copy, free the old one (allocator from `FUN_001d5938`:
+  default object `0x0027C130`, vtable `0x00236DB0`, alloc `+0x14` =
+  `FUN_002087f0` → `memalign(0x40, n)`, free `+0x1C`).
+- At the pure-virtual call the registry's table **base was 0**. The
+  "table" read from guest address 0 held a mix of entries from both
+  functions' tables ('guid' → `0x01FEF860` among them): the allocations
+  had returned NULL and the entries had been copied to address 0.
+- A breakpoint on the game's `sbrk` (`FUN_001c54b0`, break pointer at
+  `0x00229248`, limit from `EndOfHeap`) showed 61 calls: big pools early
+  (one of 21 MB), then 1-6 KB steps while the sound bank loads, until the
+  break pointer sat at exactly `0x01F00000` and every further call failed.
+  The runtime capped the heap there (`kGuestHeapHardLimit`): the top
+  megabyte held its RPC packet/server pools, TLS and boot-mode blocks
+  (`0x01F00000`-`0x01F31000`) and the stacks that interrupt handlers and
+  callbacks run on (handed out from `0x02000000` down).
+- Test: with the limit raised to `0x01FE0000` the stop is gone and the
+  game's break pointer peaks at **`0x01F87000`**, 540 KB above the old cap.
+
+A second problem found on the way: `dispatchSifCommand` (used by the
+native CDARB, [17](17-cdarb-and-alasd.md) s.7) took its packet buffer from
+the runtime's `guestMalloc`, whose first free block starts at the heap base
+(`0x00285FD0`), the same address where the game's newlib heap starts. Every
+SIF command delivered to the EE was written over the first bytes of the
+game's heap.
+
+The fix, PS2Recomp patch `0006-kernel-data-in-kernel-ram.patch`:
+
+- On the PS2, EE RAM `0x00000000`-`0x0007FFFF` is kernel memory; games
+  are linked at `0x00100000`. The runtime's own guest data now lives there
+  (`ps2_kernel_ram.h`): RPC packet pool `0x00020000`, RPC server pool
+  `0x00030000`, TLS `0x00040000`, boot-mode `0x00050000`, a 64-slot pool
+  of 128-byte SIF command packets `0x00051000`, callback stacks
+  `0x00060000`-`0x0007FFFF` (8 of 16 KB; the run below used 1).
+- The heap may grow up to the bottom of the main thread's stack:
+  `SetupThread` with stack -1 calls the new `limitGuestHeapBelow`. The
+  runtime still returns `sp = 0x02000000 - size` there (unchanged), so the
+  stack is `0x01FE0000`-`0x01FF0000` and the heap ends at `0x01FE0000`.
+- Verified: `tests/runtime/test_ee_memory_layout.cpp` (2 cases, the
+  game's own `SetupThread`/`SetupHeap` arguments); all 35 `ctest` cases
+  pass; PS2Recomp's own suite (`ps2x_tests`, built separately with the
+  patch) passes 446/446 when run from `ps2xTest/` (one case reads
+  `instructions.h` relative to the working directory). In the game, a SIF
+  command packet now arrives at `0x00051000` with `sp = 0x0007FFF0`.
+
+## 16. First image: the memory card message
+
+- With patch 0006 the game runs past the old stop: 3,196 frames after
+  465 s under Xvfb (software OpenGL), heap break at `0x01F87000`, the
+  main thread in the draw loop (`FUN_00144b88` → `FUN_00143d58` →
+  `FUN_0012e580`) with the VIF1 DMA handler `FUN_0012e670` running.
+- A screenshot of the virtual display shows the game's first screen: the
+  autosave warning that no memory card is inserted in slot 1, with the
+  option to press X to continue without saving. Text and font render
+  legibly; not compared with PCSX2 yet.
+- Next: the game sees no memory card. `MCMAN.IRX` and `MCSERV.IRX` run in
+  the IOP interpreter (debt T1); how the game's libmc asks for the card,
+  and what the runtime answers, is not known yet.
+
+## 17. What was not checked
 
 - Whether each runtime handler behaves like the Sony function it replaces
   for this game (the boot moving past a loop is the only check so far).

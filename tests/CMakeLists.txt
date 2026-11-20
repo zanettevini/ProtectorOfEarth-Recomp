@@ -37,9 +37,15 @@ add_custom_command(
 
 file(GLOB BEN10_INSTRUCTION_TEST_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/instructions/*.cpp")
+# Runtime tests (memory layout, kernel behaviour) share this executable: the
+# runtime library needs a recompiled function table to link, and the test
+# ELF's generated code provides one.
+file(GLOB BEN10_RUNTIME_TEST_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cpp")
 
 add_executable(ben10_instruction_tests
     ${BEN10_INSTRUCTION_TEST_SOURCES}
+    ${BEN10_RUNTIME_TEST_SOURCES}
     ${BEN10_TEST_GENERATED})
 target_include_directories(ben10_instruction_tests PRIVATE
     "${BEN10_TEST_CASE_DIR}"

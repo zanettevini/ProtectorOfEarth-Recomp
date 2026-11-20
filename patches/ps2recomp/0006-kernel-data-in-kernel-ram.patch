@@ -1,0 +1,435 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] EE memory: runtime data in kernel RAM, heap up to the main stack
+
+What broke:
+  Ben 10 exited through std::terminate after a few thousand frames, while
+  loading its first sound bank. Its newlib sbrk asks EndOfHeap for the heap
+  limit, and the runtime capped the heap at 0x01F00000: the top megabyte of
+  RAM was kept for the runtime's own RPC packet/server pools, TLS blocks,
+  boot-mode records and the stacks that callbacks run on. The game needs its
+  heap to reach 0x01F87000; at 0x01F00000 sbrk failed, memalign returned NULL,
+  a chunk-handler table was copied to address 0 and a stale handler with a
+  pure virtual method was called.
+  Separately, dispatchSifCommand took its packet buffers from guestMalloc,
+  whose first block starts at the game's heap base (0x00285FD0): every SIF
+  command delivered to the EE was written over the start of the game's own
+  newlib heap.
+
+Why:
+  On the PS2, EE RAM 0x00000000-0x0007FFFF is kernel memory. The kernel keeps
+  its structures and its stacks there; games are linked at 0x00100000 and
+  their heap may grow up to their main thread's stack.
+
+The fix:
+  - New ps2_kernel_ram.h: a fixed layout of runtime-owned guest data in
+    0x00020000-0x0007FFFF (RPC packet pool, RPC server pool, TLS pool,
+    boot-mode pool, a 64-slot SIF command packet pool, 128 KB of callback
+    stacks).
+  - State.h: the pools use that layout.
+  - ps2_runtime: callback stacks are reserved from the kernel RAM window;
+    the heap hard limit starts at the end of RAM and SetupThread (stack -1)
+    lowers it to the bottom of the main stack (limitGuestHeapBelow).
+  - SetupHeap/EndOfHeap: "rest of RAM" defaults to PS2_RAM_SIZE, clamped by
+    the limit above.
+  - dispatchSifCommand: packets come from the kernel RAM pool; a full pool is
+    logged instead of silently dropping the command.
+  - ps2xTest GS VSync callback test: the stack check uses the new window.
+  SetupThread still returns sp = RAM - size for stack -1 (unchanged), so the
+  heap now ends at 0x01FE0000 for a 64 KB main stack.
+
+How it was found:
+  gdb on the pure-virtual stub: the handler table base was 0, the lookup read
+  entries from guest address 0; a breakpoint on the game's sbrk
+  (0x001C54B0) showed the break pointer at exactly 0x01F00000 and failing.
+  With the limit raised the game's break peaks at 0x01F87000 and the stop is
+  gone. Test: tests/runtime/test_ee_memory_layout.cpp.
+
+diff --git a/ps2xRuntime/include/ps2_kernel_ram.h b/ps2xRuntime/include/ps2_kernel_ram.h
+new file mode 100644
+index 0000000..f27400b
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_kernel_ram.h
+@@ -0,0 +1,55 @@
++#pragma once
++
++#include <cstdint>
++
++// Guest memory that belongs to the runtime's EE kernel, not to the game.
++//
++// On the PS2, EE RAM 0x00000000-0x0007FFFF is kernel memory: the kernel keeps
++// its own data and stacks there, and games are linked at 0x00100000 or above.
++// Everything the runtime itself places in guest RAM (RPC packets and server
++// records, TLS blocks, boot-mode records, SIF command packets, the stacks that
++// interrupt handlers and callbacks run on) lives in this window, so none of it
++// can overlap the game's heap. The game's heap may then grow up to the main
++// thread's stack, as it does on the console.
++//
++// Layout (all inside 0x00020000-0x0007FFFF; the low 128 KB stay untouched,
++// they hold the exception-vector area and the syscall table mirror):
++//   0x00020000  RPC packet pool          64 KB
++//   0x00030000  RPC server pool          64 KB
++//   0x00040000  TLS pool                 64 KB
++//   0x00050000  boot-mode pool            4 KB
++//   0x00051000  SIF command packet pool   8 KB (64 x 128 bytes)
++//   0x00060000  callback/interrupt stacks, 128 KB, handed out from the top
++namespace ps2_kernel_ram
++{
++    constexpr uint32_t kBase = 0x00020000u;
++    constexpr uint32_t kEnd = 0x00080000u;
++
++    constexpr uint32_t kRpcPacketPoolBase = 0x00020000u;
++    constexpr uint32_t kRpcPacketPoolBytes = 0x00010000u;
++
++    constexpr uint32_t kRpcServerPoolBase = 0x00030000u;
++    constexpr uint32_t kRpcServerPoolBytes = 0x00010000u;
++
++    constexpr uint32_t kTlsPoolBase = 0x00040000u;
++    constexpr uint32_t kTlsPoolBytes = 0x00010000u;
++
++    constexpr uint32_t kBootModePoolBase = 0x00050000u;
++    constexpr uint32_t kBootModePoolBytes = 0x00001000u;
++
++    // A SIF command packet is at most 112 bytes (sceSifSendCmd limit).
++    constexpr uint32_t kSifCmdPacketPoolBase = 0x00051000u;
++    constexpr uint32_t kSifCmdPacketSlotBytes = 0x80u;
++    constexpr uint32_t kSifCmdPacketSlotCount = 64u;
++
++    constexpr uint32_t kCallbackStackFloor = 0x00060000u;
++    constexpr uint32_t kCallbackStackTop = kEnd;
++
++    static_assert(kRpcPacketPoolBase + kRpcPacketPoolBytes <= kRpcServerPoolBase, "kernel RAM pools overlap");
++    static_assert(kRpcServerPoolBase + kRpcServerPoolBytes <= kTlsPoolBase, "kernel RAM pools overlap");
++    static_assert(kTlsPoolBase + kTlsPoolBytes <= kBootModePoolBase, "kernel RAM pools overlap");
++    static_assert(kBootModePoolBase + kBootModePoolBytes <= kSifCmdPacketPoolBase, "kernel RAM pools overlap");
++    static_assert(kSifCmdPacketPoolBase + kSifCmdPacketSlotBytes * kSifCmdPacketSlotCount <= kCallbackStackFloor,
++                  "kernel RAM pools overlap");
++    static_assert(kCallbackStackTop <= 0x00100000u, "kernel RAM must stay below the game's load address");
++}
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+index 4b9242c..ab076a3 100644
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -383,6 +383,8 @@ public:
+     uint32_t guestHeapBase() const;
+     uint32_t guestHeapEnd() const;
+     uint32_t guestHeapLimit() const;
++    // Keep the guest heap below guestAddr (the bottom of the main thread's stack).
++    void limitGuestHeapBelow(uint32_t guestAddr);
+     uint32_t reserveAsyncCallbackStack(uint32_t size, uint32_t alignment = 16u);
+ 
+     void drainCompletedDmacHandlers(uint8_t *rdram);
+@@ -513,8 +515,11 @@ private:
+     uint32_t m_guestHeapLimit = PS2_RAM_SIZE;
+     uint32_t m_guestHeapSuggestedBase = 0x00100000u;
+     bool m_guestHeapConfigured = false;
+-    uint32_t m_asyncCallbackStackFloor = 0x01F00000u;
+-    uint32_t m_asyncCallbackStackTop = PS2_RAM_SIZE;
++    // Highest address the guest heap may reach (lowered to the main stack).
++    uint32_t m_guestHeapHardLimit = PS2_RAM_SIZE;
++    // Callback stacks: a window of EE kernel RAM (ps2_kernel_ram.h).
++    uint32_t m_asyncCallbackStackFloor = 0x00060000u;
++    uint32_t m_asyncCallbackStackTop = 0x00080000u;
+ 
+     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
+     std::atomic<bool> m_missingFunctionReported{false};
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
+index dc975ed..eaa307a 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
+@@ -4,8 +4,11 @@
+ #include "../../ps2_iop_transport.h"
+ #include "runtime/ps2_address.h"
+ #include "runtime/ee_scheduler.h"
++#include "ps2_kernel_ram.h"
+ 
+ #include <algorithm>
++#include <array>
++#include <iostream>
+ #include <cstring>
+ #include <limits>
+ #include <vector>
+@@ -65,6 +68,37 @@ namespace ps2_stubs
+         std::mutex g_sifDmaTransferMutex;
+         uint32_t g_nextSifDmaTransferId = 1u;
+         std::mutex g_sifCmdStateMutex;
++
++        // Packets handed to EE SIF command handlers live in a fixed pool in EE
++        // kernel RAM (ps2_kernel_ram.h). They used to come from guestMalloc,
++        // whose blocks start at the game's heap base: a game with its own
++        // malloc/sbrk (newlib) had those packets written over its heap.
++        std::mutex g_sifCmdPacketPoolMutex;
++        std::array<bool, ps2_kernel_ram::kSifCmdPacketSlotCount> g_sifCmdPacketSlotUsed{};
++
++        uint32_t allocSifCmdPacket()
++        {
++            std::lock_guard<std::mutex> lock(g_sifCmdPacketPoolMutex);
++            for (uint32_t slot = 0; slot < g_sifCmdPacketSlotUsed.size(); ++slot)
++            {
++                if (!g_sifCmdPacketSlotUsed[slot])
++                {
++                    g_sifCmdPacketSlotUsed[slot] = true;
++                    return ps2_kernel_ram::kSifCmdPacketPoolBase + slot * ps2_kernel_ram::kSifCmdPacketSlotBytes;
++                }
++            }
++            return 0u;
++        }
++
++        void freeSifCmdPacket(uint32_t address)
++        {
++            if (address < ps2_kernel_ram::kSifCmdPacketPoolBase)
++                return;
++            const uint32_t slot = (address - ps2_kernel_ram::kSifCmdPacketPoolBase) / ps2_kernel_ram::kSifCmdPacketSlotBytes;
++            std::lock_guard<std::mutex> lock(g_sifCmdPacketPoolMutex);
++            if (slot < g_sifCmdPacketSlotUsed.size())
++                g_sifCmdPacketSlotUsed[slot] = false;
++        }
+         std::unordered_map<uint32_t, uint32_t> g_sifRegs;
+         std::unordered_map<uint32_t, uint32_t> g_sifSregs;
+         struct SifCmdHandler
+@@ -247,15 +281,20 @@ namespace ps2_stubs
+         if (!runtime->hasFunction(registered.function))
+             return false;
+ 
+-        const uint32_t packetAddress = runtime->guestMalloc(static_cast<uint32_t>(packetSize), 16u);
++        const uint32_t packetAddress = allocSifCmdPacket();
+         if (packetAddress == 0u)
++        {
++            std::cerr << "[SIF] no free SIF command packet slot (all "
++                      << ps2_kernel_ram::kSifCmdPacketSlotCount << " in use); command 0x"
++                      << std::hex << commandId << std::dec << " dropped" << std::endl;
+             return false;
++        }
+ 
+         uint8_t *const first = getMemPtr(rdram, packetAddress);
+         uint8_t *const last = getMemPtr(rdram, packetAddress + static_cast<uint32_t>(packetSize - 1u));
+         if (!first || !last || last < first || static_cast<size_t>(last - first) != packetSize - 1u)
+         {
+-            runtime->guestFree(packetAddress);
++            freeSifCmdPacket(packetAddress);
+             return false;
+         }
+ 
+@@ -275,16 +314,16 @@ namespace ps2_stubs
+             SET_GPR_U32(&invocation.context, 7, 0u);
+             SET_GPR_U32(&invocation.context, 29, 0u);
+             SET_GPR_U32(&invocation.context, 31, 0u);
+-            invocation.onComplete = [runtime, packetAddress](const R5900Context &, R5900Context &)
++            invocation.onComplete = [packetAddress](const R5900Context &, R5900Context &)
+             {
+-                runtime->guestFree(packetAddress);
++                freeSifCmdPacket(packetAddress);
+             };
+             runtime->eeScheduler().queueInvocation(std::move(invocation));
+             return true;
+         }
+         catch (...)
+         {
+-            runtime->guestFree(packetAddress);
++            freeSifCmdPacket(packetAddress);
+             return false;
+         }
+     }
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
+index d6b7549..91caa0b 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
+@@ -3,6 +3,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++#include "ps2_kernel_ram.h"
++
+ // Thread status
+ #define THS_RUN 0x01
+ #define THS_READY 0x02
+@@ -243,21 +245,23 @@ inline std::filesystem::path g_cdrom_cwd;
+ inline std::string g_ps2_cwd_device = "host0";
+ 
+ static constexpr uint32_t kRpcPacketSize = 64;
+-static constexpr uint32_t kRpcPacketPoolBase = 0x01F00000;
+-static constexpr uint32_t kRpcPacketPoolBytes = 0x00010000;
++// The runtime's own guest data lives in EE kernel RAM (ps2_kernel_ram.h), not
++// at the top of user RAM where the game's heap grows.
++static constexpr uint32_t kRpcPacketPoolBase = ps2_kernel_ram::kRpcPacketPoolBase;
++static constexpr uint32_t kRpcPacketPoolBytes = ps2_kernel_ram::kRpcPacketPoolBytes;
+ static constexpr uint32_t kRpcPacketPoolCount = kRpcPacketPoolBytes / kRpcPacketSize;
+-static constexpr uint32_t kRpcServerPoolBase = 0x01F10000;
+-static constexpr uint32_t kRpcServerPoolBytes = 0x00010000;
++static constexpr uint32_t kRpcServerPoolBase = ps2_kernel_ram::kRpcServerPoolBase;
++static constexpr uint32_t kRpcServerPoolBytes = ps2_kernel_ram::kRpcServerPoolBytes;
+ static constexpr uint32_t kRpcServerStride = 0x80;
+ static constexpr uint32_t kRpcServerPoolCount = kRpcServerPoolBytes / kRpcServerStride;
+ 
+-static constexpr uint32_t kTlsPoolBase = 0x01F20000;
+-static constexpr uint32_t kTlsPoolBytes = 0x00010000;
++static constexpr uint32_t kTlsPoolBase = ps2_kernel_ram::kTlsPoolBase;
++static constexpr uint32_t kTlsPoolBytes = ps2_kernel_ram::kTlsPoolBytes;
+ static constexpr uint32_t kTlsBlockSize = 0x100;
+ static constexpr uint32_t kTlsPoolCount = kTlsPoolBytes / kTlsBlockSize;
+ 
+-static constexpr uint32_t kBootModePoolBase = 0x01F30000;
+-static constexpr uint32_t kBootModePoolBytes = 0x00001000;
++static constexpr uint32_t kBootModePoolBase = ps2_kernel_ram::kBootModePoolBase;
++static constexpr uint32_t kBootModePoolBytes = ps2_kernel_ram::kBootModePoolBytes;
+ 
+ static constexpr uint32_t kSifRpcModeNowait = 0x01;
+ static constexpr uint32_t kSifRpcModeNoWbDc = 0x02;
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+index 9614016..aedc6f9 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp
+@@ -531,6 +531,13 @@ namespace ps2_syscalls
+         }
+ 
+         scheduler.setupCurrentThread(initialStack, stackSize, getRegU32(ctx, 28));
++        if (stack == 0xFFFFFFFFu && runtime)
++        {
++            // The stack was placed at the top of RAM: the heap ("rest of RAM"
++            // in SetupHeap) has to end below its lowest address.
++            const uint32_t stackFloor = (stackSize < sp) ? (sp - stackSize) : 0u;
++            runtime->limitGuestHeapBelow(stackFloor);
++        }
+         setReturnU32(ctx, sp);
+     }
+ 
+@@ -543,7 +550,9 @@ namespace ps2_syscalls
+         const uint32_t heapBase = (heapBaseRaw + 0xFu) & ~0xFu;
+ 
+         // Silent Hill and other games often pass -1 (0xFFFFFFFF) to mean "rest of RAM".
+-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
++        // "Rest of RAM" ends at the main thread's stack: configureGuestHeap clamps
++        // to it (PS2Runtime::limitGuestHeapBelow, called by SetupThread).
++        static constexpr uint32_t kDefaultGuestHeapEnd = PS2_RAM_SIZE;
+         uint32_t heapLimit = kDefaultGuestHeapEnd;
+ 
+         if (heapSize != 0u && heapSize != 0xFFFFFFFFu)
+@@ -583,7 +592,7 @@ namespace ps2_syscalls
+     {
+         (void)rdram;
+ 
+-        static constexpr uint32_t kDefaultGuestHeapEnd = 0x01F00000u;
++        static constexpr uint32_t kDefaultGuestHeapEnd = PS2_RAM_SIZE;
+ 
+         const uint32_t ret = runtime
+                                  ? runtime->guestHeapLimit()
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 45cb9d2..1cf4bd4 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -1,4 +1,5 @@
+ #include "ps2_runtime.h"
++#include "ps2_kernel_ram.h"
+ #include "ps2_log.h"
+ #include "ps2_stubs.h"
+ #include "ps2_syscalls.h"
+@@ -90,7 +91,6 @@ namespace
+     constexpr uint32_t kGuestHeapDefaultBase = 0x00100000u;
+     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
+     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
+-    constexpr uint32_t kGuestHeapHardLimit = 0x01F00000u;
+ 
+     constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
+     constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
+@@ -500,11 +500,14 @@ PS2Runtime::PS2Runtime()
+     m_guestHeapBlocks.clear();
+     m_guestHeapBase = kGuestHeapDefaultBase;
+     m_guestHeapEnd = kGuestHeapDefaultBase;
+-    m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
++    // Until SetupThread places the main stack, the heap may use all of RAM
++    // above the program: the runtime's own guest data is in kernel RAM.
++    m_guestHeapHardLimit = PS2_RAM_SIZE;
++    m_guestHeapLimit = m_guestHeapHardLimit;
+     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
+     m_guestHeapConfigured = false;
+-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
++    m_asyncCallbackStackFloor = ps2_kernel_ram::kCallbackStackFloor;
++    m_asyncCallbackStackTop = ps2_kernel_ram::kCallbackStackTop;
+ }
+ 
+ void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
+@@ -962,7 +965,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+         std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+         if (!m_guestHeapConfigured)
+         {
+-            const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
++            const uint32_t hardLimit = std::min(m_guestHeapHardLimit, PS2_RAM_SIZE);
+             m_guestHeapSuggestedBase = std::min(suggestedHeapBase, hardLimit);
+             m_guestHeapBase = m_guestHeapSuggestedBase;
+             m_guestHeapEnd = m_guestHeapSuggestedBase;
+@@ -970,10 +973,11 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+         }
+     }
+     {
++        // Callback and interrupt-handler stacks come from EE kernel RAM,
++        // like the console kernel's own stacks (ps2_kernel_ram.h).
+         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
+-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
+-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
+-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
++        m_asyncCallbackStackFloor = ps2_kernel_ram::kCallbackStackFloor;
++        m_asyncCallbackStackTop = ps2_kernel_ram::kCallbackStackTop;
+     }
+ 
+     LoadedModule module;
+@@ -1622,13 +1626,13 @@ uint32_t PS2Runtime::clampGuestHeapBase(uint32_t guestBase) const
+     {
+         normalized &= PS2_RAM_MASK;
+     }
+-    const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
++    const uint32_t hardLimit = std::min(m_guestHeapHardLimit, PS2_RAM_SIZE);
+     return std::min(normalized, hardLimit);
+ }
+ 
+ uint32_t PS2Runtime::clampGuestHeapLimit(uint32_t guestLimit) const
+ {
+-    const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
++    const uint32_t hardLimit = std::min(m_guestHeapHardLimit, PS2_RAM_SIZE);
+     if (guestLimit == 0u || guestLimit > hardLimit)
+     {
+         return hardLimit;
+@@ -1969,6 +1973,23 @@ uint32_t PS2Runtime::guestHeapEnd() const
+     return m_guestHeapConfigured ? m_guestHeapEnd : m_guestHeapSuggestedBase;
+ }
+ 
++void PS2Runtime::limitGuestHeapBelow(uint32_t guestAddr)
++{
++    // The heap must stop where the main thread's stack starts (SetupThread
++    // with stack = -1 puts that stack at the top of RAM).
++    std::lock_guard<std::mutex> lock(m_guestHeapMutex);
++    const uint32_t limit = std::min(guestAddr & ~(kGuestHeapDefaultAlignment - 1u), PS2_RAM_SIZE);
++    if (limit == 0u)
++    {
++        return;
++    }
++    m_guestHeapHardLimit = limit;
++    if (m_guestHeapLimit > limit)
++    {
++        m_guestHeapLimit = limit;
++    }
++}
++
+ uint32_t PS2Runtime::guestHeapLimit() const
+ {
+     std::lock_guard<std::mutex> lock(m_guestHeapMutex);
+diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
+index 113cc88..3ef0d03 100644
+--- a/ps2xTest/src/ps2_gs_tests.cpp
++++ b/ps2xTest/src/ps2_gs_tests.cpp
+@@ -1,3 +1,4 @@
++#include "ps2_kernel_ram.h"
+ #include "MiniTest.h"
+ #include "runtime/ps2_memory.h"
+ #include "ps2_runtime.h"
+@@ -4194,8 +4195,9 @@ void register_ps2_gs_tests()
+                      "VSync callback should receive a positive tick value");
+             t.Equals(g_gsSyncCallbackGp.load(std::memory_order_acquire), kGsCallbackGp,
+                      "callback invocation should preserve the registered GP");
+-            t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) >= 0x01F00000u,
+-                     "callback invocation should use the reserved async stack pool");
++            t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) >= ps2_kernel_ram::kCallbackStackFloor &&
++                         g_gsSyncCallbackSp.load(std::memory_order_acquire) < ps2_kernel_ram::kCallbackStackTop,
++                     "callback invocation should use the reserved async stack pool in kernel RAM");
+             t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) != kGsCallbackCallerSp,
+                      "callback invocation must not reuse the caller stack");
+         });

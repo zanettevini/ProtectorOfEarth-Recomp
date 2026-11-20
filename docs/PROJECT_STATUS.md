@@ -6,9 +6,10 @@ starts running on Linux; the boot gets through SIF, RPC, CD init, the IOP
 reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 `GAME.WAD`, loads the 8 IOP modules, sets the video mode, opens the pads,
 reads the game's data through a native replacement of CDARB's EE reads,
-runs about 2,900 frames, and then the game exits through C++
-`std::terminate` while parsing `99_99.pss`; nothing on screen yet
-(findings/15 s.14, findings/17 s.7).
+and draws its first screen: the memory card warning (findings/15 s.16).
+On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
+because the game's heap needs the memory the runtime kept at the top of RAM
+(findings/15 s.15).
 
 Read first: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (what is known about the
 game) and the [README](../README.md#-going-native) board.
@@ -25,6 +26,8 @@ game) and the [README](../README.md#-going-native) board.
   submodule, 5 patches applied by CMake; full build; end-to-end
   per-instruction tests; 4 translator bugs found and fixed
   ([findings/14](findings/14-repository-build-and-tests.md)).
+- First screen: the memory card warning, drawn by the game
+  ([findings/15](findings/15-first-boot.md) s.16).
 - First boot: 23 Sony library functions (libsif, libcdvd, IOP reboot)
   identified with evidence and bound to runtime handlers; the boot moved
   past 4 blockers ([findings/15](findings/15-first-boot.md)).
@@ -34,24 +37,24 @@ game) and the [README](../README.md#-going-native) board.
 
 | What | Where | Result |
 |---|---|---|
-| `ctest` (34 cases: 33 active, 1 disabled on purpose) | Linux, GCC 13 | **33/33 pass** |
+| `ctest` (36 cases: 33 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **35/35 pass** |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0006 (built separately) | Linux, GCC 13 | **446/446 pass** (run from `ps2xTest/`) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 5 applied on a clean submodule; nothing re-applied on the 2nd configure |
+| Patches applied by CMake | Linux | 0001-0006 apply in order on a clean checkout of the pinned commit (`git apply` on a worktree) |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 
 **Untested**: everything on Windows except the study version of the disc
 collection (MSVC, `ghidra_analyze.ps1`, the repository version of
-`collect_disc.ps1`); an optimised build; a run with the full disc
-(the full disc data is now on the test machine; nothing past the pad
-wait has run yet).
+`collect_disc.ps1`); an optimised build; the first screen compared with
+PCSX2; anything past the memory card warning.
 
 ## Unresolved
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md): temporary debts T1 (interpreted
-IOP) and T2 (interpreted VU), risks R10-R14.
+IOP) and T2 (interpreted VU), risks R10-R20.
 
 ## Next task
 

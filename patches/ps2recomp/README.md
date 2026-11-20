@@ -13,8 +13,11 @@ fix and how it was found.
 | `0003-sqrt-s-reads-ft.patch` | SQRT.S reads its operand from `ft` (R5900), not `fs` | findings/14 s.5 |
 | `0004-cvt-w-s-truncate-and-saturate.patch` | CVT.W.S truncates toward zero and saturates | findings/14 s.5 |
 | `0005-padduh-psubuh-saturate.patch` | PADDUH/PSUBUH saturate | findings/14 s.5 |
+| `0006-kernel-data-in-kernel-ram.patch` | The runtime's own guest data (RPC/TLS pools, SIF command packets, callback stacks) moves to EE kernel RAM; the game's heap may grow up to the main stack | findings/15 s.15 |
 
-Patches 0002-0005 fix PS2 behaviour and should also go to upstream
+Patches 0002-0006 fix PS2 behaviour and should also go to upstream
 PS2Recomp.
 
-To undo them all: `git -C thirdparty/PS2Recomp checkout .`
+To undo them all: `git -C thirdparty/PS2Recomp checkout .`, then
+`git -C thirdparty/PS2Recomp clean -f ps2xRuntime/include/ps2_kernel_ram.h`
+(the one new file, from 0006).
