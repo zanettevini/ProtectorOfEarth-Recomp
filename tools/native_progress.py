@@ -1,105 +1,106 @@
 #!/usr/bin/env python3
-"""native_progress.py: o painel "Rumo ao nativo" e os marcos do README.
+"""native_progress.py: the README's "Going native" board and milestones.
 
-O QUE MEDE
-    O código do jogo (o EE, a CPU principal) é traduzido para C++ antes de
-    rodar: essa parte já é nativa por construção. O que ainda finge ser um
-    PS2 é o resto do console em volta dele: o IOP e seus módulos, as
-    unidades vetoriais (VU), o chip gráfico (GS), o som, o controle, o
-    memory card. Ir para o nativo = o port responder cada peça com o próprio
-    código de PC, sem emular o hardware.
+WHAT IT MEASURES
+    The game's code (the EE, the main CPU) is translated to C++ before it
+    runs: that part is native by construction. What still pretends to be a
+    PS2 is the rest of the console around it: the IOP and its modules, the
+    vector units (VU), the graphics chip (GS), sound, controllers, memory
+    card. Going native = the port answering each piece with its own PC code,
+    without emulating the hardware.
 
-    Cada PEÇA tem itens. Um item conta como FEITO só quando é código do port
-    que responde (status "nativo"). Os outros status:
-        "emulado"       o PS2Recomp imita o hardware (genérico, em C++)
-        "interpretado"  roda por interpretador (dívida temporária: ver
+    Each PIECE has items. An item counts as DONE only when the port's own
+    code answers it (status "native"). The other statuses:
+        "emulated"      PS2Recomp imitates the hardware (generic, in C++)
+        "interpreted"   runs on an interpreter (temporary debt: see
                         docs/KNOWN_ISSUES.md T1/T2)
-        "stub"          só finge responder
-        "a medir"       ainda não sabemos como a primeira execução trata
+        "stub"          only pretends to answer
+        "to measure"    not known yet how the boot handles it
 
-    NÃO CONTA nas barras: o kernel do EE (42 syscalls como CreateThread,
-    WaitSema...). O runtime já os traduz 1:1 para o PC (findings/12 s.3),
-    como o "kernel basics" do Mind over Recomp.
+    NOT COUNTED: the EE kernel (42 syscalls such as CreateThread,
+    WaitSema...). The runtime already translates them 1:1 to the PC
+    (findings/12 s.3), like Mind over Recomp's "kernel basics".
 
-    Mude o status aqui SÓ com evidência (um finding, um teste, um log), e
-    rode --readme para atualizar o README.
+    Change a status here ONLY with evidence (a finding, a test, a log), then
+    run --readme to update the README.
 
-USO
-    python3 tools/native_progress.py            mostra a tabela
-    python3 tools/native_progress.py --readme   reescreve o bloco entre
-        <!-- native-progress:begin --> e <!-- native-progress:end --> no README.md
+USAGE
+    python3 tools/native_progress.py            print the board
+    python3 tools/native_progress.py --readme   rewrite the block between
+        <!-- native-progress:begin --> and <!-- native-progress:end --> in README.md
 
-Inspirado em tools/native_progress.py do Mind over Recomp (GPL-3.0).
+Inspired by Mind over Recomp's tools/native_progress.py (GPL-3.0).
 """
 import argparse
 import sys
 from pathlib import Path
 
 # -----------------------------------------------------------------------------
-# Marcos do caminho até jogar (estilo do BT2 Recomp)
-# status: "feito" | "andamento" | "pendente"
+# Milestones on the way to playing (in the style of BT2 Recomp)
+# status: "done" | "in progress" | "pending"
 # -----------------------------------------------------------------------------
 MILESTONES = [
-    ("Análise do executável", "feito",
-     "4.420 funções; tabela da API de script (findings/09-12)"),
-    ("Tradução para C++", "feito",
-     "0 instruções não suportadas (findings/13)"),
-    ("Build completo", "feito",
-     "o C++ gerado + runtime compilam e ligam no Linux (findings/14); Windows: não testado"),
-    ("Testes por instrução", "andamento",
-     "33 testes de ponta a ponta; 4 erros do tradutor achados e corrigidos (findings/14)"),
-    ("Boot", "pendente", "o programa inicia e roda o código do jogo"),
-    ("Primeiro frame", "pendente", "a primeira imagem do jogo na tela"),
-    ("Menu principal", "pendente", ""),
-    ("Fase jogável", "pendente", ""),
+    ("Executable analysis", "done",
+     "4,420 functions; the script API table (findings/09-12)"),
+    ("Translation to C++", "done",
+     "0 unsupported instructions (findings/13)"),
+    ("Full build", "done",
+     "the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested"),
+    ("Per-instruction tests", "in progress",
+     "33 end-to-end tests; 4 translator bugs found and fixed (findings/14)"),
+    ("Boot", "in progress",
+     "the game code runs through SIF, RPC and CD init; Sony library functions bound to the runtime (findings/15)"),
+    ("First frame", "pending", "the game's first picture on screen"),
+    ("Main menu", "pending", ""),
+    ("Playable level", "pending", ""),
 ]
 
 # -----------------------------------------------------------------------------
-# As peças do PS2: (título, o que vira, [(item, status)])
+# The PS2 pieces: (title, what it becomes, [(item, status)])
 # -----------------------------------------------------------------------------
 PIECES = [
-    ("Módulos do IOP",
-     "serviços do port respondendo cada pedido (RPC) do jogo, sem rodar os IRX",
-     [("SIO2MAN (barramento de controle e memory card)", "a medir"),
-      ("MTAPMAN (multitap)", "a medir"),
-      ("PADMAN (controles)", "a medir"),
-      ("MCMAN (memory card)", "a medir"),
-      ("MCSERV (memory card, servidor)", "a medir"),
-      ("LIBSD (chip de som)", "a medir"),
-      ("CDARB (acesso ao disco, do motor)", "a medir"),
-      ("ALASD (driver de áudio, do motor)", "a medir")]),
-    ("Microprogramas de VU",
-     "C++ traduzido no build a partir da tabela .DVP.ovlytab (findings/11)",
-     [("programa A", "interpretado"), ("programa B", "interpretado"),
-      ("programa C", "interpretado"), ("programa D (VU1)", "interpretado"),
-      ("programa E", "interpretado"), ("programa F (VU1)", "interpretado"),
-      ("programa G", "interpretado"), ("programa H (VU1)", "interpretado"),
-      ("programa I (VU1)", "interpretado")]),
-    ("Gráficos (GS)",
-     "o renderizador Vulkan do port",
-     [("saída de vídeo (modo, framebuffer na tela)", "emulado"),
-      ("pacotes GIF para desenho", "emulado"),
-      ("texturas e paletas", "emulado"),
-      ("mistura, profundidade, recorte", "emulado")]),
-    ("Som",
-     "cada quadro de áudio direto para a saída do PC",
-     [("mixagem e saída (SPU2)", "emulado")]),
-    ("Controles",
-     "SDL3: teclado, mouse e qualquer controle",
-     [("leitura do controle", "emulado")]),
+    ("IOP modules",
+     "port services answering each request (RPC) of the game, without running the IRX",
+     [("SIO2MAN (controller and memory card bus)", "to measure"),
+      ("MTAPMAN (multitap)", "to measure"),
+      ("PADMAN (controllers)", "to measure"),
+      ("MCMAN (memory card)", "to measure"),
+      ("MCSERV (memory card, server)", "to measure"),
+      ("LIBSD (sound chip)", "to measure"),
+      ("CDARB (disc access, engine's own)", "to measure"),
+      ("ALASD (audio driver, engine's own)", "to measure")]),
+    ("VU microprograms",
+     "C++ translated at build time from the .DVP.ovlytab table (findings/11)",
+     [("program A", "interpreted"), ("program B", "interpreted"),
+      ("program C", "interpreted"), ("program D (VU1)", "interpreted"),
+      ("program E", "interpreted"), ("program F (VU1)", "interpreted"),
+      ("program G", "interpreted"), ("program H (VU1)", "interpreted"),
+      ("program I (VU1)", "interpreted")]),
+    ("Graphics (GS)",
+     "the port's Vulkan renderer",
+     [("video output (mode, framebuffer on screen)", "emulated"),
+      ("GIF packets to drawing", "emulated"),
+      ("textures and palettes", "emulated"),
+      ("blending, depth, scissor", "emulated")]),
+    ("Sound",
+     "each audio frame straight to the PC's output",
+     [("mixing and output (SPU2)", "emulated")]),
+    ("Controllers",
+     "SDL3: keyboard, mouse and any controller",
+     [("controller reads", "emulated")]),
     ("Saves",
-     "arquivos de save no PC, sem memory card",
-     [("memory card", "emulado")]),
-    ("Vídeos",
-     "decodificador de vídeo do PC (se o jogo tiver vídeos MPEG)",
-     [("IPU / MPEG", "a medir")]),
+     "save files on the PC, no memory card",
+     [("memory card", "emulated")]),
+    ("Videos",
+     "the PC's video decoder (if the game has MPEG videos)",
+     [("IPU / MPEG", "to measure")]),
 ]
 
-NOT_COUNTED = "42 syscalls do kernel do EE (threads, semáforos, interrupções), já traduzidos 1:1 pelo runtime"
+NOT_COUNTED = "42 EE kernel syscalls (threads, semaphores, interrupts), already translated 1:1 by the runtime"
 
 BEGIN = "<!-- native-progress:begin -->"
 END = "<!-- native-progress:end -->"
-ICON = {"feito": "✅", "andamento": "🔧", "pendente": "⏳"}
+ICON = {"done": "✅", "in progress": "🔧", "pending": "⏳"}
 
 
 def bar(done, total, width=10):
@@ -109,33 +110,33 @@ def bar(done, total, width=10):
 
 def render():
     lines = [BEGIN,
-             "<!-- Escrito por tools/native_progress.py --readme: edite a ferramenta, não este bloco. -->",
+             "<!-- Written by tools/native_progress.py --readme: edit the tool, not this block. -->",
              "",
-             "| Marco | | Situação |",
+             "| Milestone | | Status |",
              "|---|---|---|"]
     for name, status, note in MILESTONES:
         lines.append(f"| {name} | {ICON[status]} | {note} |")
 
     total = sum(len(items) for _, _, items in PIECES)
-    done = sum(1 for _, _, items in PIECES for _, st in items if st == "nativo")
+    done = sum(1 for _, _, items in PIECES for _, st in items if st == "native")
     pct = round(100 * done / total) if total else 0
     lines += ["",
-              f"**Peças do PS2 substituídas por código do port: {done} de {total} ({pct}%)** `{bar(done, total)}`",
+              f"**PS2 pieces replaced by the port's own code: {done} of {total} ({pct}%)** `{bar(done, total)}`",
               "",
-              "| Peça do PS2 | Substituído | Vira |",
+              "| PS2 piece | Replaced | Becomes |",
               "|---|---|---|"]
     for title, becomes, items in PIECES:
-        d = sum(1 for _, st in items if st == "nativo")
+        d = sum(1 for _, st in items if st == "native")
         lines.append(f"| {title} | `{bar(d, len(items))}` {d} / {len(items)} | {becomes} |")
     lines += ["",
-              f"Não contado: {NOT_COUNTED}.",
+              f"Not counted: {NOT_COUNTED}.",
               END]
     return "\n".join(lines)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Painel de progresso do README")
-    ap.add_argument("--readme", action="store_true", help="reescreve o bloco no README.md")
+    ap = argparse.ArgumentParser(description="README progress board")
+    ap.add_argument("--readme", action="store_true", help="rewrite the block in README.md")
     a = ap.parse_args()
     block = render()
     if not a.readme:
@@ -149,12 +150,12 @@ def main():
     readme = Path(__file__).resolve().parent.parent / "README.md"
     text = readme.read_text(encoding="utf-8")
     if BEGIN not in text or END not in text:
-        print("README.md sem os marcadores native-progress", file=sys.stderr)
+        print("README.md has no native-progress markers", file=sys.stderr)
         return 1
     head, rest = text.split(BEGIN, 1)
     _, tail = rest.split(END, 1)
     readme.write_text(head + block + tail, encoding="utf-8")
-    print("README.md atualizado")
+    print("README.md updated")
     return 0
 
 

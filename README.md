@@ -2,92 +2,92 @@
 
 # Protector of Earth Recomp
 
-**Um port nativo não oficial de *Ben 10: Protector of Earth* para PC**<br>
-<sub>PlayStation 2 · 2007 · High Voltage Software: recompilado estaticamente, depois reconstruído peça por peça com código nativo</sub>
+**An unofficial native PC port of *Ben 10: Protector of Earth***<br>
+<sub>PlayStation 2 · 2007 · High Voltage Software: statically recompiled, then rebuilt piece by piece with native code</sub>
 
 <br>
 
-![Plataformas](https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux-blue)
-![Situação](https://img.shields.io/badge/situa%C3%A7%C3%A3o-em%20desenvolvimento-red)
-![Licença](https://img.shields.io/badge/licen%C3%A7a-GPL--3.0-green)
-![Feito com PS2Recomp](https://img.shields.io/badge/feito%20com-PS2Recomp-8A2BE2)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue)
+![Status](https://img.shields.io/badge/status-in%20development-red)
+![License](https://img.shields.io/badge/license-GPL--3.0-green)
+![Built with PS2Recomp](https://img.shields.io/badge/built%20with-PS2Recomp-8A2BE2)
 
-**[Sobre](#-sobre)** · **[Rumo ao nativo](#-rumo-ao-nativo)** · **[Compilar](#%EF%B8%8F-compilar)** · **[Documentação](#-documenta%C3%A7%C3%A3o)** · **[Contribuir](#-contribuir)**
+**[About](#-about)** · **[Going native](#-going-native)** · **[Building](#%EF%B8%8F-building)** · **[Documentation](#-documentation)** · **[Contributing](#-contributing)**
 
 </div>
 
 <br>
 
 > [!WARNING]
-> **Ainda não dá para jogar.** O código do jogo já é traduzido para C++ e compila inteiro, mas o programa ainda não foi executado. Veja os marcos abaixo.
+> **Not playable yet.** The game's code is translated to C++, compiles in full and starts running, but the boot does not reach the first frame yet. See the milestones below.
 
 > [!IMPORTANT]
-> **Nenhum arquivo do jogo está incluído.** É preciso o seu próprio disco de *Ben 10: Protector of Earth* (PS2, **EUA**, SLUS-21661) copiado para um `.iso`. O jogo é montado no seu computador a partir dele.
+> **No game files are included.** You need your own disc of *Ben 10: Protector of Earth* (PS2, **USA**, SLUS-21661) dumped to an `.iso`. The game is built on your computer from it.
 
-## 📖 Sobre
+## 📖 About
 
-*Ben 10: Protector of Earth* saiu no PlayStation 2, PSP e Wii, mas nunca no PC. O **Protector of Earth Recomp** quer preservá-lo como um jogo de PC de verdade.
+*Ben 10: Protector of Earth* came out on PlayStation 2, PSP and Wii, but never on PC. **Protector of Earth Recomp** aims to preserve it as a real PC game.
 
-Não é um emulador: o programa do PS2 é [traduzido para C++ antes de rodar](docs/02-how-the-port-works.md) pelo [PS2Recomp](https://github.com/ran-j/PS2Recomp) e compilado como um programa nativo de Windows ou Linux. As partes que ainda fingem ser um PS2 (o processador de entrada e saída, as unidades vetoriais, o chip gráfico, o som) são trocadas, uma a uma, pelo código do próprio port.
+It isn't an emulator: the PS2 program is [translated into C++ ahead of time](docs/02-how-the-port-works.md) by [PS2Recomp](https://github.com/ran-j/PS2Recomp) and built as a native Windows or Linux program. The parts that still pretend to be a PS2 (the I/O processor, the vector units, the graphics chip, the sound) are then replaced, one by one, with the port's own code.
 
-O projeto segue a organização do [Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp): tudo o que se descobre sobre o jogo vira uma nota em [docs/findings/](docs/findings/README.md).
+The project follows the organisation of [Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp): everything learned about the game becomes a note in [docs/findings/](docs/findings/README.md).
 
-## 🧩 Rumo ao nativo
+## 🧩 Going native
 
-O código do jogo já é traduzido para C++. O que ainda é emulado é o **PS2 em volta dele**: cada peça que o port responde com o próprio código é um pedaço a menos de PS2 de mentira.
+The game's code is already translated to C++. What is still emulated is the **PS2 around it**: each piece the port answers with its own code is one less piece of pretend PS2.
 
 <!-- native-progress:begin -->
-<!-- Escrito por tools/native_progress.py --readme: edite a ferramenta, não este bloco. -->
+<!-- Written by tools/native_progress.py --readme: edit the tool, not this block. -->
 
-| Marco | | Situação |
+| Milestone | | Status |
 |---|---|---|
-| Análise do executável | ✅ | 4.420 funções; tabela da API de script (findings/09-12) |
-| Tradução para C++ | ✅ | 0 instruções não suportadas (findings/13) |
-| Build completo | ✅ | o C++ gerado + runtime compilam e ligam no Linux (findings/14); Windows: não testado |
-| Testes por instrução | 🔧 | 33 testes de ponta a ponta; 4 erros do tradutor achados e corrigidos (findings/14) |
-| Boot | ⏳ | o programa inicia e roda o código do jogo |
-| Primeiro frame | ⏳ | a primeira imagem do jogo na tela |
-| Menu principal | ⏳ |  |
-| Fase jogável | ⏳ |  |
+| Executable analysis | ✅ | 4,420 functions; the script API table (findings/09-12) |
+| Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
+| Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
+| Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
+| Boot | 🔧 | the game code runs through SIF, RPC and CD init; Sony library functions bound to the runtime (findings/15) |
+| First frame | ⏳ | the game's first picture on screen |
+| Main menu | ⏳ |  |
+| Playable level | ⏳ |  |
 
-**Peças do PS2 substituídas por código do port: 0 de 25 (0%)** `▱▱▱▱▱▱▱▱▱▱`
+**PS2 pieces replaced by the port's own code: 0 of 25 (0%)** `▱▱▱▱▱▱▱▱▱▱`
 
-| Peça do PS2 | Substituído | Vira |
+| PS2 piece | Replaced | Becomes |
 |---|---|---|
-| Módulos do IOP | `▱▱▱▱▱▱▱▱▱▱` 0 / 8 | serviços do port respondendo cada pedido (RPC) do jogo, sem rodar os IRX |
-| Microprogramas de VU | `▱▱▱▱▱▱▱▱▱▱` 0 / 9 | C++ traduzido no build a partir da tabela .DVP.ovlytab (findings/11) |
-| Gráficos (GS) | `▱▱▱▱▱▱▱▱▱▱` 0 / 4 | o renderizador Vulkan do port |
-| Som | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | cada quadro de áudio direto para a saída do PC |
-| Controles | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | SDL3: teclado, mouse e qualquer controle |
-| Saves | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | arquivos de save no PC, sem memory card |
-| Vídeos | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | decodificador de vídeo do PC (se o jogo tiver vídeos MPEG) |
+| IOP modules | `▱▱▱▱▱▱▱▱▱▱` 0 / 8 | port services answering each request (RPC) of the game, without running the IRX |
+| VU microprograms | `▱▱▱▱▱▱▱▱▱▱` 0 / 9 | C++ translated at build time from the .DVP.ovlytab table (findings/11) |
+| Graphics (GS) | `▱▱▱▱▱▱▱▱▱▱` 0 / 4 | the port's Vulkan renderer |
+| Sound | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | each audio frame straight to the PC's output |
+| Controllers | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | SDL3: keyboard, mouse and any controller |
+| Saves | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | save files on the PC, no memory card |
+| Videos | `▱▱▱▱▱▱▱▱▱▱` 0 / 1 | the PC's video decoder (if the game has MPEG videos) |
 
-Não contado: 42 syscalls do kernel do EE (threads, semáforos, interrupções), já traduzidos 1:1 pelo runtime.
+Not counted: 42 EE kernel syscalls (threads, semaphores, interrupts), already translated 1:1 by the runtime.
 <!-- native-progress:end -->
 
-## 🛠️ Compilar
+## 🛠️ Building
 
-O passo a passo completo, Windows e Linux, está em **[Compilar](docs/01-building.md)**. É preciso CMake 3.21+, Ninja, Python 3, Git, um compilador C++20 (Visual Studio 2022 ou GCC 13+/Clang) e, para a análise do executável, Ghidra 12.1 com JDK 21.
+The full walkthrough, Windows and Linux, is in **[Building](docs/01-building.md)**. You need CMake 3.21+, Ninja, Python 3, Git, a C++20 compiler (Visual Studio 2022 or GCC 13+/Clang) and, to analyse the executable, Ghidra 12.1 with JDK 21.
 
 <details>
-<summary><b>Comandos do build</b></summary>
+<summary><b>Build commands</b></summary>
 <br>
 
 ```bash
-git clone --recursive <este repositório>
+git clone --recursive https://github.com/zanettevini/ProtectorOfEarth-Recomp.git
 cd ProtectorOfEarth-Recomp
 
-# 1. o executável do SEU disco em game/ (Windows: tools/coletar_disco.ps1)
-# 2. a lista de funções, pelo Ghidra (headless)
-tools/ghidra_analisar.sh            # Windows: tools/ghidra_analisar.ps1
+# 1. the executable from YOUR disc in game/ (Windows: tools/collect_disc.ps1)
+# 2. the function list, from Ghidra (headless)
+tools/ghidra_analyze.sh             # Windows: tools/ghidra_analyze.ps1
 
-# 3. configurar (aplica os patches de patches/ps2recomp sozinho), traduzir, compilar
+# 3. configure (applies patches/ps2recomp by itself), translate, build
 cmake --preset linux-debug
 cmake --build --preset linux-debug --target ben10_codegen
-cmake --preset linux-debug          # de novo: agora acha o código gerado
+cmake --preset linux-debug          # again: now it finds the generated code
 cmake --build --preset linux-debug --target ben10_poe
 
-# testes (não precisam do jogo)
+# tests (no game needed)
 cmake --preset linux-tests && cmake --build --preset linux-tests
 ctest --preset linux-tests
 ```
@@ -95,59 +95,60 @@ ctest --preset linux-tests
 </details>
 
 <details>
-<summary><b>Organização do repositório</b></summary>
+<summary><b>Repository layout</b></summary>
 <br>
 
 ```
-ben10_poe.toml           config do recompilador: cada ajuste, comentado (por que + como achamos)
-CMakeLists.txt           monta o port (código gerado + runtime do PS2Recomp + src/)
-src/                     o código nativo do próprio port (vazio por enquanto)
-tests/                   testes automatizados (GoogleTest): instruções do EE de ponta a ponta
-tools/                   coleta do disco, análise do executável, Ghidra, painel de progresso
-patches/ps2recomp/       nossas correções do PS2Recomp (aplicadas no submódulo pelo CMake)
-docs/                    guias, situação do projeto e as findings sobre o jogo
-thirdparty/PS2Recomp     o recompilador + runtime (submódulo git, fixado)
+ben10_poe.toml           recompiler config: every fix and binding, commented (why + how we found it)
+CMakeLists.txt           builds the port (generated code + PS2Recomp runtime + src/)
+src/                     the port's own native code (empty for now)
+tests/                   automated tests (GoogleTest): EE instructions end to end
+tools/                   disc collection, executable analysis, Ghidra, progress board
+patches/ps2recomp/       our fixes to PS2Recomp (applied to the submodule by CMake)
+docs/                    guides, project status and the findings about the game
+thirdparty/PS2Recomp     the recompiler + runtime (git submodule, pinned)
 
-# feito na sua máquina, nunca versionado:
-*.iso, game/             o seu disco e os arquivos tirados dele
-generated/               o C++ gerado e a análise do Ghidra (é o código do jogo)
-out/, logs/, user/       builds, logs, os SEUS saves e configurações
+# made on your machine, never committed:
+*.iso, game/             your disc and the files taken from it
+generated/               the generated C++ and the Ghidra analysis (it is the game's code)
+out/, logs/, user/       builds, logs, YOUR saves and settings
 ```
 
 </details>
 
-## 📚 Documentação
+## 📚 Documentation
 
 | | |
 |---|---|
-| 🧠 [Como o port funciona](docs/02-how-the-port-works.md) | recompilação estática, explicada |
-| 🔧 [Compilar](docs/01-building.md) | cada passo do build, Windows e Linux |
-| 📍 [Situação do projeto](docs/PROJECT_STATUS.md) | o que está feito, testado e não testado |
-| ➡️ [Próxima tarefa](docs/NEXT_TASK.md) | o próximo passo concreto |
-| 🗺️ [Roteiro](docs/DEVELOPMENT_ROADMAP.md) | as fases do projeto |
-| ⚖️ [Decisões](docs/DECISIONS.md) e [Problemas conhecidos](docs/KNOWN_ISSUES.md) | o que foi escolhido e por quê; o que falta |
-| 🔬 [Findings](docs/findings/README.md) | tudo o que se aprendeu sobre o jogo e o PS2 |
+| 🧠 [How the port works](docs/02-how-the-port-works.md) | static recompilation, explained |
+| 🔧 [Building](docs/01-building.md) | every build step, Windows and Linux |
+| 📍 [Project status](docs/PROJECT_STATUS.md) | what is done, tested and untested |
+| ➡️ [Next task](docs/NEXT_TASK.md) | the next concrete step |
+| 🗺️ [Roadmap](docs/DEVELOPMENT_ROADMAP.md) | the project's phases |
+| ⚖️ [Decisions](docs/DECISIONS.md) and [Known issues](docs/KNOWN_ISSUES.md) | what was chosen and why; what is missing |
+| 🔬 [Findings](docs/findings/README.md) | everything learned about the game and the PS2 |
 
-## 🤝 Contribuir
+## 🤝 Contributing
 
-Contribuições de qualquer tipo são bem-vindas: código, engenharia reversa, testes, relatórios de bug, correções. Antes de um pull request, leia o **[CONTRIBUTING.md](CONTRIBUTING.md)**. Usando um agente de IA? Aponte-o para o **[AGENTS.md](AGENTS.md)**: as regras do projeto para agentes (nenhum dado do jogo, findings para tudo o que se aprende, comentários fartos, como testar).
+Contributions of any kind are welcome: code, reverse engineering, testing, bug reports, corrections. Before a pull request, read **[CONTRIBUTING.md](CONTRIBUTING.md)**. Working with an AI coding agent? Point it at **[AGENTS.md](AGENTS.md)**: the project's rules for agents (English only, no game data, findings for everything learned, heavy comments, how to test).
 
 > [!NOTE]
-> **Desenvolvido com muita ajuda de IA** (Claude, pelo Claude Code). O código, as notas de engenharia reversa e a documentação foram escritos em grande parte pela IA; o mantenedor define a direção e revisa os resultados. As findings são notas de trabalho, conferidas com ferramentas e testes, não por especialistas: trate-as como tal e avise de erros.
+> **Developed with extensive AI assistance** (Claude, via Claude Code). The code, reverse-engineering notes and documentation were largely written by the AI; the maintainer sets the direction and reviews the results. Findings are working notes, checked with tools and tests, not by experts: treat them as such and please report errors.
 
-## 💛 Créditos
+## 💛 Credits
 
-- **[PS2Recomp](https://github.com/ran-j/PS2Recomp)** (ran-j e colaboradores): o recompilador e o runtime sobre os quais o port é feito
-- **[PCSX2](https://github.com/PCSX2/pcsx2)**: a referência de comportamento do PS2 usada nos testes
-- **[Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp)** (Maxilure): o modelo de organização, de regras para agentes e deste painel
-- **[Ghidra](https://github.com/NationalSecurityAgency/ghidra)** e **[ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded)**: a análise do executável
-- **Claude** (Anthropic): assistente de IA que escreveu a maior parte do código e da documentação
+- **[PS2Recomp](https://github.com/ran-j/PS2Recomp)** (ran-j and contributors): the recompiler and runtime this port is built on
+- **[PCSX2](https://github.com/PCSX2/pcsx2)**: the PS2 behaviour reference used by the tests
+- **[PS2SDK](https://github.com/ps2dev/ps2sdk)**: the open-source SDK used to recognise the Sony library functions in the executable
+- **[Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp)** (Maxilure): the model for the organisation, the agent rules and this progress board
+- **[Ghidra](https://github.com/NationalSecurityAgency/ghidra)** and **[ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded)**: executable analysis
+- **Claude** (Anthropic): AI assistant that wrote most of the code and documentation
 
-A lista completa está em [CREDITS.md](CREDITS.md).
+The full list is in [CREDITS.md](CREDITS.md).
 
-## ⚖️ Licença e aviso
+## ⚖️ License and disclaimer
 
-- O código deste repositório é licenciado sob a **[GNU General Public License v3.0](LICENSE)**, a mesma do PS2Recomp, ao qual ele é ligado.
-- Os patches em `patches/ps2recomp/` modificam o código do PS2Recomp e ficam sob a licença dele (GPL-3.0).
+- The code in this repository is licensed under the **[GNU General Public License v3.0](LICENSE)**, the same as PS2Recomp, which it links against.
+- The patches in `patches/ps2recomp/` modify PS2Recomp's code and stay under its license (GPL-3.0).
 
-<sub>Este é um projeto de fãs, não oficial, para preservação de jogos. Não é afiliado, endossado ou patrocinado pela D3 Publisher, High Voltage Software, Cartoon Network ou Sony. *Ben 10* é marca registrada dos seus donos. Este repositório não contém código, arquivos ou dados do jogo: é preciso a sua própria cópia legítima.</sub>
+<sub>This is an unofficial fan project for game preservation. It is not affiliated with, endorsed by, or sponsored by D3 Publisher, High Voltage Software, Cartoon Network or Sony. *Ben 10* is a trademark of its respective owners. This repository contains no game code, assets or data: you need your own legally obtained copy of the game.</sub>

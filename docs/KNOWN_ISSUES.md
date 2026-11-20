@@ -1,33 +1,35 @@
-# Problemas e riscos conhecidos
+# Known issues and risks
 
-## Bloqueios
+## Blockers
 
-| # | Bloqueio | Bloqueia | Ver |
+| # | Blocker | Blocks | See |
 |---|---|---|---|
-| B6 | Primeira execução não feita | Fases 3-7 | [NEXT_TASK](NEXT_TASK.md) |
-| B7 | Build no Windows (MSVC) não testado | jogar no Windows | [findings/14](findings/14-repositorio-build-e-testes.md) s.3 |
+| B6 | The boot does not reach the first frame yet | phases 3-7 | [findings/15](findings/15-first-boot.md) |
+| B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
+| B8 | The test machine has only `SLUS_216.61`, `SYSTEM.CNF` and the IRX modules, not `GAME.DIR`, `GAME.WAD` or `IOPRP300.IMG` | any boot step that reads game data | [findings/15](findings/15-first-boot.md) s.7 |
 
-## Dívidas temporárias (violam o master prompt de propósito, por enquanto)
+## Temporary debts (they break the master prompt on purpose, for now)
 
-| # | Dívida | Por quê | Como sair |
+| # | Debt | Why | Way out |
 |---|---|---|---|
-| T1 | IOP executado pelo `ps2xIOP` (interpretação de R3000A) | caminho mais rápido até o boot (D2) | serviços nativos para os 8 módulos ([findings/10](findings/10-modulos-iop.md)) |
-| T2 | VU1/VU0 em modo micro podem rodar por interpretação | primeiro frame (D3) | tradução estática pela `.DVP.ovlytab` ([findings/11](findings/11-microprogramas-vu.md)) |
+| T1 | IOP run by `ps2xIOP` (R3000A interpretation) | fastest way to a boot (D2) | native services for the 8 modules ([findings/10](findings/10-iop-modules.md)) |
+| T2 | VU1/VU0 micro mode may run on an interpreter | first frame (D3) | static translation from `.DVP.ovlytab` ([findings/11](findings/11-vu-microprograms.md)) |
 
-## Riscos técnicos
+## Technical risks
 
-| # | Risco | Por que importa | Mitigação |
+| # | Risk | Why it matters | Mitigation |
 |---|---|---|---|
-| R1 | VU1 só por interpretação no PS2Recomp | quase todo jogo de PS2 desenha por VU1 | tradução estática de microprogramas (abordagem do `vu1lift`/`vurecomp`), com census em tempo de execução para achar todos os programas |
-| R2 | paraLLEl-GS trava em drivers AMD no Windows | relatado em GPUs AMD Polaris/GCN pelo BT3-Recomp; outras gerações da AMD não foram testadas | testar cedo; manter o renderizador atrás de uma interface para trocar |
-| R3 | FPU do EE não é IEEE | física e colisão podem divergir sem clamp correto | testes de instrução comparados com o PCSX2 |
-| R4 | Código carregado em tempo de execução | conflito com "sem interpretador" | medido: nenhum encontrado ([findings/09](findings/09-executavel.md) s.8); falta confirmar no Ghidra |
-| R5 | Formato do `game.dir` (motor Quantum3) desconhecido | acesso a arquivos | o runtime lê pelos serviços de arquivo do jogo, sem precisar entender o formato no começo |
-| R7 | Tabela de dados de 20 KB dentro do `.text` (`0x001002E0`) | traduzida como código, gera lixo | mitigado: fora de qualquer função, não entra na recompilação ([findings/12](findings/12-analise-ghidra.md) s.6) |
-| R9 | 2.016 saltos indiretos não resolvidos estaticamente | um alvo ausente na tabela de despacho para o jogo | conferir em execução ([findings/13](findings/13-primeira-recompilacao.md) s.3) |
-| R8 | Áudio por driver de terceiros (`ALASD`, "Argonaut") e `CDARB` sem documentação | serviços nativos de áudio exigem engenharia reversa do protocolo | começar pelas chamadas RPC do lado do EE |
-| R10 | Operando denormal em ADD/SUB/MUL.S não vira zero (o runtime do PS2Recomp documenta) | resultados minúsculos onde o PS2 dá 0 | teste `DISABLED_MulsDenormalOperandIsZero` pronto; corrigir no runtime ([findings/14](findings/14-repositorio-build-e-testes.md) s.7) |
-| R11 | LQC2/SQC2 não alinham o endereço (o PCSX2 também não) | 1.235 usos no jogo | decidir com evidência de hardware |
-| R12 | SQRT.S de -0: PCSX2 dá -0, runtime dá +0 | raro | sem árbitro ainda |
-| R13 | ~38 instruções específicas do R5900 usadas pelo jogo ainda sem teste | erros silenciosos como os 4 já achados | continuar os testes ([findings/14](findings/14-repositorio-build-e-testes.md) s.7) |
-| R6 | PS2Recomp é experimental | bugs no recompilador viram bugs silenciosos no jogo | testes por instrução, logs de não resolvidos, fork próprio com patches documentados |
+| R1 | VU1 only through interpretation in PS2Recomp | almost every PS2 game draws through VU1 | static microprogram translation (the `vu1lift`/`vurecomp` approach), with a runtime census to confirm the list |
+| R2 | paraLLEl-GS crashes on AMD drivers on Windows | reported on AMD Polaris/GCN GPUs by BT3-Recomp; other AMD generations untested | test early; keep the renderer behind an interface |
+| R3 | The EE FPU is not IEEE | physics and collision can diverge without correct clamping | per-instruction tests compared with PCSX2 |
+| R4 | Code loaded at run time | conflicts with "no interpreter" | measured: none found ([findings/09](findings/09-executable.md) s.8); to confirm in Ghidra |
+| R5 | Format of `GAME.DIR`/`GAME.WAD` (Quantum3 engine) unknown | file access | the runtime reads through the game's own file calls; the format is not needed at first |
+| R6 | PS2Recomp is experimental | recompiler bugs become silent game bugs | per-instruction tests, unresolved-call logs, documented patches |
+| R7 | 20 KB data table inside `.text` (`0x001002E0`) | translated as code it would produce garbage | mitigated: outside every function, never recompiled ([findings/12](findings/12-ghidra-analysis.md) s.6) |
+| R8 | Third-party audio driver (`ALASD`, "Argonaut") and `CDARB` with no documentation | native audio services need its protocol | start from the EE-side RPC calls (custom SIDs 0x1212121/0x1212122, [findings/15](findings/15-first-boot.md) s.5) |
+| R9 | 2,016 indirect jumps not resolved statically | a target missing from the dispatch table stops the game | check at run time ([findings/13](findings/13-first-recompilation.md) s.3) |
+| R10 | Denormal operand in ADD/SUB/MUL.S does not become zero (documented by the PS2Recomp runtime) | tiny results where the PS2 gives 0 | test `DISABLED_MulsDenormalOperandIsZero` ready; fix in the runtime ([findings/14](findings/14-repository-build-and-tests.md) s.7) |
+| R11 | LQC2/SQC2 do not align the address (PCSX2 does not either) | 1,235 uses in the game | decide with hardware evidence |
+| R12 | SQRT.S of -0: PCSX2 gives -0, the runtime gives +0 | rare | no arbiter yet |
+| R13 | ~38 R5900-specific instructions used by the game still untested | silent errors like the 4 already found | keep writing tests ([findings/14](findings/14-repository-build-and-tests.md) s.7) |
+| R14 | A Sony library function bound to the wrong handler | wrong behaviour that looks like a game bug | bind only with evidence, a family at a time, each entry commented ([findings/15](findings/15-first-boot.md)) |

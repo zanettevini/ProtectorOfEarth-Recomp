@@ -1,21 +1,22 @@
 From: Protector of Earth Recomp
-Subject: [PATCH] PADDUH/PSUBUH: saturar como no PS2
+Subject: [PATCH] PADDUH/PSUBUH: saturate like the PS2
 
-O que quebrou:
-  PADDUH virava _mm_add_epi16 e PSUBUH _mm_sub_epi16: aritmetica que da a
-  volta (0x0001 - 0x0002 = 0xFFFF). No PS2 elas saturam (0xFFFF no maximo,
-  0 no minimo). O Ben 10 usa PSUBUH 27 vezes (docs/findings/09 s.5).
+What broke:
+  PADDUH became _mm_add_epi16 and PSUBUH _mm_sub_epi16: arithmetic that
+  wraps around (0x0001 - 0x0002 = 0xFFFF). On the PS2 they saturate
+  (0xFFFF at most, 0 at least). Ben 10 uses PSUBUH 27 times
+  (docs/findings/09 s.5).
 
-Por que:
-  PCSX2 MMI.cpp _PADDUH / _PSUBUH: soma > 0xFFFF -> 0xFFFF; diferenca <= 0
-  -> 0. As versoes de 8 bits (PADDUB/PSUBUB) ja usavam as instrucoes SSE
-  com saturacao; as de 16 bits nao.
+Why:
+  PCSX2 MMI.cpp _PADDUH / _PSUBUH: sum > 0xFFFF -> 0xFFFF; difference <= 0
+  -> 0. The 8-bit versions (PADDUB/PSUBUB) already used the saturating SSE
+  instructions; the 16-bit ones did not.
 
-A correcao:
+The fix:
   _mm_adds_epu16 / _mm_subs_epu16.
 
-Como foi achado:
-  Teste PsubuhClampsAtZero; PADDUH achado lendo a mesma tabela.
+How it was found:
+  Test PsubuhClampsAtZero; PADDUH found by reading the same table.
 
 diff --git a/ps2xRecomp/src/lib/mmi_translation_helpers.cpp b/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
 index a2bcb77..1f801f7 100644

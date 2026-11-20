@@ -1,10 +1,10 @@
-# Scripts do Ghidra
+# Ghidra scripts
 
-| Arquivo | Origem | Para que serve |
+| File | Origin | What it is for |
 |---|---|---|
-| `ApplyScriptApiNames.java` | deste projeto | cria e nomeia as funções da tabela da API de script do motor (findings/12 s.4) |
-| `ExportPS2Functions.java` | cópia sem modificação do PS2Recomp (`ps2xRecomp/tools/ghidra/`, commit `e563698`), GPL-3.0 | exporta o CSV de funções e o TOML de config que o `ps2_recomp` lê |
+| `ApplyScriptApiNames.java` | this project | creates and names the functions in the engine's script API table (findings/12 s.4) |
+| `ExportPS2Functions.java` | unmodified copy from PS2Recomp (`ps2xRecomp/tools/ghidra/`, commit `e563698`), GPL-3.0 | exports the function CSV and the config TOML that `ps2_recomp` reads |
 
-Ordem de uso: análise automática → `ApplyScriptApiNames.java` → reanálise →
-`ExportPS2Functions.java`. O `tools/ghidra_analisar.ps1` faz tudo em
-sequência.
+Order of use: auto-analysis → `ApplyScriptApiNames.java` → re-analysis →
+`ExportPS2Functions.java`. `tools/ghidra_analyze.ps1` (Windows) and
+`tools/ghidra_analyze.sh` (Linux) run them all in sequence.

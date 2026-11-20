@@ -1,91 +1,105 @@
-# Decisões de arquitetura
+# Architecture decisions
 
-Cada decisão: o que, por quê, alternativas, e situação
-(**aceita** / **proposta** / **rejeitada**).
+Each decision: what, why, alternatives, and status
+(**accepted** / **proposed** / **rejected**).
 
-## D1. Base do recompilador: fork do PS2Recomp
+## D1. Recompiler base: PS2Recomp
 
-- **Situação**: proposta (forte).
-- **Por quê**: cobre ELF, decodificação R5900, MMI, VU0 macro, geração de
-  C++, syscalls e overrides; já levou três jogos a estado jogável ou quase.
-- **Alternativa**: recompilador próprio do zero. Rejeitada por custo.
-- **Consequência**: o projeto fica GPL-3.0.
-- Ver [findings/01](findings/01-ps2recomp.md).
+- **Status**: accepted.
+- **Why**: it covers ELF parsing, R5900 decoding, MMI, VU0 macro mode, C++
+  generation, syscalls and overrides; it has already taken three games to a
+  playable or nearly playable state.
+- **Alternative**: our own recompiler from scratch. Rejected for cost.
+- **Consequence**: the project is GPL-3.0.
+- See [findings/01](findings/01-ps2recomp.md).
 
-## D2. IOP: `ps2xIOP` agora, serviços nativos depois
+## D2. IOP: `ps2xIOP` now, native services later
 
-- **Situação**: aceita como **temporária**. O dono pediu "o mais fácil por
-  enquanto".
-- **Agora**: usar o `ps2xIOP` do PS2Recomp como ele vem (executa os IRX do
-  disco e o `IOPRP300.IMG`). É o caminho que leva mais rápido ao boot.
-- **Depois (antes da Fase 8)**: trocar por serviços nativos, como manda o
-  master prompt s.3. A troca é pequena: só 8 módulos são carregados, 5
-  deles padrão da Sony ([findings/10](findings/10-modulos-iop.md)).
-- **Dívida registrada**: T1 em [KNOWN_ISSUES](KNOWN_ISSUES.md).
-- Ver [findings/06](findings/06-conflitos-com-o-master-prompt.md) s.2.
+- **Status**: accepted as **temporary**. The maintainer asked for "the
+  easiest path for now".
+- **Now**: use PS2Recomp's `ps2xIOP` as it comes (it runs the disc's IRX
+  modules). It is the fastest way to a boot.
+- **Later (before phase 8)**: replace it with native services, as master
+  prompt s.3 requires. The change is small: only 8 modules are loaded, 5 of
+  them standard Sony modules ([findings/10](findings/10-iop-modules.md)).
+- **Recorded debt**: T1 in [KNOWN_ISSUES](KNOWN_ISSUES.md).
+- See [findings/06](findings/06-master-prompt-conflicts.md) s.2.
 
-## D3. Interpretadores
+## D3. Interpreters
 
-- **Situação**: aceita como **temporária** ("o mais fácil por enquanto").
-- **EE**: não precisa de interpretador. Todo o código do EE é estático
-  ([findings/09](findings/09-executavel.md) s.8); chamada não resolvida
-  para a execução com erro.
-- **VU**: para o primeiro frame, usar a implementação de VU0/VU1 que já
-  existe no runtime do PS2Recomp, por interpretação
-  ([findings/13](findings/13-primeira-recompilacao.md) s.5). A tradução estática vem
-  depois, e já tem a lista fechada de microprogramas
-  ([findings/11](findings/11-microprogramas-vu.md)). Dívida T2.
-- **Regra que não muda**: todo uso de interpretador escreve um aviso no log
-  na inicialização, para nunca passar despercebido (master prompt: "não
-  cair em interpretação em silêncio").
-- Ver [findings/06](findings/06-conflitos-com-o-master-prompt.md) s.4-5.
+- **Status**: accepted as **temporary** ("the easiest path for now").
+- **EE**: no interpreter needed. All EE code is static
+  ([findings/09](findings/09-executable.md) s.8); an unresolved call stops
+  the run with an error.
+- **VU**: for the first frame, use the VU0/VU1 implementation already in the
+  PS2Recomp runtime, which interprets
+  ([findings/13](findings/13-first-recompilation.md) s.5). Static
+  translation comes later and already has the closed list of microprograms
+  ([findings/11](findings/11-vu-microprograms.md)). Debt T2.
+- **Rule that does not change**: every use of an interpreter writes a
+  warning to the log at start-up, so it never goes unnoticed (master prompt:
+  "do not silently fall back to interpretation").
+- See [findings/06](findings/06-master-prompt-conflicts.md) s.4-5.
 
-## D4. GS em Vulkan via paraLLEl-GS
+## D4. GS in Vulkan via paraLLEl-GS
 
-- **Situação**: proposta.
-- **Por quê**: Vulkan, LGPL-3.0, já integrado num port Windows.
-- **Risco**: drivers AMD. Ver [KNOWN_ISSUES](KNOWN_ISSUES.md).
-- Ver [findings/05](findings/05-renderizador-vulkan.md).
+- **Status**: proposed.
+- **Why**: Vulkan, LGPL-3.0, already integrated in a Windows port.
+- **Risk**: AMD drivers. See [KNOWN_ISSUES](KNOWN_ISSUES.md).
+- See [findings/05](findings/05-vulkan-renderer.md).
 
-## D5. Versão alvo: SLUS-21661 (NTSC-U), revisão 1.01
+## D5. Target version: SLUS-21661 (NTSC-U), revision 1.01
 
-- **Situação**: aceita (é o disco disponível; confirmado pelo `SYSTEM.CNF`).
-- Ver [findings/03](findings/03-o-jogo.md).
+- **Status**: accepted (it is the available disc; confirmed by `SYSTEM.CNF`).
+- See [findings/03](findings/03-the-game.md).
 
-## D6. Plataforma inicial: Windows x64, MSVC, CMake, SDL3, GoogleTest
+## D6. First platform: Windows x64, MSVC, CMake, SDL3, GoogleTest
 
-- **Situação**: aceita (master prompt s.5).
-- Linux depois; nada só-Windows fora de `platform/windows/`.
+- **Status**: accepted (master prompt s.5).
+- Linux too; nothing Windows-only outside platform code.
 
-## D8. Fixar o PS2Recomp no commit `e563698`
+## D7. Documentation format of Mind over Recomp, in English
 
-- **Situação**: aceita.
-- **Por quê**: o projeto evolui rápido; os resultados de
-  [findings/13](findings/13-primeira-recompilacao.md) valem para esse commit.
-  Atualizar é uma tarefa própria, com nova recompilação e comparação.
+- **Status**: accepted (maintainer's request).
+- Everything in the repository is English: docs, findings, comments, script
+  messages, commits (AGENTS.md s.0). The early study notes were first
+  written in Portuguese and translated when the repository was created.
 
-## D9. Organização do repositório como a do Mind over Recomp
+## D8. Pin PS2Recomp at commit `e563698`
 
-- **Situação**: aceita (pedido do dono do projeto).
-- **O quê**: `ben10_poe.toml` (config do recompilador, comentada),
-  `src/` (código do port), `generated/` (local), `patches/ps2recomp/`,
-  `tools/`, `docs/findings/`, `tools/native_progress.py` + painel no README.
-- **Diferença do master prompt s.5**: a estrutura sugerida lá
-  (`recomp/`, `runtime/ee/`...) supõe um recompilador próprio. Com o
-  PS2Recomp como submódulo, recompilador e runtime ficam em
-  `thirdparty/PS2Recomp`, e o que é nosso vai para `src/` (por assunto,
-  quando existir) e `patches/`. Os arquivos de acompanhamento exigidos pelo
-  master prompt s.9 continuam em `docs/`.
+- **Status**: accepted.
+- **Why**: the project moves fast; the results of
+  [findings/13](findings/13-first-recompilation.md) and
+  [findings/14](findings/14-repository-build-and-tests.md) hold for this
+  commit. Updating is a task of its own, with a new recompilation and
+  comparison.
 
-## D10. Patches do PS2Recomp aplicados pelo CMake
+## D9. Repository organised like Mind over Recomp
 
-- **Situação**: aceita.
-- **Por quê**: o submódulo fica no commit fixado (D8); as correções ficam
-  em `patches/ps2recomp/NNNN-*.patch`, cada uma com cabeçalho; o configure
-  aplica em ordem só as que faltam ([findings/14](findings/14-repositorio-build-e-testes.md) s.2).
-  Quem compila não aplica nada à mão.
+- **Status**: accepted (maintainer's request).
+- **What**: `ben10_poe.toml` (commented recompiler config), `src/` (port
+  code), `generated/` (local), `patches/ps2recomp/`, `tools/`,
+  `docs/findings/`, `tools/native_progress.py` + the README board.
+- **Difference from master prompt s.5**: the structure suggested there
+  (`recomp/`, `runtime/ee/`...) assumes our own recompiler. With PS2Recomp
+  as a submodule, the recompiler and runtime live in `thirdparty/PS2Recomp`,
+  and what is ours goes to `src/` (by topic, once it exists) and `patches/`.
+  The tracking files required by master prompt s.9 stay in `docs/`.
 
-## D7. Documentação no formato do Mind over Recomp, em pt-BR
+## D10. PS2Recomp patches applied by CMake
 
-- **Situação**: aceita (pedido do dono).
-- Código, identificadores e logs em inglês.
+- **Status**: accepted.
+- **Why**: the submodule stays at the pinned commit (D8); fixes live in
+  `patches/ps2recomp/NNNN-*.patch`, each with a header; configure applies,
+  in order, only the missing ones
+  ([findings/14](findings/14-repository-build-and-tests.md) s.2). Nobody
+  applies anything by hand.
+
+## D11. Sony library functions are bound to runtime handlers by address
+
+- **Status**: accepted.
+- **Why**: the executable is stripped, and the PS2Recomp runtime answers the
+  Sony libraries (libsif, libcdvd...) by name instead of emulating the IOP at
+  hardware level. Each function is identified with evidence and bound with
+  `"name@0xADDRESS"` in `ben10_poe.toml`, a whole library family at a time
+  ([findings/15](findings/15-first-boot.md)).

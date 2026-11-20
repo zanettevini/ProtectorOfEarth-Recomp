@@ -1,203 +1,208 @@
-# AGENTS.md: regras para agentes de IA no Protector of Earth Recomp
+# AGENTS.md: rules for AI coding agents working on Protector of Earth Recomp
 
-Este arquivo é para **agentes de IA** (Claude Code, Codex, Cursor, Copilot,
-Gemini CLI, Aider...) que ajudam no *Protector of Earth Recomp*, um port
-nativo não oficial para PC de *Ben 10: Protector of Earth* (PlayStation 2,
+This file is for **AI coding agents** (Claude Code, Codex, Cursor, Copilot,
+Gemini CLI, Aider, ...) helping with *Protector of Earth Recomp*, an
+unofficial native PC port of *Ben 10: Protector of Earth* (PlayStation 2,
 High Voltage Software / D3 Publisher, 2007).
 
-Ele segue a estrutura do `AGENTS.md` do projeto *Mind over Recomp*, adaptada
-para PS2 (MIPS R5900, little-endian) e para o PS2Recomp no lugar do ReXGlue.
-O master prompt do projeto ([docs/MASTER_PROMPT.md](docs/MASTER_PROMPT.md)) tem prioridade quando os
-dois discordarem. Para o Claude Code, coloque `@AGENTS.md` no `CLAUDE.md`.
-Humanos: as mesmas regras, curtas, estão no [CONTRIBUTING.md](CONTRIBUTING.md).
+It follows the structure of the `AGENTS.md` of *Mind over Recomp*, adapted
+to the PS2 (MIPS R5900, little-endian) and to PS2Recomp instead of ReXGlue.
+The project's master prompt ([docs/MASTER_PROMPT.md](docs/MASTER_PROMPT.md))
+wins when the two disagree. For Claude Code, put `@AGENTS.md` in `CLAUDE.md`.
+Humans: the same rules, shorter, are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-As regras marcadas **(rígida)** são checadas em revisão: um pull request que
-quebra uma delas não entra como está.
+The rules marked **(hard)** are checked in review: a pull request that breaks
+one can't be merged as it is.
 
-## 1. O que é o projeto
+## 0. Language (hard)
 
-- O executável principal do jogo (`SLUS_216.61`, versão americana 1.01) é
-  **recompilado estaticamente** para C++ pelo
-  [PS2Recomp](https://github.com/ran-j/PS2Recomp) (submódulo fixado, mais os
-  nossos patches). O código gerado roda sobre
-  um runtime nativo em C++20 (memória, kernel do EE, DMA, VIF/GIF, GS em
-  Vulkan, áudio, entrada).
-- **Sem emulação da CPU** em produção: nem interpretador, nem dynarec, nem
-  PCSX2 embutido (master prompt s.3). O PCSX2 é só **referência** para testes
-  e capturas.
-- Objetivo de longo prazo: substituir peças emuladas por nativas uma de cada
-  vez, com a versão recompilada mantida como gabarito dos testes.
-- Leia antes, conforme precisar: [docs/02-how-the-port-works.md](docs/02-how-the-port-works.md)
-  (visão geral), [docs/01-building.md](docs/01-building.md) (build e patches),
-  [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) e [docs/NEXT_TASK.md](docs/NEXT_TASK.md)
-  (onde parou), [docs/findings/](docs/findings/README.md) (tudo que já se
-  sabe: procure ali antes de investigar, a resposta costuma estar lá).
+Everything in the repository is written in **English**: docs, findings,
+code comments, script messages, commit messages, pull requests. Talking to
+the maintainer in another language is fine; the repository is English only.
 
-## 2. Legal: nenhum dado do jogo no repositório (rígida)
+## 1. What the project is
 
-Cada pessoa constrói o port a partir da própria cópia do jogo. O repositório
-guarda só o código, as notas e a arte do próprio projeto.
+- The game's main executable (`SLUS_216.61`, USA release 1.01) is
+  **statically recompiled** into C++ by
+  [PS2Recomp](https://github.com/ran-j/PS2Recomp) (pinned submodule, plus
+  our patches). The generated code runs on a native C++20 runtime (memory,
+  EE kernel, DMA, VIF/GIF, GS, audio, input).
+- **No CPU emulation** in the shipped program: no interpreter, no dynarec, no
+  embedded PCSX2 (master prompt s.3). PCSX2 is only a **reference** for tests.
+  The temporary exceptions are listed in docs/KNOWN_ISSUES.md (T1, T2).
+- Long-term goal: replace emulated pieces with native ones one at a time,
+  keeping the recompiled original as the answer key for tests.
+- Read first, as needed: [docs/02-how-the-port-works.md](docs/02-how-the-port-works.md)
+  (big picture), [docs/01-building.md](docs/01-building.md) (build and
+  patches), [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and
+  [docs/NEXT_TASK.md](docs/NEXT_TASK.md) (where work stopped),
+  [docs/findings/](docs/findings/README.md) (everything learned so far:
+  search it before investigating something, the answer is often there).
 
-- Nunca commitar nem colar: `*.iso`, `*.bin`, `*.chd`, o ELF do jogo
-  (`SLUS_*`, `SLES_*`), módulos `*.IRX` do disco, BIOS, nada de `iso/`,
-  `game/`, `generated/` (aquilo **é** o código do jogo traduzido, e a
-  análise do Ghidra), `out/`, `user/`, `logs/`, capturas brutas (`*.gs`,
-  `*.p2s`, `*.ppm`).
-  Eles estão no `.gitignore`: nunca force-add, nunca enfraqueça o `.gitignore`.
-- Nunca copiar conteúdo do jogo para arquivos versionados: texturas, modelos,
-  áudio, textos, o conteúdo do `game.dir`, microprogramas de VU, listagens de
-  disassembly maiores que algumas linhas ilustrativas. **Descreva, não cole**
-  (um endereço, um tamanho, um layout de campos, o que faz).
-- `assets/` só para arte original ou de licença livre com crédito em
-  `CREDITS.md`.
-- Antes de cada commit: `git diff --cached --name-only` e confira a lista.
+## 2. Legal: no game data in the repository (hard)
 
-## 3. Escreva o que você descobrir (findings)
+Everyone builds the port from their own copy of the game. The repository holds
+only the project's own code, notes and art.
 
-Engenharia reversa que não é escrita se perde. Todo pull request que
-*aprende algo sobre o jogo ou sobre o PS2* registra isso.
+- Never commit or paste: `*.iso`, `*.bin`, `*.chd`, the game's ELF
+  (`SLUS_*`, `SLES_*`), `*.IRX` modules from the disc, BIOS files, anything
+  in `iso/`, `game/`, `generated/` (that IS the game's code, translated, and
+  the Ghidra analysis), `out/`, `user/`, `logs/`, raw captures (`*.gs`,
+  `*.p2s`, `*.ppm`). They are gitignored: never force-add them, never weaken
+  `.gitignore`.
+- Never copy game content into tracked files: textures, models, audio, text,
+  the contents of `GAME.DIR`/`GAME.WAD`, VU microprograms, disassembly
+  listings longer than a few illustrative lines. **Describe it, don't paste
+  it** (an address, a size, a field layout, what it does).
+- `assets/` is only for original art or free-licensed third-party art with
+  its licence and source credited in `CREDITS.md`.
+- Before every commit: `git diff --cached --name-only` and check the list.
 
-- **Investigação nova**: um novo `docs/findings/NN-assunto-curto.md`
-  (NN = próximo número livre) e uma linha na tabela de
+## 3. Write down what you find (findings)
+
+Reverse engineering that isn't written down is lost. Every pull request that
+*learns something about the game or the PS2* records it.
+
+- **New investigation**: a new `docs/findings/NN-short-topic.md` (NN = next
+  free number) plus one row in the table of
   [docs/findings/README.md](docs/findings/README.md).
-- **Acréscimo pequeno** a um assunto conhecido: uma nova seção numerada no
-  finding existente (`grep -rl` o endereço ou o assunto antes).
-- **Correções triviais**: sem finding.
+- **Small addition** to a known topic: a new numbered section in the
+  existing finding (`grep -rl` the address or topic first).
+- **Trivial fixes**: no finding needed.
 
-Um finding contém:
+A finding contains:
 
-1. O que foi visto: o sintoma ou a pergunta.
-2. Como foi descoberto: ferramentas, traces, medições, e os **caminhos
-   errados**.
-3. O que é: funções (`sub_00XXXXXX` / `FUN_00XXXXXX`), endereços, offsets de
-   struct, formatos, os nomes do próprio jogo quando conhecidos.
-4. O que mudamos e como foi verificado (números, antes/depois, comparação
-   com o PCSX2).
-5. O que ainda está aberto ou não testado.
+1. What was seen: the symptom or the question.
+2. How it was found: tools, traces, measurements, and the **wrong turns**.
+3. What it is: functions (`FUN_00XXXXXX`, or the library name once
+   identified), addresses, struct offsets, formats, the game's own names
+   when known.
+4. What we changed and how it was verified (numbers, before/after, PCSX2
+   comparison).
+5. What is still open or untested.
 
-Voz de todo arquivo versionado: **neutra e factual**. Sem dados pessoais, sem
-specs do PC de uma pessoa específica, sem citações de chat. Nome oficial
-desconhecido: escreva **(nome a definir)**. Não invente nomes.
+Voice for every tracked file: **neutral and factual**. No personal details,
+no PC specs of a specific person, no chat quotes. Unknown official names:
+write **(name TBD)**. Don't guess names.
 
-Idioma: a documentação de estudo está em português (pt-BR). Identificadores
-de código, nomes de arquivo e mensagens de log ficam em inglês.
+## 4. Comments: heavy, and they explain why
 
-## 4. Comentários: muitos, explicando o porquê
+This project is read by people learning how recompilation works.
 
-O projeto é lido por quem está aprendendo recompilação.
+- Every new file starts with a header comment: what it is for, how it hooks
+  into the game, the formats/offsets it relies on.
+- Comment every non-obvious line, every guest address and every offset
+  (`// +0x24 = entity list pointer, findings/NN s.M`).
+- **Every [`ben10_poe.toml`](ben10_poe.toml) entry gets a *why + how we
+  found it* comment** (hard).
+- Point to the finding that explains the code (`findings/NN s.M`).
 
-- Todo arquivo novo começa com um comentário de cabeçalho: para que serve,
-  como se liga ao jogo, que formatos/offsets usa.
-- Comente toda linha não óbvia, todo endereço do guest e todo offset
-  (`// +0x24 = ponteiro para a lista de entidades, findings/NN s.M`).
-- **Toda entrada do [`ben10_poe.toml`](ben10_poe.toml) (config do PS2Recomp) tem comentário de
-  *por que + como descobrimos*** (rígida).
-- Aponte o finding que explica o código (`findings/NN s.M`).
+## 5. Working with the game's code
 
-## 5. Trabalhando com o código do jogo
+- **Verify before you change the config (hard).** Check a function's start
+  and end in Ghidra (with the *ghidra-emotionengine-reloaded* extension)
+  before adding, skipping or stubbing it. A wrong boundary splits a real
+  function and corrupts it silently. After each codegen, read the report for
+  unresolved calls and unsupported instructions.
+- **Binding a Sony library function to a runtime handler**
+  (`"handlerName@0xADDRESS"` in `ben10_poe.toml` `stubs`): only with
+  evidence (a semaphore or error string the library leaves, the RPC server
+  and function number, the structure compared with the open-source PS2SDK).
+  `tools/analyzer/function_map.py` and `tools/analyzer/rpc_calls.py` collect
+  that evidence. Bind a library family together: binding `sceCdRead` alone
+  leaves the game's own `sceCdSync` waiting forever (findings/15).
+- **Overriding a game function**: a *game override* registered in the
+  runtime (`PS2_REGISTER_GAME_OVERRIDE` / `bindAddressHandler`), in `src/`,
+  never by editing generated code.
+- **Never edit `generated/`** (it is rebuilt) **or `thirdparty/PS2Recomp`
+  directly.** PS2Recomp fixes go in `patches/ps2recomp/NNNN-name.patch`,
+  with a header (what broke, why, the fix, how it was found) and a row in
+  [patches/ps2recomp/README.md](patches/ps2recomp/README.md). CMake applies
+  them by itself. To make one: edit the submodule, `git -C
+  thirdparty/PS2Recomp diff` of that topic only, header on top; check that a
+  clean configure applies all of them in order.
+- **Guest memory from C++ (hard):** never raw `rdram + addr`. Use the runtime
+  accessors, which apply the address mask (KUSEG / KSEG0 / KSEG1 alias the
+  same physical RAM) and bounds checks. The PS2 is **little-endian** like
+  x86-64, but its address map is not trivial: scratchpad (`0x70000000`),
+  hardware registers (`0x10000000`-`0x1FFFFFFF`) and RAM mirrors.
+- A pointer read from a game object can be garbage: check it's readable
+  before following it.
+- **An unsupported instruction is never ignored silently** (master prompt
+  s.10): the recompiler fails or emits an explicit stop with the address.
+- **Windows builds too**: don't name functions or variables after Win32 APIs
+  or `windows.h` macros (`near`, `far`, `min`, `max`, `PlaySound`...). No
+  POSIX-only calls outside `#ifdef`'d platform code.
 
-- **Verifique antes de mexer na config (rígida).** Confira no Ghidra (com a
-  extensão *ghidra-emotionengine-reloaded*) o início e o fim de uma função
-  antes de adicioná-la, pulá-la ou transformá-la em stub. Uma fronteira
-  errada corta uma função real e a corrompe em silêncio. Depois de cada
-  recompilação, leia o log procurando chamadas não resolvidas
-  (`lookupFunction`) e instruções não suportadas.
-- **Sobrescrever uma função do jogo**: um *game override* registrado no
-  runtime (`PS2_REGISTER_GAME_OVERRIDE` / `bindAddressHandler` no PS2Recomp),
-  em `src/`, nunca editando o gerado.
-- **Nunca editar `generated/`** (é reconstruído) **nem
-  `thirdparty/PS2Recomp` diretamente.** Correções do PS2Recomp vão em
-  `patches/ps2recomp/NNNN-nome.patch`, com cabeçalho (o que quebrou, por quê,
-  a correção, como foi achado) e uma linha na tabela de
-  [patches/ps2recomp/README.md](patches/ps2recomp/README.md). O CMake aplica
-  sozinho. Para fazer um patch: edite o submódulo, `git -C thirdparty/PS2Recomp
-  diff` só daquele assunto, cabeçalho em cima; confira que um configure limpo
-  aplica todos em ordem.
-- **Memória do guest a partir do C++ (rígida):** nunca `rdram + addr` cru.
-  Use os acessores do runtime, que aplicam a máscara de endereço (KUSEG /
-  KSEG0 / KSEG1 apontam para a mesma RAM física) e checam limites. O PS2 é
-  **little-endian** como o x86-64, mas o mapeamento de endereços não é
-  trivial: scratchpad (`0x70000000`), registradores de hardware
-  (`0x10000000`-`0x1FFFFFFF`) e espelhos da RAM.
-- Um ponteiro lido de um objeto do jogo pode ser lixo: confira se é legível
-  antes de seguir.
-- **Instrução não suportada nunca é ignorada em silêncio** (master prompt
-  s.10): o recompilador falha ou gera uma parada explícita com o endereço.
-- **Windows também compila**: não dê nomes de APIs Win32 ou macros de
-  `windows.h` a funções e variáveis (`near`, `far`, `min`, `max`,
-  `PlaySound`...). Nada só-POSIX fora de código de plataforma com `#ifdef`.
+## 6. Design rules
 
-## 6. Regras de design
+- **The README board is measured, not estimated.** When a piece becomes the
+  port's own code (or a milestone is reached), change its status in
+  `tools/native_progress.py` with the evidence (finding, test, log) and run
+  `python3 tools/native_progress.py --readme`. Never edit the block by hand.
+- **Native over emulated.** Never drive a feature by **faking controller
+  presses**: find the game's own decision and answer it.
+- **No CPU interpreter in the shipped program.** An interpreter (EE, IOP or
+  VU) may exist only as a **test oracle**, built outside the game executable.
+  Current temporary exceptions: docs/KNOWN_ISSUES.md T1/T2.
+- **Keep the original's defaults.** The game must look and play like the
+  original unless the player changes a setting. Enhancements (resolution,
+  widescreen, 60 fps) go behind an option.
+- **Players' saves are sacred.** Never move or delete saves or settings in a
+  format change: copy, keep the old data as a backup.
+- **Two players.** The game has local co-op for 2: code that handles "the
+  player" probably needs to work for both.
 
-- **O painel do README é medido, não estimado.** Quando uma peça vira código
-  do port (ou um marco é atingido), mude o status em
-  `tools/native_progress.py` com a evidência (finding, teste, log) e rode
-  `python3 tools/native_progress.py --readme`. Nunca edite o bloco à mão.
-- **Nativo em vez de emulado.** Nenhuma funcionalidade nova é feita
-  **simulando apertos de botão**: encontre a decisão do próprio jogo e
-  responda a ela.
-- **Sem interpretador de CPU em produção.** Um interpretador (de EE, IOP ou
-  VU) só pode existir como **oráculo de teste**, compilado fora do executável
-  final. Ver [findings/06](docs/findings/06-conflitos-com-o-master-prompt.md)
-  e `docs/DECISIONS.md`.
-- **Mantenha os padrões do original.** O jogo deve parecer e jogar como o
-  original até o jogador mudar uma opção. Melhorias (resolução, widescreen,
-  60 fps) ficam atrás de uma opção.
-- **Os saves dos jogadores são sagrados.** Nunca mover ou apagar saves ou
-  configurações numa mudança de formato: copie e mantenha o antigo como
-  backup.
-- **Dois jogadores.** O jogo tem cooperativo local para 2: código que trata
-  "o jogador" provavelmente precisa funcionar para os dois.
+## 7. Testing
 
-## 7. Testes
+Say what you tested and what you didn't. "Untested on Linux" is fine;
+claiming something works that wasn't run is not (master prompt s.10).
 
-Diga o que testou e o que não testou. "Não testado no Linux" é aceitável;
-dizer que algo funciona sem ter rodado não é (master prompt s.10).
-
-- Toda instrução suportada tem teste automatizado (GoogleTest) comparado com
-  uma referência confiável (master prompt Fase 2). Os testes de instrução são
-  de ponta a ponta: um caso novo entra em `tests/tools/make_test_elf.py` e
-  em `tests/instructions/`, com o valor esperado citando a fonte (função do
-  PCSX2 ou seção do manual). Rode `ctest --preset linux-tests` (ou
-  `windows-tests`) antes de cada commit que toca o recompilador ou o
+- Every supported instruction has an automated test (GoogleTest) compared
+  against a trusted reference (master prompt phase 2). Instruction tests are
+  end to end: a new case goes into `tests/tools/make_test_elf.py` and
+  `tests/instructions/`, with the expected value citing its source (a PCSX2
+  function or a manual section). Run `ctest --preset linux-tests` (or
+  `windows-tests`) before every commit that touches the recompiler or the
   runtime.
-- Teste que falha por uma diferença conhecida e documentada pode ficar
-  `DISABLED_`, com o motivo no comentário e uma linha no KNOWN_ISSUES.
-  Nunca mude o valor esperado para o teste passar.
-- Componentes de sistema: compare o comportamento observável com o PCSX2.
-- Gráficos: compare a imagem e o estado do GS do **mesmo frame** com o PCSX2
-  e informe a diferença média.
-- **Teste em cópias, nunca em saves reais.**
-- Pare um jogo de teste pelo PID. Nunca mate processos pelo nome: você pode
-  fechar um jogo que alguém está jogando.
-- Não compile enquanto o jogo está rodando.
-- Nunca enfraqueça uma asserção para o build passar.
+- A test that fails because of a known, documented difference may stay
+  `DISABLED_`, with the reason in its comment and a line in KNOWN_ISSUES.
+  Never change an expected value to make a test pass.
+- System components: compare observable behaviour with PCSX2.
+- Graphics: compare the image and GS state of the **same frame** with PCSX2
+  and give the mean difference.
+- **Test on copies, never on real saves.**
+- Stop a test run by its PID with `kill -TERM`. **Never** send it
+  `ABRT`/`SEGV`/`QUIT`: a core dump of the guest memory can exhaust RAM.
+  Never kill by name on a machine where someone may be playing.
+- Don't build while the game is running.
 
-## 8. Pull requests e commits
+## 8. Pull requests and commits
 
-- Um assunto por pull request. Não reformate arquivos que você não tocou.
-- Mensagem de commit: uma linha curta de resumo, depois o que mudou e por
-  quê, na voz neutra da seção 3.
-- A descrição do PR diz: o que mudou, por quê, como foi testado (e o que não
-  foi), qual finding documenta, e capturas para mudanças visíveis.
-- Ajuda de IA é bem-vinda: diga isso na descrição. A pessoa que abre o PR é
-  responsável por ter rodado no jogo real.
-- Licença: o projeto é GPL-3.0, porque o PS2Recomp é GPL-3.0 (ver
-  [findings/01](docs/findings/01-ps2recomp.md) s.5).
+- One topic per pull request. Don't reformat files you didn't otherwise touch.
+- Commit messages: a short summary line, then what changed and why, in the
+  neutral voice of section 3.
+- The pull request description says: what changed, why, how it was tested
+  (and what wasn't), which finding documents it, and screenshots for visible
+  changes.
+- AI assistance is welcome: say so in the description. The human who opens
+  the PR is responsible for it having been run.
+- Licence: the project is GPL-3.0, because PS2Recomp is GPL-3.0
+  (findings/01 s.5).
 
-## 9. Mapa rápido
+## 9. Quick map
 
-| Onde | O quê |
+| Where | What |
 |---|---|
-| `ben10_poe.toml` | config do recompilador: stubs, skips, tudo comentado |
-| `CMakeLists.txt`, `CMakePresets.json` | o build: patches, codegen, jogo, testes |
-| `src/` | o código nativo do port (vazio por enquanto; ver src/README.md) |
-| `tests/` | GoogleTest; `tests/tools/make_test_elf.py` monta o ELF de teste |
-| `tools/coletar_disco.ps1` | tira o ELF e os IRX do .iso para `game/` |
-| `tools/ghidra_analisar.sh` / `.ps1`, `tools/ghidra_scripts/` | Ghidra headless: lista de funções para o recompilador |
-| `tools/analyzer/ps2_elf_audit.py` | auditoria do ELF (seções, overlays de VU, instruções) |
-| `tools/native_progress.py` | o painel e os marcos do README |
-| `patches/ps2recomp/` | nossas correções do PS2Recomp |
-| `thirdparty/PS2Recomp/` | submódulo: recompilador + runtime |
-| `docs/findings/` | as notas de investigação |
-| `docs/PROJECT_STATUS.md`, `NEXT_TASK.md`, `DECISIONS.md`, `KNOWN_ISSUES.md` | acompanhamento (master prompt s.9) |
+| `ben10_poe.toml` | recompiler config: stubs, bindings, skips, all commented |
+| `CMakeLists.txt`, `CMakePresets.json` | the build: patches, codegen, game, tests |
+| `src/` | the port's native code (empty for now; see src/README.md) |
+| `tests/` | GoogleTest; `tests/tools/make_test_elf.py` builds the test ELF |
+| `tools/collect_disc.ps1` | takes the ELF and IRX modules from the `.iso` into `game/` |
+| `tools/ghidra_analyze.sh` / `.ps1`, `tools/ghidra_scripts/` | headless Ghidra: the function list for the recompiler |
+| `tools/analyzer/` | ELF audit, per-function call/string map, RPC call map |
+| `tools/native_progress.py` | the README board and milestones |
+| `patches/ps2recomp/` | our PS2Recomp fixes |
+| `thirdparty/PS2Recomp/` | submodule: recompiler + runtime |
+| `docs/findings/` | the investigation notes |
+| `docs/PROJECT_STATUS.md`, `NEXT_TASK.md`, `DECISIONS.md`, `KNOWN_ISSUES.md` | tracking (master prompt s.9) |

@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
 """
-ps2_elf_audit.py: auditoria estática de um ELF do PS2 (Emotion Engine).
+ps2_elf_audit.py: static audit of a PS2 (Emotion Engine) ELF.
 
-Para que serve
+What it is for
 --------------
-Fase 1 do master prompt: medir o executável ANTES de recompilar. O script
-não modifica nada e não executa nada do jogo: só lê o arquivo e conta.
+Phase 1 of the master prompt: measure the executable BEFORE recompiling.
+The script modifies nothing and runs none of the game: it only reads the
+file and counts.
 
-Relata:
-  * cabeçalho ELF, segmentos (program headers) e seções;
-  * a tabela de overlays de microprogramas de VU (.DVP.ovlytab), quando existe;
-  * distribuição de instruções R5900 no .text: instruções MIPS comuns,
-    MMI (128 bits), COP0, FPU (COP1), VU0 em modo macro (COP2), VCALLMS
-    (chamadas de microprograma de VU0), branches "likely", SYSCALL e o
-    número de syscall carregado em $v1, saltos indiretos (JR/JALR);
-  * palavras que não decodificam como instrução R5900 válida;
-  * alvos únicos de JAL (limite inferior do número de funções);
-  * endereços de registradores de hardware referenciados (lui + offset),
-    agrupados por bloco (DMAC, VIF, GIF, IPU, timers, INTC, GS...).
+It reports:
+  * the ELF header, segments (program headers) and sections;
+  * the VU microprogram overlay table (.DVP.ovlytab), when present;
+  * the distribution of R5900 instructions in .text: plain MIPS
+    instructions, MMI (128-bit), COP0, FPU (COP1), VU0 macro mode (COP2),
+    VCALLMS (VU0 microprogram calls), "likely" branches, SYSCALL and the
+    syscall number loaded into $v1, indirect jumps (JR/JALR);
+  * words that do not decode as a valid R5900 instruction;
+  * unique JAL targets (a lower bound on the number of functions);
+  * referenced hardware register addresses (lui + offset), grouped by
+    block (DMAC, VIF, GIF, IPU, timers, INTC, GS...).
 
-Uso
----
-  python -I tools/analyzer/ps2_elf_audit.py CAMINHO/SLUS_216.61 [--json saida.json]
+Usage
+-----
+  python -I tools/analyzer/ps2_elf_audit.py PATH/SLUS_216.61 [--json out.json]
 
-Fontes das tabelas de opcode e do mapa de hardware
+Sources for the opcode tables and the hardware map
 --------------------------------------------------
-Documentação pública do R5900 e as tabelas do PCSX2
-(pcsx2/R5900OpcodeTables.cpp, pcsx2/Hw.h). Conferir lá antes de usar este
-relatório como verdade; ver docs/findings/09.
+Public R5900 documentation and PCSX2's tables
+(pcsx2/R5900OpcodeTables.cpp, pcsx2/Hw.h). Check there before treating this
+report as the truth; see docs/findings/09.
 
-Regra legal (AGENTS.md s.2): a saída descreve o executável (contagens,
-endereços, tamanhos). Não copie bytes de código para arquivos versionados.
+Legal rule (AGENTS.md s.2): the output describes the executable (counts,
+addresses, sizes). Do not copy code bytes into versioned files.
 """
 
 import argparse
@@ -40,7 +41,7 @@ import struct
 import sys
 
 # ---------------------------------------------------------------------------
-# Leitura do ELF (32 bits, little-endian, como todo executável do EE)
+# ELF reading (32-bit, little-endian, like every EE executable)
 # ---------------------------------------------------------------------------
 
 SHT_NOBITS = 8
@@ -48,9 +49,9 @@ SHF_EXECINSTR = 0x4
 
 
 def parse_elf(data):
-    """Devolve (cabeçalho, lista de program headers, lista de seções)."""
+    """Returns (header, list of program headers, list of sections)."""
     if data[:4] != b"\x7fELF":
-        raise ValueError("não é um arquivo ELF")
+        raise ValueError("not an ELF file")
     if data[4] != 1 or data[5] != 1:
         raise ValueError("esperado ELF32 little-endian (EE do PS2)")
     (e_type, e_machine, e_version, e_entry, e_phoff, e_shoff, e_flags,
@@ -90,14 +91,14 @@ def section(sections, name):
 
 
 # ---------------------------------------------------------------------------
-# Tabela de overlays de VU (.DVP.ovlytab)
+# VU overlay table (.DVP.ovlytab)
 # ---------------------------------------------------------------------------
-# Layout observado neste executável (findings/09 s.4): entradas de 12 bytes
-#   +0x0 deslocamento do nome em .DVP.ovlystrtab
-#   +0x4 LMA: endereço no EE (dentro de .vutext) onde o código está guardado
-#   +0x8 VMA: endereço de destino na micro-memória da VU
-# É o formato gerado pelo assembler de VU da toolchain (dvp-as); confirmar
-# com mais de um jogo antes de tratar como geral.
+# Layout seen in this executable (findings/11 s.4): 12-byte entries
+#   +0x0 offset of the name in .DVP.ovlystrtab
+#   +0x4 LMA: EE address (inside .vutext) where the code is stored
+#   +0x8 VMA: destination address in VU micro-memory
+# It is the format the toolchain's VU assembler (dvp-as) produces; confirm
+# with more than one game before treating it as general.
 
 def parse_dvp_overlays(data, sections):
     tab = section(sections, ".DVP.ovlytab")
@@ -116,7 +117,7 @@ def parse_dvp_overlays(data, sections):
 
 
 # ---------------------------------------------------------------------------
-# Decodificador/classificador R5900
+# R5900 decoder/classifier
 # ---------------------------------------------------------------------------
 
 PRIMARY = {
@@ -194,7 +195,7 @@ COP2_RS = {0x01: "QMFC2", 0x02: "CFC2", 0x05: "QMTC2", 0x06: "CTC2", 0x08: "BC2x
 
 
 def classify(w):
-    """Devolve (categoria, mnemônico). mnemônico None = palavra inválida."""
+    """Returns (category, mnemonic). mnemonic None = invalid word."""
     op = w >> 26
     rs = (w >> 21) & 31
     rt = (w >> 16) & 31
@@ -220,7 +221,7 @@ def classify(w):
         return "fpu", COP1_RS.get(rs)
     if op == 0x12:
         if rs >= 0x10:
-            # VU0 em modo macro. 0x38/0x39 = VCALLMS/VCALLMSR (dispara microprograma do VU0).
+            # VU0 macro mode. 0x38/0x39 = VCALLMS/VCALLMSR (starts a VU0 microprogram).
             if fn == 0x38:
                 return "cop2", "VCALLMS"
             if fn == 0x39:
@@ -238,8 +239,8 @@ def classify(w):
 
 
 # ---------------------------------------------------------------------------
-# Mapa de registradores de hardware do EE (endereço físico -> bloco)
-# Fonte: documentação pública / PCSX2 Hw.h. Conferir antes de usar.
+# EE hardware register map (physical address -> block)
+# Source: public documentation / PCSX2 Hw.h. Check before relying on it.
 # ---------------------------------------------------------------------------
 
 HW_BLOCKS = [
@@ -271,10 +272,11 @@ HW_BLOCKS = [
 
 
 def hw_block(addr):
-    # KSEG0 (0x8/0x9...) e KSEG1 (0xA/0xB...) espelham o físico: tira os bits
-    # altos. O scratchpad vive em 0x70000000 de verdade. Qualquer outro
-    # segmento (ex.: 0x5xxxxxxx) NÃO é hardware: a primeira versão deste
-    # script mascarava tudo e contava constantes 0x5000000x como TIMER.
+    # KSEG0 (0x8/0x9...) and KSEG1 (0xA/0xB...) mirror physical memory:
+    # strip the high bits. The scratchpad really lives at 0x70000000. Any
+    # other segment (e.g. 0x5xxxxxxx) is NOT hardware: the first version of
+    # this script masked everything and counted 0x5000000x constants as
+    # TIMER.
     top = addr >> 28
     if top == 0x7:
         phys = addr
@@ -297,7 +299,7 @@ def sext16(v):
 
 
 # ---------------------------------------------------------------------------
-# Auditoria
+# Audit
 # ---------------------------------------------------------------------------
 
 def audit(path):
@@ -337,8 +339,8 @@ def audit(path):
             jal_targets.add(((base + i * 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2))
 
         if mn == "SYSCALL":
-            # O número do serviço do kernel vai em $v1 (reg 3), em geral numa
-            # instrução "addiu/ori v1, zero, N" logo antes. Procura até 4 atrás.
+            # The kernel service number goes in $v1 (reg 3), usually through
+            # an "addiu/ori v1, zero, N" right before. Looks up to 4 back.
             sid = None
             for back in range(1, 5):
                 if i - back < 0:
@@ -351,7 +353,7 @@ def audit(path):
                     break
             syscall_ids["?" if sid is None else str(sid)] += 1
 
-        if op == 0x0F:  # LUI: procura uso como base de endereço de hardware
+        if op == 0x0F:  # LUI: look for use as a hardware address base
             hi = (w & 0xFFFF) << 16
             if hw_block(hi) or hw_block(hi + 0x8000):
                 reg = (w >> 16) & 31
@@ -366,7 +368,7 @@ def audit(path):
                         if blk:
                             hw_hits[blk] += 1
                             hw_addrs[blk].add(addr)
-                    # o registrador foi sobrescrito: para de seguir
+                    # the register was overwritten: stop following
                     if nop in (0x0F, 0x09, 0x0D, 0x23, 0x37, 0x1E) and ((nw >> 16) & 31) == reg:
                         break
 
@@ -385,25 +387,25 @@ def audit(path):
 
 def print_report(r):
     h = r["header"]
-    print("arquivo:", r["file"], "(%d bytes)" % r["bytes"])
+    print("file:", r["file"], "(%d bytes)" % r["bytes"])
     print("entry: 0x%08x  flags: 0x%08x" % (h["entry"], h["flags"]))
     for p in r["segments"]:
-        print("segmento: vaddr 0x%08x filesz 0x%x memsz 0x%x" % (p["vaddr"], p["filesz"], p["memsz"]))
-    print("\nseções:")
+        print("segment: vaddr 0x%08x filesz 0x%x memsz 0x%x" % (p["vaddr"], p["filesz"], p["memsz"]))
+    print("\nsections:")
     for s in r["sections"]:
         if s["size"]:
             print("  %-40s addr 0x%08x size 0x%06x" % (s["name"][:40], s["addr"], s["size"]))
     ov = r["dvp_overlays"]
-    print("\noverlays de VU (.DVP.ovlytab): %d" % len(ov))
+    print("\nVU overlays (.DVP.ovlytab): %d" % len(ov))
     for o in ov:
         print("  #%02d lma 0x%08x -> vma 0x%04x  %s" % (o["index"], o["lma"], o["vma"], o["name"]))
     t = r["text"]
-    print("\n.text: %d palavras" % t["words"])
+    print("\n.text: %d words" % t["words"])
     for k, v in t["by_category"].items():
         print("  %-10s %7d" % (k, v))
-    print("alvos únicos de JAL:", t["unique_jal_targets"])
-    print("primeiras palavras inválidas:", t["invalid_first_addrs"][:10])
-    print("\nmnemônicos R5900 específicos:")
+    print("unique JAL targets:", t["unique_jal_targets"])
+    print("first invalid words:", t["invalid_first_addrs"][:10])
+    print("\nR5900-specific mnemonics:")
     r5900 = {"MMI", "VU0_MACRO", "VCALLMS", "VCALLMSR", "LQ", "SQ", "LQC2", "SQC2",
              "QMFC2", "QMTC2", "CFC2", "CTC2", "MFSA", "MTSA", "MTSAB", "MTSAH",
              "MULT1", "MULTU1", "DIV1", "DIVU1", "MADD1", "MADDU1", "MFHI1",
@@ -415,7 +417,7 @@ def print_report(r):
             print("  %-10s %6d" % (mn, c))
     print("\nFPU:", {k: v for k, v in t["by_mnemonic"].items() if k.endswith(".S") or k in ("MFC1", "MTC1", "CFC1", "CTC1", "LWC1", "SWC1", "CVT.S.W", "BC1x")})
     print("\nsyscalls ($v1):", t["syscall_v1_ids"])
-    print("\nblocos de hardware referenciados:")
+    print("\nreferenced hardware blocks:")
     for k, v in t["hw_blocks"].items():
         print("  %-14s %5d  %s" % (k, v, " ".join(t["hw_addrs"][k][:8])))
 
@@ -423,7 +425,7 @@ def print_report(r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("elf")
-    ap.add_argument("--json", help="grava o relatório completo em JSON")
+    ap.add_argument("--json", help="write the full report as JSON")
     a = ap.parse_args()
     r = audit(a.elf)
     print_report(r)

@@ -1,25 +1,26 @@
-// ApplyScriptApiNames.java: cria e nomeia as funções da API de script do motor.
+// ApplyScriptApiNames.java: creates and names the engine's script API functions.
 //
-// Para que serve
-//   O executável de Ben 10: Protector of Earth (SLUS-21661) tem uma tabela de
-//   pares {ponteiro para nome, ponteiro para função} que o motor usa para
-//   ligar nomes de script ("ass_...") a funções nativas (findings/12).
-//   Essas funções só são chamadas por ponteiro, então a análise automática
-//   do Ghidra não acha muitas delas. Sem elas, o PS2Recomp gera chamadas não
-//   resolvidas.
+// What it is for
+//   The Ben 10: Protector of Earth (SLUS-21661) executable has a table of
+//   {pointer to name, pointer to function} pairs that the engine uses to tie
+//   script names ("ass_...") to native functions (findings/12).
+//   Those functions are only called through pointers, so Ghidra's
+//   auto-analysis misses many of them. Without them, PS2Recomp generates
+//   unresolved calls.
 //
-// O que faz
-//   1. Procura no bloco de dados carregado a sequência mais longa de pares
-//      (ponteiro para string que começa com "ass", ponteiro para bloco
-//      executável). Exige pelo menos MIN_RUN pares, para não pegar lixo.
-//   2. Para cada par: se não houver função no alvo, desmonta e cria uma.
-//   3. Dá à função o nome da string (fonte USER_DEFINED só se o nome atual
-//      for automático, tipo FUN_xxxxxxxx, para nunca apagar um nome dado à
-//      mão).
-//   4. Escreve um resumo no log: pares, funções criadas, renomeadas.
+// What it does
+//   1. Searches the loaded data blocks for the longest run of pairs
+//      (pointer to a string starting with "ass", pointer into an executable
+//      block). Requires at least MIN_RUN pairs, so it does not pick up junk.
+//   2. For each pair: if there is no function at the target, disassembles
+//      and creates one.
+//   3. Gives the function the string's name (source USER_DEFINED, only if
+//      the current name is automatic, like FUN_xxxxxxxx, so a name given by
+//      hand is never erased).
+//   4. Writes a summary to the log: pairs, functions created, renamed.
 //
-// Os nomes vêm do executável do próprio usuário: nada do jogo fica
-// guardado neste script.
+// The names come from the user's own executable: nothing from the game is
+// stored in this script.
 //
 // @category Ben10Recomp
 
@@ -33,7 +34,7 @@ import ghidra.program.model.symbol.SourceType;
 
 public class ApplyScriptApiNames extends GhidraScript {
 
-    // Menos que isso não é a tabela de script (a tabela real tem ~1.600 pares).
+    // Fewer than this is not the script table (the real table has ~1,600 pairs).
     private static final int MIN_RUN = 100;
 
     @Override
@@ -43,14 +44,14 @@ public class ApplyScriptApiNames extends GhidraScript {
         long bestStart = -1;
         int bestLen = 0;
 
-        // Varre os blocos inicializados que não são executáveis (.data/.rodata).
+        // Scans the initialised blocks that are not executable (.data/.rodata).
         for (MemoryBlock blk : mem.getBlocks()) {
             if (!blk.isInitialized() || blk.isExecute()) {
                 continue;
             }
             long start = blk.getStart().getOffset();
             long end = blk.getEnd().getOffset();
-            // Alinhado a 4 bytes: a tabela é de palavras de 32 bits.
+            // 4-byte aligned: the table is made of 32-bit words.
             for (long a = (start + 3) & ~3L; a + 8 <= end; a += 4) {
                 int len = 0;
                 long p = a;
@@ -63,16 +64,16 @@ public class ApplyScriptApiNames extends GhidraScript {
                     bestStart = a;
                 }
                 if (len > 0) {
-                    a = p - 4; // pula o trecho já medido
+                    a = p - 4; // skip the run already measured
                 }
             }
         }
 
         if (bestLen < MIN_RUN) {
-            printerr("Tabela da API de script nao encontrada (maior sequencia: " + bestLen + ")");
+            printerr("Script API table not found (longest run: " + bestLen + ")");
             return;
         }
-        println(String.format("Tabela da API de script em 0x%08X, %d pares", bestStart, bestLen));
+        println(String.format("Script API table at 0x%08X, %d pairs", bestStart, bestLen));
 
         int created = 0, renamed = 0, kept = 0, failed = 0;
         for (int i = 0; i < bestLen; i++) {
@@ -83,11 +84,11 @@ public class ApplyScriptApiNames extends GhidraScript {
 
             Function f = getFunctionAt(target);
             if (f == null) {
-                // Pode haver uma função que "engoliu" este endereço por engano;
-                // não mexemos nela aqui, só registramos.
+                // A function may have "swallowed" this address by mistake;
+                // we do not touch it here, we only log it.
                 Function containing = getFunctionContaining(target);
                 if (containing != null) {
-                    println(String.format("aviso: 0x%08X (%s) esta dentro de %s",
+                    println(String.format("warning: 0x%08X (%s) is inside %s",
                             target.getOffset(), name, containing.getName()));
                 }
                 if (getInstructionAt(target) == null) {
@@ -96,7 +97,7 @@ public class ApplyScriptApiNames extends GhidraScript {
                 f = createFunction(target, null);
                 if (f == null) {
                     failed++;
-                    printerr(String.format("falhou criar funcao em 0x%08X (%s)", target.getOffset(), name));
+                    printerr(String.format("failed to create a function at 0x%08X (%s)", target.getOffset(), name));
                     continue;
                 }
                 created++;
@@ -109,12 +110,12 @@ public class ApplyScriptApiNames extends GhidraScript {
                 kept++;
             }
         }
-        println(String.format("criadas=%d renomeadas=%d mantidas=%d falhas=%d",
+        println(String.format("created=%d renamed=%d kept=%d failed=%d",
                 created, renamed, kept, failed));
     }
 
-    // Um par válido: +0 aponta para string que começa com "ass",
-    // +4 aponta para um bloco executável.
+    // A valid pair: +0 points to a string starting with "ass",
+    // +4 points into an executable block.
     private boolean isPair(long a) {
         try {
             Memory mem = currentProgram.getMemory();

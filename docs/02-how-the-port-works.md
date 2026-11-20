@@ -1,93 +1,99 @@
-# Como o port funciona
+# How the port works
 
-Se for ler um documento só, leia este.
+If you only read one doc, read this one.
 
-## O problema
+## The problem
 
-O `SLUS_216.61` é código de máquina para a CPU principal do PlayStation 2,
-o **Emotion Engine** (EE): um MIPS modificado, com registradores de 128
-bits, instruções SIMD próprias (MMI) e uma unidade vetorial acoplada (VU0).
-O seu PC tem uma CPU x86-64, que não entende essas instruções. O jogo
-também espera o resto do console:
+`SLUS_216.61` is machine code for the PlayStation 2's main CPU, the
+**Emotion Engine** (EE): a modified MIPS with 128-bit registers, its own
+SIMD instructions (MMI) and an attached vector unit (VU0). Your PC has an
+x86-64 CPU, which can't run those instructions. The game also expects the
+rest of the console:
 
-* o **IOP**, uma segunda CPU que cuida do disco, controle, memory card e
-  som, rodando módulos próprios (`.IRX`);
-* as **unidades vetoriais** VU0 e VU1, que rodam microprogramas próprios
-  (a VU1 transforma a geometria 3D antes de desenhar);
-* o **GS** (Graphics Synthesizer), o chip gráfico, com 4 MB de memória
-  própria, alimentado por pacotes de comandos;
-* o **SPU2** (som), **DMA**, temporizadores e interrupções.
+* the **IOP**, a second CPU that handles the disc, controllers, memory card
+  and sound, running its own modules (`.IRX`);
+* the **vector units** VU0 and VU1, which run their own microprograms (VU1
+  transforms the 3D geometry before drawing);
+* the **GS** (Graphics Synthesizer), the graphics chip, with 4 MB of its own
+  memory, fed with command packets;
+* the **SPU2** (sound), **DMA**, timers and interrupts.
 
-## Três jeitos de resolver
+## Three ways to solve it
 
-| Jeito | O que é | Exemplos |
+| Approach | What it means | Examples |
 |---|---|---|
-| **Emulação** | traduzir as instruções *enquanto o jogo roda* | PCSX2 |
-| **Decompilação** | pessoas reescrevem o jogo inteiro em C/C++, função por função | Super Mario 64, OpenGOAL (Jak) |
-| **Recompilação estática** | uma ferramenta traduz *todas* as funções para C++ *antes*; o resultado compila num `.exe` nativo | Mind over Recomp, Gitaroo Man Native, **este projeto** |
+| **Emulation** | translate the instructions *while the game runs* | PCSX2 |
+| **Decompilation** | people rewrite the whole game in C/C++, function by function | Super Mario 64, OpenGOAL (Jak) |
+| **Static recompilation** | a tool translates *every* function into C++ *ahead of time*; the result compiles into a native `.exe` | Mind over Recomp, Gitaroo Man Native, **this project** |
 
-Usamos **recompilação estática**: o jogo roda nativo cedo, e depois as
-peças emuladas são trocadas por código próprio aos poucos (renderizador,
-som, controles, melhorias). Uma decompilação pode vir depois, função por
-função, sobre um jogo que já roda.
+We use **static recompilation**: the game runs natively early, and the
+emulated pieces are then replaced with our own code over time (renderer,
+sound, controllers, enhancements). A decompilation can come later, one
+function at a time, on top of a game that already runs.
 
-## O caminho
+## The pipeline
 
 ```
- Seu disco (.iso)
+ Your disc (.iso)
       |
-      |  tools/coletar_disco.ps1 (ou bsdtar)
+      |  tools/collect_disc.ps1 (or bsdtar)
       v
- game/SLUS_216.61  (o executável)   game/MODULES/*.IRX, GAME.DIR, GAME.WAD
+ game/SLUS_216.61  (the executable)    game/MODULES/*.IRX, GAME.DIR, GAME.WAD
       |                                   |
-      |  Ghidra + extensão do EE          |  lidos pelo runtime quando o
-      |  + ApplyScriptApiNames.java      |  jogo roda, sem mudança
-      |  (tools/ghidra_analisar.*)        |
+      |  Ghidra + EE extension            |  read by the runtime while the
+      |  + ApplyScriptApiNames.java      |  game runs, unchanged
+      |  (tools/ghidra_analyze.*)         |
       v                                   |
  generated/ghidra/functions.csv           |
- (onde começa e termina cada função)      |
+ (where each function starts and ends)    |
       |                                   |
       |  ps2_recomp + ben10_poe.toml      |
-      |  (o tradutor, com nossos patches) |
+      |  (the translator, with our        |
+      |   patches and bindings)           |
       v                                   |
- generated/default/*.cpp  (o código do jogo, como C++)
+ generated/default/*.cpp  (the game's code, as C++)
       |                                   |
-      |  compilador C++ comum             |
-      |  + runtime do PS2Recomp           |
-      |  + nosso código em src/           |
+      |  ordinary C++ compiler            |
+      |  + PS2Recomp runtime              |
+      |  + our code in src/               |
       v                                   |
- ben10_poe  (programa nativo) <-----------+
+ ben10_poe  (native program) <------------+
 ```
 
-### O que o tradutor faz
+### What the translator does
 
-1. Lê o ELF: um segmento só, carregado em `0x00100000` (findings/09).
-2. Para cada função do CSV, decodifica cada instrução e escreve o C++
-   equivalente. Os registradores do EE viram campos de uma estrutura
-   (`ctx->r[]`, 128 bits cada); a memória do PS2 (32 MB) é um vetor de bytes
-   (`rdram`). Um exemplo: `addu $v0, $a0, $a1` vira uma soma de 32 bits com o
-   resultado estendido para 64 bits, como no PS2.
-3. Desvios com *delay slot* (a instrução depois de um desvio executa antes
-   de ele acontecer) viram `goto` dentro da função.
-4. Saltos que só se conhecem rodando (tabelas, ponteiros de função) passam
-   por uma tabela de despacho: endereço do PS2 → função C++ já compilada.
-   Nada é interpretado.
-5. `SYSCALL` vira uma chamada ao runtime, que responde como o kernel do PS2.
+1. Reads the ELF: one segment, loaded at `0x00100000` (findings/09).
+2. For each function in the CSV, decodes every instruction and writes the
+   equivalent C++. The EE registers become fields of a structure
+   (`ctx->r[]`, 128 bits each); the PS2's 32 MB of memory is a byte array
+   (`rdram`). For example `addu $v0, $a0, $a1` becomes a 32-bit add whose
+   result is sign-extended to 64 bits, as on the PS2.
+3. Branches with a *delay slot* (the instruction after a branch runs before
+   the branch happens) become `goto` inside the function.
+4. Jumps only known at run time (tables, function pointers) go through a
+   dispatch table: PS2 address → already compiled C++ function. Nothing is
+   interpreted.
+5. `SYSCALL` becomes a call into the runtime, which answers like the PS2
+   kernel.
+6. Functions listed in `stubs` of `ben10_poe.toml` are replaced by a call to
+   a runtime handler. That is how the Sony libraries are answered: the
+   executable has no symbols, so each library function is recognised with
+   evidence and bound by address (findings/15).
 
-### O que o runtime faz
+### What the runtime does
 
-O runtime do PS2Recomp é a parte "PS2" em volta do código traduzido:
-memória, kernel (threads, semáforos), DMA, VIF/GIF, um GS em software, VU0 e
-VU1, o IOP e o som. Hoje quase tudo isso ainda imita o hardware, e duas
-partes por interpretação (o IOP e as VUs: dívidas temporárias T1 e T2 em
-docs/KNOWN_ISSUES.md). O painel "Rumo ao nativo" do README mede quanto já
-foi trocado por código do port.
+The PS2Recomp runtime is the "PS2" around the translated code: memory,
+kernel (threads, semaphores), DMA, VIF/GIF, a software GS, VU0 and VU1, the
+IOP and sound. Today almost all of it still imitates the hardware, and two
+parts do it by interpretation (the IOP and the VUs: temporary debts T1 and
+T2 in docs/KNOWN_ISSUES.md). The README's "Going native" board measures how
+much has been replaced by the port's own code.
 
-## Como se confere que está certo
+## How correctness is checked
 
-- **Instrução por instrução**: os testes de `tests/` montam um ELF pequeno,
-  passam pelo mesmo tradutor e comparam o resultado com o comportamento do
-  PS2 (PCSX2 como referência). Foram eles que acharam os 4 primeiros erros
-  do tradutor (findings/14).
-- **O jogo inteiro**, mais tarde: comparar com o PCSX2 o estado da memória e
-  as imagens do mesmo quadro.
+- **Instruction by instruction**: the tests in `tests/` build a small ELF,
+  run it through the same translator and compare the result with PS2
+  behaviour (PCSX2 as the reference). They found the first 4 translator bugs
+  (findings/14).
+- **The whole game**, later: compare memory state and the image of the
+  same frame with PCSX2.

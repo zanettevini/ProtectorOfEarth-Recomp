@@ -1,54 +1,58 @@
-# Contribuindo com o Protector of Earth Recomp
+# Contributing to Protector of Earth Recomp
 
-Obrigado por ajudar. Código, engenharia reversa, testes, relatórios de bug,
-correções e arte são bem-vindos, e todo colaborador aparece em
+Thanks for helping. Code, reverse engineering, testing, bug reports,
+corrections and art are all welcome, and every contributor is credited in
 [CREDITS.md](CREDITS.md).
 
-## Usando um agente de IA?
+## Using an AI coding agent?
 
-A maior parte deste projeto é escrita com ajuda de IA. Seu agente deve seguir
-o **[AGENTS.md](AGENTS.md)**: a maioria lê o arquivo da raiz sozinha; senão,
-cole-o nas instruções do agente. As regras completas estão lá. A versão curta
-está abaixo.
+Most of this project is written with AI assistance. Your agent should follow
+**[AGENTS.md](AGENTS.md)**: most agents read it from the repository root by
+themselves; otherwise paste it into the agent's instructions. It has the full
+rules. The short version is below.
 
-## As regras, curtas
+## The rules, short
 
-1. **Nenhum dado do jogo no repositório.** Sem imagens de disco, o ELF do
-   jogo, módulos IRX, BIOS, nada de `game/` ou `generated/` (o C++ gerado é o
-   código do jogo), texturas, áudio ou textos do jogo. Descreva, não cole.
-2. **Escreva o que aprender.** Se a mudança exigiu entender uma parte do jogo
-   ou do PS2, adicione um finding em [docs/findings/](docs/findings/README.md)
-   (um arquivo novo numerado, ou uma seção num existente) e uma linha na
-   tabela. Caminhos errados também entram.
-3. **Comente bastante**, explicando o *porquê*. Todo arquivo novo tem
-   cabeçalho; toda entrada do `ben10_poe.toml` tem um comentário "por que +
-   como achamos".
-4. **Confira no Ghidra** as fronteiras de uma função antes de mexer nela na
-   config.
-5. **Correções do PS2Recomp viram patch** em `patches/ps2recomp/`, com
-   cabeçalho. Nunca edite o submódulo nem `generated/` como se fosse código
-   nosso.
-6. **Teste com referência.** Instrução nova ou corrigida ganha um caso em
-   `tests/`, com o valor esperado citando a fonte (PCSX2 ou manual). Rode
-   `ctest` antes do commit. Nunca mude um valor esperado para o teste passar.
-7. **Sem emulação da CPU no executável final.** Interpretador só como
-   oráculo de teste (as exceções temporárias estão em
-   docs/KNOWN_ISSUES.md, T1/T2).
-8. **Mantenha o original como era por padrão.** Comportamento novo fica atrás
-   de uma opção.
-9. **Nunca arrisque os saves dos jogadores.** Copie, não mova nem apague.
-10. **Voz neutra** em docs, comentários e commits. Nome oficial desconhecido:
-    **(nome a definir)**.
+1. **English only** in the repository: docs, comments, script messages,
+   commits.
+2. **No game data in the repository.** No disc images, the game's ELF, IRX
+   modules, BIOS, nothing from `game/` or `generated/` (the generated C++ is
+   the game's code), no textures, audio or text from the game. Describe,
+   don't paste.
+3. **Write down what you learn.** If your change needed you to figure out how
+   part of the game or the PS2 works, add a finding in
+   [docs/findings/](docs/findings/README.md) (a new numbered file, or a
+   section in an existing one) and a row in its table. Wrong turns belong in
+   it too.
+4. **Comment heavily**, and explain *why*. Every new file gets a header
+   comment; every `ben10_poe.toml` entry gets a "why + how we found it"
+   comment.
+5. **Check Ghidra** for a function's boundaries before touching it in the
+   config. Bind a Sony library function to a runtime handler only with
+   evidence.
+6. **PS2Recomp fixes become patches** in `patches/ps2recomp/`, with a
+   header. Never edit the submodule or `generated/` as if they were our code.
+7. **Test against a reference.** A new or fixed instruction gets a case in
+   `tests/`, with the expected value citing its source (PCSX2 or the
+   manual). Run `ctest` before the commit. Never change an expected value to
+   make a test pass.
+8. **No CPU emulation in the shipped program.** Interpreters only as test
+   oracles (the temporary exceptions are in docs/KNOWN_ISSUES.md, T1/T2).
+9. **Keep the original as it was by default.** New behaviour goes behind an
+   option.
+10. **Never risk players' saves.** Copy, don't move or delete.
+11. **Neutral voice** in docs, comments and commits. Unknown official names:
+    **(name TBD)**.
 
 ## Pull requests
 
-- Um assunto por pull request.
-- Diga o que mudou, por quê, **como testou e o que não testou** (Windows?
-  Linux? comparado com o PCSX2?), e aponte o finding.
-- Se um agente de IA ajudou, diga. Você é responsável por ter rodado a
-  mudança.
-- Contribuições são GPL-3.0 como o projeto. Adicione-se ao
-  [CREDITS.md](CREDITS.md) com o que você fez.
+- One topic per pull request.
+- Say what changed, why, **how you tested it and what you didn't test**
+  (Windows? Linux? compared with PCSX2?), and link the finding.
+- If an AI agent helped, say so. You're responsible for having run the
+  change.
+- Contributions are licensed GPL-3.0 like the project. Add yourself to
+  [CREDITS.md](CREDITS.md) with what you did.
 
-Compilar: [docs/01-building.md](docs/01-building.md). Como tudo se encaixa:
-[docs/02-how-the-port-works.md](docs/02-how-the-port-works.md).
+Building: [docs/01-building.md](docs/01-building.md). How it all fits
+together: [docs/02-how-the-port-works.md](docs/02-how-the-port-works.md).

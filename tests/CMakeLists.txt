@@ -1,9 +1,9 @@
-# tests/CMakeLists.txt: testes automatizados (GoogleTest). Não precisam do jogo.
+# tests/CMakeLists.txt: automated tests (GoogleTest). They do not need the game.
 #
-# ben10_instruction_tests: testes por instrução de ponta a ponta.
-#   make_test_elf.py escreve um ELF de teste -> o ps2_recomp traduz ->
-#   o C++ gerado é compilado aqui com tests/instructions/*.cpp.
-#   Ver o cabeçalho de tests/instructions/test_ee_instructions.cpp.
+# ben10_instruction_tests: end-to-end per-instruction tests.
+#   make_test_elf.py writes a test ELF -> ps2_recomp translates it ->
+#   the generated C++ is compiled here with tests/instructions/*.cpp.
+#   See the header of tests/instructions/test_ee_instructions.cpp.
 
 include(FetchContent)
 FetchContent_Declare(
@@ -11,7 +11,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG v1.15.2
     GIT_SHALLOW TRUE)
-# No Windows, usar o mesmo runtime de C do resto do projeto.
+# On Windows, use the same C runtime as the rest of the project.
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
@@ -28,11 +28,11 @@ add_custom_command(
            "${BEN10_TEST_CASE_DIR}/test_cases.h"
            "${BEN10_TEST_CASE_DIR}/generated/ps2_recompiled_functions.h"
     COMMAND ${CMAKE_COMMAND} -E remove_directory "${BEN10_TEST_CASE_DIR}/generated"
-    # -I: o Python não carrega módulos da pasta do script nem da atual.
+    # -I: Python loads no modules from the script's folder or the current one.
     COMMAND Python3::Interpreter -I "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_test_elf.py" "${BEN10_TEST_CASE_DIR}"
     COMMAND $<TARGET_FILE:ps2_recomp> "${BEN10_TEST_CASE_DIR}/test_program.toml"
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_test_elf.py" ps2_recomp
-    COMMENT "Gerando e recompilando o ELF de teste"
+    COMMENT "Generating and recompiling the test ELF"
     VERBATIM)
 
 file(GLOB BEN10_INSTRUCTION_TEST_SOURCES CONFIGURE_DEPENDS

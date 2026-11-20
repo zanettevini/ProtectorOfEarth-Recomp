@@ -1,24 +1,24 @@
 From: Protector of Earth Recomp
-Subject: [PATCH] CVT.W.S: truncar em direcao a zero e saturar
+Subject: [PATCH] CVT.W.S: truncate toward zero and saturate
 
-O que quebrou:
-  FPU_CVT_W_S era (int32_t)nearbyintf(x): arredonda pelo modo atual do
-  processador (no EE recompilado, "mais proximo"). 1.75 dava 2 (PS2: 1),
-  -1.75 dava -2 (PS2: -1), 3e9 dava 0x80000000 (PS2: 0x7FFFFFFF).
-  O Ben 10 tem 566 CVT.W.S (docs/findings/09 s.5).
+What broke:
+  FPU_CVT_W_S was (int32_t)nearbyintf(x): it rounds with the processor's
+  current mode (in the recompiled EE, "nearest"). 1.75 gave 2 (PS2: 1),
+  -1.75 gave -2 (PS2: -1), 3e9 gave 0x80000000 (PS2: 0x7FFFFFFF).
+  Ben 10 has 566 CVT.W.S (docs/findings/09 s.5).
 
-Por que:
-  O CVT.W.S do PS2 sempre corta em direcao a zero e satura quando o
-  expoente passa de 2^31: PCSX2 FPU.cpp CVT_W (cast (s32), e 0x7FFFFFFF /
-  0x80000000 fora do intervalo). O runtime so muda o modo de arredondamento
-  dentro do codigo de VU (ps2_vu1_core.cpp), nao no EE.
+Why:
+  The PS2's CVT.W.S always truncates toward zero and saturates when the
+  exponent is past 2^31: PCSX2 FPU.cpp CVT_W (an (s32) cast, and
+  0x7FFFFFFF / 0x80000000 out of range). The runtime only changes the
+  rounding mode inside VU code (ps2_vu1_core.cpp), not in the EE.
 
-A correcao:
-  Nova funcao ps2_cvt_w_s() com a regra do PCSX2; FPU_CVT_W_S usa ela.
+The fix:
+  A new function ps2_cvt_w_s() with PCSX2's rule; FPU_CVT_W_S uses it.
 
-Como foi achado:
-  Leitura do ps2_runtime_macros.h; confirmado pelos testes CvtWs*
-  (3 de 4 falhavam antes do patch), docs/findings/14 s.5.
+How it was found:
+  Reading ps2_runtime_macros.h; confirmed by the CvtWs* tests (3 of 4
+  failed before the patch), docs/findings/14 s.5.
 
 diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
 index 0485d50..7cefb73 100644

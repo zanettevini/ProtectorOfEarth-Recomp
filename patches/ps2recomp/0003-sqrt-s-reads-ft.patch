@@ -1,22 +1,22 @@
 From: Protector of Earth Recomp
-Subject: [PATCH] SQRT.S: ler o operando do campo ft
+Subject: [PATCH] SQRT.S: read the operand from the ft field
 
-O que quebrou:
-  SQRT.S calculava a raiz de $f[fs]. No codigo do jogo fs e sempre 0, entao
-  todo SQRT.S lia $f0: 31 dos 85 SQRT.S do Ben 10 usam outro registrador e
-  davam resultado errado.
+What broke:
+  SQRT.S took the square root of $f[fs]. In the game's code fs is always 0,
+  so every SQRT.S read $f0: 31 of Ben 10's 85 SQRT.S use another register
+  and gave wrong results.
 
-Por que:
-  No R5900 o formato e SQRT.S fd, ft (operando em ft, fs = 0), diferente do
-  SQRT.S fd, fs do MIPS IV (EE Core Instruction Set Manual; PCSX2 FPU.cpp
-  SQRT_S usa _FtValUl_). O compilador do jogo codifica assim: os 85 SQRT.S
-  do SLUS_216.61 tem fs = 0 (tools/analyzer, docs/findings/14 s.5).
+Why:
+  On the R5900 the format is SQRT.S fd, ft (operand in ft, fs = 0), unlike
+  MIPS IV's SQRT.S fd, fs (EE Core Instruction Set Manual; PCSX2 FPU.cpp
+  SQRT_S uses _FtValUl_). The game's compiler encodes it that way: all 85
+  SQRT.S in SLUS_216.61 have fs = 0 (tools/analyzer, docs/findings/14 s.5).
 
-A correcao:
-  FPU_SQRT_S(ctx->f[ft]) em vez de FPU_SQRT_S(ctx->f[fs]).
+The fix:
+  FPU_SQRT_S(ctx->f[ft]) instead of FPU_SQRT_S(ctx->f[fs]).
 
-Como foi achado:
-  Teste SqrtsReadsFt; contagem dos campos nos SQRT.S do jogo.
+How it was found:
+  Test SqrtsReadsFt; counting the fields of the game's SQRT.S.
 
 diff --git a/ps2xRecomp/src/lib/fpu_translator.cpp b/ps2xRecomp/src/lib/fpu_translator.cpp
 index 435db3a..f53e63c 100644

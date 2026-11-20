@@ -1,47 +1,52 @@
-# Situação do projeto
+# Project status
 
-**Fases 0 e 1: concluídas. Fase 2 (recompilador): em andamento.**
-O código do jogo é traduzido, compila e liga inteiro no Linux. Ainda não
-foi executado.
+**Phases 0 and 1: done. Phase 2 (recompiler): in progress. Phase 7 (first
+execution): started.** The game's code is translated, compiles, links and
+starts running on Linux; the boot gets through SIF, RPC, CD init and the
+IOP reboot, and now waits on the file I/O server.
 
-Leia primeiro: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (o que se sabe do jogo)
-e o painel do [README](../README.md#-rumo-ao-nativo).
+Read first: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (what is known about the
+game) and the [README](../README.md#-going-native) board.
 
-## Feito
+## Done
 
-- Estudo, análise do disco, do ELF, dos IRX e dos microprogramas de VU
-  ([findings/01](findings/01-ps2recomp.md)-[11](findings/11-microprogramas-vu.md)).
-- Ghidra headless: 4.420 funções, API de script nomeada
-  ([findings/12](findings/12-analise-ghidra.md)).
-- Primeira recompilação: 0 instruções não suportadas
-  ([findings/13](findings/13-primeira-recompilacao.md)).
-- Repositório no formato do Mind over Recomp, PS2Recomp como submódulo
-  fixado, 5 patches aplicados pelo CMake
-  ([findings/14](findings/14-repositorio-build-e-testes.md)).
-- Build completo do jogo (`ben10_poe`) compila e liga.
-- Testes por instrução de ponta a ponta; 4 erros do tradutor achados e
-  corrigidos (LQ/SQ, SQRT.S, CVT.W.S, PADDUH/PSUBUH).
+- Study, analysis of the disc, the ELF, the IRX modules and the VU
+  microprograms ([findings/01](findings/01-ps2recomp.md)-[11](findings/11-vu-microprograms.md)).
+- Headless Ghidra: 4,420 functions, script API named
+  ([findings/12](findings/12-ghidra-analysis.md)).
+- First recompilation: 0 unsupported instructions
+  ([findings/13](findings/13-first-recompilation.md)).
+- Repository in the Mind over Recomp format, PS2Recomp as a pinned
+  submodule, 5 patches applied by CMake; full build; end-to-end
+  per-instruction tests; 4 translator bugs found and fixed
+  ([findings/14](findings/14-repository-build-and-tests.md)).
+- First boot: 23 Sony library functions (libsif, libcdvd, IOP reboot)
+  identified with evidence and bound to runtime handlers; the boot moved
+  past 4 blockers ([findings/15](findings/15-first-boot.md)).
+- Repository translated to English (D7).
 
-## Testes feitos
+## Tests run
 
-| O quê | Onde | Resultado |
+| What | Where | Result |
 |---|---|---|
-| `ctest` (34 casos: 33 ativos, 1 desligado de propósito) | Linux, GCC 13 | **33/33 passam** |
-| Os mesmos, antes dos patches 0002-0005 | Linux | 24 passavam, 8 falhavam (findings/14 s.5) |
-| Build completo `ben10_poe` (antes e depois dos patches) | Linux, GCC 13, `-O0` | compila e liga |
-| `tools/ghidra_analisar.sh` | Linux | reproduz a mesma lista de funções (20.234 entradas iguais) |
-| Patches aplicados pelo CMake | Linux | 5 aplicados no submódulo limpo; nada reaplicado no 2º configure |
-| `tools/coletar_disco.ps1` (versão do estudo) | Windows | ok |
+| `ctest` (34 cases: 33 active, 1 disabled on purpose) | Linux, GCC 13 | **33/33 pass** |
+| The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
+| Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
+| Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
+| `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
+| Patches applied by CMake | Linux | 5 applied on a clean submodule; nothing re-applied on the 2nd configure |
+| `tools/collect_disc.ps1` (study version) | Windows | ok |
 
-**Não testado**: nada no Windows além da coleta do disco (MSVC,
-`ghidra_analisar.ps1`, a versão do repositório de `coletar_disco.ps1`);
-build otimizado; **executar o jogo**.
+**Untested**: everything on Windows except the study version of the disc
+collection (MSVC, `ghidra_analyze.ps1`, the repository version of
+`collect_disc.ps1`); an optimised build; a run with the full disc
+(`GAME.DIR`, `GAME.WAD`, `IOPRP300.IMG`: KNOWN_ISSUES B8).
 
-## Não resolvido
+## Unresolved
 
-Ver [KNOWN_ISSUES.md](KNOWN_ISSUES.md): dívidas temporárias T1 (IOP
-interpretado) e T2 (VU interpretado), e os riscos R10-R13 sobre instruções.
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md): temporary debts T1 (interpreted
+IOP) and T2 (interpreted VU), risks R10-R14.
 
-## Próxima tarefa
+## Next task
 
-Ver [NEXT_TASK.md](NEXT_TASK.md).
+See [NEXT_TASK.md](NEXT_TASK.md).

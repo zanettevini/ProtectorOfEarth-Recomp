@@ -1,22 +1,23 @@
 From: Protector of Earth Recomp
-Subject: [PATCH] LQ/SQ: alinhar o endereco em 16 bytes
+Subject: [PATCH] LQ/SQ: align the address to 16 bytes
 
-O que quebrou:
-  LQ e SQ liam/escreviam 16 bytes a partir do endereco exato (rs + imm).
+What broke:
+  LQ and SQ read/wrote 16 bytes starting at the exact address (rs + imm).
 
-Por que:
-  No R5900, LQ/SQ ignoram os 4 bits baixos do endereco em silencio, sem
-  excecao de alinhamento (EE Core Instruction Set Manual; PCSX2
-  R5900OpcodeImpl.cpp LQ/SQ: "addr & ~0xf", com comentario explicando).
-  O tradutor passava o endereco cru para READ128/WRITE128, que nao alinham.
+Why:
+  On the R5900, LQ/SQ silently ignore the low 4 address bits, with no
+  alignment exception (EE Core Instruction Set Manual; PCSX2
+  R5900OpcodeImpl.cpp LQ/SQ: "addr & ~0xf", with a comment explaining it).
+  The translator passed the raw address to READ128/WRITE128, which do not
+  align.
 
-A correcao:
-  O endereco gerado vira (rs + imm) & ~0xF.
-  LQC2/SQC2 NAO foram mudados: o PCSX2 nao alinha esses dois e nao ha
-  evidencia sobre o hardware (docs/findings/14 s.5, em aberto).
+The fix:
+  The generated address becomes (rs + imm) & ~0xF.
+  LQC2/SQC2 were NOT changed: PCSX2 does not align those two and there is
+  no evidence about the hardware (docs/findings/14 s.7, open).
 
-Como foi achado:
-  Testes LqIgnoresLowFourBits / SqIgnoresLowFourBits
+How it was found:
+  Tests LqIgnoresLowFourBits / SqIgnoresLowFourBits
   (tests/instructions/test_ee_instructions.cpp), docs/findings/14 s.5.
 
 diff --git a/ps2xRecomp/src/lib/instruction_translator.cpp b/ps2xRecomp/src/lib/instruction_translator.cpp

@@ -1,50 +1,50 @@
-# ben10_poe.toml: configuração do recompilador (PS2Recomp, ps2_recomp)
+# ben10_poe.toml: recompiler configuration (PS2Recomp, ps2_recomp)
 #
-# É o equivalente do crash_mom_manifest.toml do Mind over Recomp: tudo que
-# muda o jogo que o recompilador gera passa por aqui, e TODA entrada tem um
-# comentário de "por que + como descobrimos" (AGENTS.md s.4).
+# The equivalent of Mind over Recomp's crash_mom_manifest.toml: everything
+# that changes the game the recompiler generates goes through here, and
+# EVERY entry has a "why + how we found it" comment (AGENTS.md s.4).
 #
-# Os caminhos são relativos à raiz do repositório (o ps2_recomp roda a partir
-# dela; ver o alvo ben10_codegen no CMakeLists.txt).
+# Paths are relative to the repository root (ps2_recomp runs from there; see
+# the ben10_codegen target in CMakeLists.txt).
 #
-# De onde vêm os arquivos:
-#   game/SLUS_216.61                 o ELF do SEU disco (tools/coletar_disco.ps1
-#                                    ou tools/extrair_disco.sh). Nunca versionado.
-#   generated/ghidra/functions.csv   lista de funções exportada do Ghidra
-#                                    (tools/ghidra_analisar.sh / .ps1,
-#                                    docs/findings/12). Derivada do binário do
-#                                    jogo: nunca versionada.
-#   generated/default/               o C++ gerado. É o código do jogo
-#                                    traduzido: nunca versionado.
+# Where the files come from:
+#   game/SLUS_216.61                 the ELF from YOUR disc
+#                                    (tools/collect_disc.ps1). Never versioned.
+#   generated/ghidra/functions.csv   function list exported from Ghidra
+#                                    (tools/ghidra_analyze.sh / .ps1,
+#                                    docs/findings/12). Derived from the game
+#                                    binary: never versioned.
+#   generated/default/               the generated C++. It is the game's code,
+#                                    translated: never versioned.
 
 [general]
 input = "game/SLUS_216.61"
 ghidra_output = "generated/ghidra/functions.csv"
 output = "generated/default"
 
-# Um arquivo .cpp por função. Com um arquivo só, o compilador precisaria de
-# muitos GB de RAM de uma vez (são ~20 mil funções e pontos de entrada).
+# One .cpp file per function. With a single file, the compiler would need
+# many GB of RAM at once (there are ~20 thousand functions and entry points).
 single_file_output = false
 
-# SYSCALL fica como instrução recompilada que chama runtime->handleSyscall
-# (o próprio PS2Recomp não recomenda trocar por patch, README dele).
+# SYSCALL stays a recompiled instruction that calls runtime->handleSyscall
+# (PS2Recomp itself does not recommend patching it out, per its README).
 patch_syscalls = false
-# COP0 e CACHE viram chamadas ao runtime em vez de instruções cruas: o jogo
-# usa 278 instruções COP0 e 13 CACHE (findings/09 s.5), que não fazem
-# sentido num PC.
+# COP0 and CACHE become runtime calls instead of raw instructions: the game
+# uses 278 COP0 and 13 CACHE instructions (findings/09 s.5), which make no
+# sense on a PC.
 patch_cop0 = true
 patch_cache = true
 
-# Funções trocadas por tratadores do runtime (stubs do PS2Recomp).
+# Functions replaced with runtime handlers (PS2Recomp stubs).
 #
-# Por que: são os wrappers de syscall da libkernl da Sony (uma instrução
-# SYSCALL cada). A extensão ghidra-emotionengine-reloaded reconheceu e deu
-# nome a elas; o ExportPS2Functions.java do PS2Recomp listou as que o runtime
-# já sabe tratar.
-# Como achamos: análise headless do Ghidra, findings/12 s.3. Todas ficam no
-# bloco 0x001C49E0-0x001C5210.
-# Formato: "Nome@0xENDEREÇO" (o endereço desambigua nomes repetidos, como os
-# dois AddIntcHandler).
+# Why: they are the syscall wrappers of Sony's libkernl (one SYSCALL
+# instruction each). The ghidra-emotionengine-reloaded extension recognised
+# and named them; PS2Recomp's ExportPS2Functions.java listed the ones the
+# runtime already knows how to handle.
+# How we found them: headless Ghidra analysis, findings/12 s.3. They all sit
+# in the block 0x001C49E0-0x001C5210.
+# Format: "Name@0xADDRESS" (the address disambiguates repeated names, such as
+# the two AddIntcHandler).
 stubs = [
   "SetGsCrt@0x001C49E0",
   "AddIntcHandler@0x001C4AC0",
@@ -88,12 +88,104 @@ stubs = [
   "sceSifSetReg@0x001C51E0",
   "sceSifGetReg@0x001C51F0",
   "Deci2Call@0x001C5210",
+
+  # --- libsif (EE <-> IOP communication) -----------------------------------
+  # Why: the executable has no symbols, so these Sony library functions ran
+  # as ordinary code. PS2Recomp's runtime does not emulate the IOP at the
+  # hardware level: it answers by these names. Without the bindings, boot
+  # was stuck forever in sceSifInitRpc's "while (!SifGetSreg(0))" loop,
+  # waiting for an IOP that does not exist (findings/15 s.3).
+  # How we found them: gdb on the first run + tools/analyzer/function_map.py.
+  # Each name has its evidence next to it (findings/15 s.4).
+
+  # Registers handlers 0x80000008/9/A/C (RPC end, bind, call and rdata),
+  # reads register 0x80000002 (RPCINIT), sends the init command and waits on
+  # SifGetSreg(0): the same sequence as the PS2SDK's SifInitRpc.
+  "sceSifInitRpc@0x001C7C68",
+  # Installs the SIF DMA handler (AddDmacHandler) and uses
+  # sceSifSetDChain/SetReg/GetReg; called at the start of sceSifInitRpc.
+  "sceSifInitCmd@0x001C7520",
+  # Calls 0x001C77A0 (which does RemoveDmacHandler) and clears the same
+  # "already initialised" flag (0x00229258) that sceSifInitRpc sets.
+  "sceSifExitRpc@0x001C7E08",
+  "sceSifExitCmd@0x001C77A0",
+  # Creates a semaphore named "SceSifrpcBind" (a name left by the library).
+  "sceSifBindRpc@0x001C82B0",
+  # Creates a semaphore named "SceSifrpcCall".
+  "sceSifCallRpc@0x001C8490",
+  # 60 bytes: reads the client's packet (+0), compares the RPC id with the
+  # packet's (+0x18) and tests bit 1 of +0x10: the PS2SDK's SifCheckStatRpc.
+  "sceSifCheckStatRpc@0x001C8690",
+  # Reads a word from a table of 32 software registers
+  # (0x00274A40 + 4*n): the value sceSifInitRpc's loop waits on.
+  "sceSifGetSreg@0x001C74F8",
+  # Stores (function, argument) in a table indexed by the command number;
+  # sceSifInitRpc calls it 4 times with 0x80000008..0x8000000C.
+  "sceSifAddCmdHandler@0x001C77F0",
+  # Builds and sends a SIF command (calls the common sender 0x001C78B8, which
+  # uses sceSifSetDma); it is how sceSifInitRpc sends the init command.
+  # The interrupt version (0x001C7A30) stays as game code: the runtime has no
+  # "isceSifSendCmd" handler.
+  "sceSifSendCmd@0x001C79F0",
+
+  # --- libcdvd (disc reads) ------------------------------------------------
+  # Why: the IOP's CD server (SID 0x80000592...) lives in the console ROM,
+  # not on the disc; no game IRX registers it, so the runtime's
+  # sceSifBindRpc returns server 0 and the game's sceCdInit kept trying to
+  # bind forever (findings/15 s.5). PS2Recomp's runtime answers for libcdvd
+  # by the names below, reading the files in game/.
+  # The whole family is bound together: if only sceCdRead belonged to the
+  # runtime, the game's sceCdSync would wait for an internal signal that
+  # would never come.
+  # How we found them: tools/analyzer/rpc_calls.py (client struct -> SID,
+  # function number, sizes) compared with the PS2SDK's libcdvd
+  # (ee/rpc/cdvd/src, commit cf9557d), plus the library's strings.
+
+  # Binds SID 0x80000592 (CD_SERVER_INIT), accepts modes 0..5; prints
+  # "Libcdvd bind err %d CD_Init %d" and "Libcdvd Exit".
+  "sceCdInit@0x001C3D98",
+  # Binds SID 0x80000597 (CD_SERVER_SEARCHFILE), function 0, sends 300 bytes.
+  "sceCdSearchFile@0x001C3620",
+  # Binds SID 0x8000059A (CD_SERVER_DISKREADY), function 0, 4 bytes each way.
+  "sceCdDiskReady@0x001C4080",
+  # SID 0x80000595 (N-commands), function 1 (CD_NCMD_READ), 24 bytes, no
+  # wait: identical to the PS2SDK's sceCdRead.
+  "sceCdRead@0x001C44B8",
+  # SID 0x80000595, function 5 (CD_NCMD_SEEK), 4 bytes, no wait.
+  "sceCdSeek@0x001C4698",
+  # SID 0x80000595, function 0xE (CD_NCMD_DISKREADY), 4-byte reply.
+  "sceCdNcmdDiskReady@0x001C3A98",
+  # SID 0x80000593 (S-commands), function 1 (CD_SCMD_READCLOCK), 16-byte reply.
+  "sceCdReadClock@0x001C4900",
+  # SID 0x80000593, function 3 (CD_SCMD_GETDISKTYPE), 4-byte reply.
+  "sceCdGetDiskType@0x001C4768",
+  # Checks S-command 0x22 = 34 (CD_SCMD_MMODE) and sends the argument (the media).
+  "sceCdMmode@0x001C4828",
+  # Waits on the N-command client (0x00228850) with sceSifCheckStatRpc;
+  # prints "N cmd wait".
+  "sceCdSync@0x001C3B30",
+  # The same for the S-command client (0x00229200); prints "S cmd wait".
+  "sceCdSyncS@0x001C3BD0",
+
+  # --- IOP reboot -----------------------------------------------------------
+  # Why: right after sceCdInit the game reboots the IOP with its own module
+  # image and spins on "while (!sceSifSyncIop())". With no real IOP to
+  # reboot, that loop never ends (findings/15 s.6).
+  # How we found it: gdb sample in the third run + the caller FUN_00142dc0,
+  # which passes the string "cdrom0:\IOPRP300.IMG;1".
+
+  # Calls sceSifInitRpc / sceSifExitRpc, then the reset routine 0x001CA4B8
+  # with the image path; its caller loops until it returns non-zero.
+  "sceSifRebootIop@0x001CA660",
+  # Reads SIF register 4 (SMFLAG) and tests bit 0x40000 (BOOTEND): the
+  # SifIopSync pattern of the PS2SDK.
+  "sceSifSyncIop@0x001CA610",
 ]
 
-# Nenhuma função pulada.
-# A tabela de dados de 20 KB em 0x001002E0-0x00105200, dentro do .text, não
-# precisa de skip: ela não pertence a nenhuma função do CSV, então o
-# recompilador nunca a traduz (findings/12 s.6).
+# No function skipped.
+# The 20 KB data table at 0x001002E0-0x00105200, inside .text, needs no
+# skip: it belongs to no function in the CSV, so the recompiler never
+# translates it (findings/12 s.6).
 skip = []
 
 untracked_stubs = []

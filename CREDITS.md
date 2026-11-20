@@ -1,25 +1,26 @@
-# Créditos
+# Credits
 
-## Projeto
+## Project
 
-- **Mantenedor do projeto**: direção, testes no jogo real.
-- **Claude** (Anthropic), pelo Claude Code: assistente de IA que escreveu a
-  maior parte do código, das ferramentas e da documentação.
+- **Project maintainer**: direction, testing on the real game.
+- **Claude** (Anthropic), via Claude Code: AI assistant that wrote most of
+  the code, tools and documentation.
 
-## Software em que o port se apoia
+## Software the port is built on
 
-| Projeto | Para quê | Licença |
+| Project | Used for | License |
 |---|---|---|
-| [PS2Recomp](https://github.com/ran-j/PS2Recomp) (ran-j e colaboradores) | o recompilador e o runtime (submódulo `thirdparty/PS2Recomp`); `tools/ghidra_scripts/ExportPS2Functions.java` é uma cópia dele | GPL-3.0 |
-| [GoogleTest](https://github.com/google/googletest) | testes automatizados (baixado pelo CMake) | BSD-3-Clause |
-| Dependências do PS2Recomp (ELFIO, toml11, fmt, libdwarf, rabbitizer, raylib...) | baixadas pelo CMake do PS2Recomp | as de cada projeto |
+| [PS2Recomp](https://github.com/ran-j/PS2Recomp) (ran-j and contributors) | the recompiler and runtime (submodule `thirdparty/PS2Recomp`); `tools/ghidra_scripts/ExportPS2Functions.java` is a copy of its script | GPL-3.0 |
+| [GoogleTest](https://github.com/google/googletest) | automated tests (fetched by CMake) | BSD-3-Clause |
+| PS2Recomp's dependencies (ELFIO, toml11, fmt, libdwarf, rabbitizer, raylib...) | fetched by PS2Recomp's CMake | each project's own |
 
-## Referências (lidas, não copiadas)
+## References (read, not copied)
 
-| Projeto | Para quê |
+| Project | Used for |
 |---|---|
-| [PCSX2](https://github.com/PCSX2/pcsx2) | comportamento de referência do PS2: os valores esperados dos testes citam o interpretador dele (GPL-3.0) |
-| [Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp) (Maxilure) | a organização do repositório, as regras do AGENTS.md e a ideia do painel `native_progress.py` (GPL-3.0) |
-| [Gitaroo Man Native](https://github.com/erinxocon/gitaroo-man-native), [BT2 Recomp](https://github.com/oric212/BT2-Recomp), [BT3-Recomp](https://github.com/z3xox/BT3-Recomp) | outros ports de PS2 feitos com o PS2Recomp (docs/findings/02) |
-| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) e [ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded) | análise do executável (Apache-2.0) |
-| [The Cutting Room Floor](https://tcrf.net/) | as opções de debug do jogo (docs/findings/03) |
+| [PCSX2](https://github.com/PCSX2/pcsx2) | PS2 reference behaviour: the tests' expected values cite its interpreter (GPL-3.0) |
+| [PS2SDK](https://github.com/ps2dev/ps2sdk) | the open-source libcdvd/libsif, used to recognise the Sony library functions in the stripped executable (docs/findings/15) |
+| [Mind over Recomp](https://github.com/Maxilure/MindOver-Recomp) (Maxilure) | the repository organisation, the AGENTS.md rules and the `native_progress.py` board idea (GPL-3.0) |
+| [Gitaroo Man Native](https://github.com/erinxocon/gitaroo-man-native), [BT2 Recomp](https://github.com/oric212/BT2-Recomp), [BT3-Recomp](https://github.com/z3xox/BT3-Recomp) | other PS2 ports built with PS2Recomp (docs/findings/02) |
+| [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and [ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded) | executable analysis (Apache-2.0) |
+| [The Cutting Room Floor](https://tcrf.net/) | the game's debug options (docs/findings/03) |

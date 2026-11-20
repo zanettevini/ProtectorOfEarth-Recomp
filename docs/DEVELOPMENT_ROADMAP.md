@@ -1,25 +1,24 @@
-# Roteiro de desenvolvimento
+# Development roadmap
 
-As fases são as do master prompt (`MASTER_PROMPT.md` s.6). Aqui fica o que
-cada uma depende e o primeiro passo concreto.
+The phases are the master prompt's ([MASTER_PROMPT.md](MASTER_PROMPT.md)
+s.6). This page lists what each depends on and the first concrete step.
 
-| Fase | Assunto | Depende de | Primeiro passo | Situação |
+| Phase | Topic | Depends on | Next step | Status |
 |---|---|---|---|---|
-| 0 | Ambiente e repositório | — | instalar JDK/Ghidra; criar o repositório | quase concluída |
-| 1 | Análise do executável | disco, Ghidra | — | **concluída** ([INITIAL_AUDIT](INITIAL_AUDIT.md)) |
-| 2 | Recompilador | 1 | mais testes por instrução (R13) | **em andamento**: build completo liga; 33 testes passam; 4 erros do tradutor corrigidos ([findings/14](findings/14-repositorio-build-e-testes.md)) |
-| 3 | Runtime do EE + VU | 2, D3 | testes por instrução (MMI, FPU); census de microprogramas de VU | não iniciada |
-| 4 | Serviços do sistema | 1, D2 | lista de RPCs do IOP que o jogo usa; serviço de arquivos | não iniciada |
-| 5 | Gráficos Vulkan | 3, 4, D4 | integrar paraLLEl-GS; primeiro frame | não iniciada |
-| 6 | Áudio e entrada | 4 | SDL3 para controle; SPU2 | não iniciada |
-| 7 | Primeira execução | 3-6 | do boot até o menu | não iniciada |
-| 8 | Compatibilidade | 7 | todas as fases, chefes, cutscenes, comparação com PCSX2 | não iniciada |
-| 9 | Melhorias de PC | 8 | resolução, widescreen, opções | não iniciada |
+| 0 | Environment and repository | — | — | **done** |
+| 1 | Executable analysis | disc, Ghidra | — | **done** ([INITIAL_AUDIT](INITIAL_AUDIT.md)) |
+| 2 | Recompiler | 1 | more per-instruction tests (R13) | **in progress**: full build links; 33 tests pass; 4 translator bugs fixed ([findings/14](findings/14-repository-build-and-tests.md)) |
+| 3 | EE + VU runtime | 2, D3 | VU microprogram census | not started |
+| 4 | System services | 1, D2 | **in progress**: libsif, libcdvd and IOP reboot bound to the runtime ([findings/15](findings/15-first-boot.md)) | in progress |
+| 5 | Vulkan graphics | 3, 4, D4 | integrate paraLLEl-GS; first frame | not started |
+| 6 | Audio and input | 4 | SDL3 for input; SPU2 | not started |
+| 7 | First execution | 3-6 | **in progress**: the boot runs, one blocker at a time ([findings/15](findings/15-first-boot.md)) | in progress |
+| 8 | Compatibility | 7 | every level, bosses, cutscenes, comparison with PCSX2 | not started |
+| 9 | PC enhancements | 8 | resolution, widescreen, options | not started |
 
-## Prioridades imediatas
+## Immediate priorities
 
-1. Primeira execução (Linux): até onde o boot chega.
-2. Build e testes no Windows (MSVC).
-3. Mais testes por instrução (R13).
-4. Fase 1 completa: `INITIAL_AUDIT.md`, `EXECUTABLE_ANALYSIS.md`, inventário
-   de funções, cobertura de instruções, dependências de hardware.
+1. Keep the boot moving, one blocker at a time (findings/15).
+2. A run with the full disc (`GAME.DIR`, `GAME.WAD`, `IOPRP300.IMG`): needs
+   the maintainer's PC or a Windows build (B7, B8).
+3. More per-instruction tests (R13).

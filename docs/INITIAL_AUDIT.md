@@ -1,79 +1,74 @@
-# Auditoria inicial (Fases 0 e 1)
+# Initial audit (phases 0 and 1)
 
-Resumo do que foi medido até agora. Os detalhes e os métodos estão nos
-findings; este arquivo é o relatório para ler primeiro.
+Summary of what has been measured. The details and methods are in the
+findings; this file is the report to read first.
 
-## 1. Ambiente ([findings/07](findings/07-ambiente-fase0.md))
+## 1. Environment ([findings/07](findings/07-phase0-environment.md))
 
-| Ferramenta | Situação |
+| Tool | Status |
 |---|---|
-| Windows 11, Git, CMake 4.4, Ninja, Python 3.12, Vulkan SDK 1.4 | ok |
-| MSVC (Build Tools 2022, C++ x64) | ok, usar o "Developer PowerShell for VS 2022" |
-| JDK 21 + Ghidra 12.1.4 + extensão EE | baixados |
-| PCSX2 (referência) | não verificado |
+| Git, CMake, Ninja, Python 3, Vulkan SDK | available on the development machine |
+| MSVC (Build Tools 2022, C++ x64) | available; use the "x64 Native Tools Command Prompt for VS 2022" |
+| JDK 21 + Ghidra 12.1.4 + EE extension | available |
+| PCSX2 (reference) | not checked |
 
-## 2. O disco ([findings/09](findings/09-executavel.md) s.3)
+## 2. The disc ([findings/09](findings/09-executable.md) s.3)
 
-SLUS-21661, revisão 1.01, NTSC. Um ELF (`SLUS_216.61`, 1,46 MB), 15 IRX,
-`IOPRP300.IMG`, e os dados em `GAME.DIR` (índice) + `GAME.WAD` (2,46 GB).
+SLUS-21661, revision 1.01, NTSC. One ELF (`SLUS_216.61`, 1.46 MB), 15 IRX
+modules, `IOPRP300.IMG`, and the data in `GAME.DIR` (index) + `GAME.WAD`
+(2.46 GB).
 
-## 3. O executável ([findings/09](findings/09-executavel.md))
+## 3. The executable ([findings/09](findings/09-executable.md))
 
-- ELF32 MIPS R5900, entrada `0x00100008`, um único segmento de
-  `0x00100000` a `0x00285FCC`, sem símbolos.
-- 278.200 palavras de código; ≥2.293 funções (só contando `JAL`).
-- Muito código de 64 bits, ~3.300 branches "likely", 6.705 LQ/SQ de 128
-  bits, 768 MMI, 6.596 operações COP2 (VU0 macro), 33.169 de FPU.
-- **Todo o código do EE parece estático**: nenhum overlay de código.
-- ~585 palavras de dados dentro do `.text` precisam ser marcadas.
-- 1.583 nomes `ass_*` (API de script do motor) podem dar nome a muitas
-  funções.
+- ELF32 MIPS R5900, entry point `0x00100008`, a single segment from
+  `0x00100000` to `0x00285FCC`, no symbols.
+- 278,200 code words; ≥2,293 functions (counting `JAL` targets only).
+- Much 64-bit code, ~3,300 "likely" branches, 6,705 128-bit LQ/SQ, 768 MMI,
+  6,596 COP2 operations (VU0 macro mode), 33,169 FPU instructions.
+- **All EE code looks static**: no code overlays.
+- ~585 data words inside `.text` (findings/12 s.6: all in one data table).
+- 1,583 `ass_*` names (the engine's script API) name many functions.
 
-## 4. IOP ([findings/10](findings/10-modulos-iop.md))
+## 4. IOP ([findings/10](findings/10-iop-modules.md))
 
-8 módulos carregados: sio2man, multitap, padman, mcman, mcserv, libsd e
-dois próprios do motor, `ALASD` (driver de áudio "Argonaut") e `CDARB`
-(arbitragem de disco).
+8 modules are loaded: sio2man, multitap, padman, mcman, mcserv, libsd and
+two of the engine's own, `ALASD` (an "Argonaut" audio driver) and `CDARB`
+(disc arbitration).
 
-## 5. VU ([findings/11](findings/11-microprogramas-vu.md))
+## 5. VU ([findings/11](findings/11-vu-microprograms.md))
 
-Os microprogramas estão no `.vutext` (58 KB), com uma tabela de 32
-pedaços (origem no EE → destino na VU). Pelo menos 4 programas grandes só
-cabem no VU1. O EE também dispara microprogramas no VU0 (`VCALLMS`).
-**Tradução estática viável.**
+The microprograms are in `.vutext` (58 KB), with a table of 32 chunks (EE
+source → VU destination). At least 4 large programs only fit in VU1. The EE
+also starts VU0 microprograms (`VCALLMS`). **Static translation is
+feasible.**
 
-## 6. Dependências de hardware
+## 6. Hardware dependencies
 
-| Peça | Usada? | Evidência |
+| Piece | Used? | Evidence |
 |---|---|---|
-| EE + FPU + MMI + VU0 macro | sim | contagens da s.3 |
-| VU0 modo micro | sim | 6 `VCALLMS` |
-| VU1 | sim | programas de até 16 KB; mensagens da `libgraph` sobre VU1 |
-| VIF0, VIF1, GIF | sim | acessos diretos a registradores e FIFOs |
-| GS | sim | registradores privilegiados (configuração de vídeo) |
-| DMAC | sim | `libdma`; canais 1 e 2 citados |
-| IPU | provável | `libipu` ligada, reset dos canais do IPU; vídeos não confirmados |
-| Timers, scratchpad | sim | acessos diretos |
-| SPU2 | sim, via IOP | `LIBSD` + `ALASD` |
-| Memory card, controle, multitap | sim, via IOP | módulos carregados |
-| USB / teclado USB | provavelmente não | módulos no disco, não citados |
+| EE + FPU + MMI + VU0 macro | yes | the counts in s.3 |
+| VU0 micro mode | yes | 6 `VCALLMS` |
+| VU1 | yes | programs up to 16 KB; `libgraph` messages about VU1 |
+| VIF0, VIF1, GIF | yes | direct register and FIFO accesses |
+| GS | yes | privileged registers (video setup) |
+| DMAC | yes | `libdma`; channels 1 and 2 named |
+| IPU | likely | `libipu` linked, IPU channel reset; videos not confirmed |
+| Timers, scratchpad | yes | direct accesses |
+| SPU2 | yes, through the IOP | `LIBSD` + `ALASD` |
+| Memory card, controller, multitap | yes, through the IOP | loaded modules |
+| USB / USB keyboard | probably not | modules on the disc, not referenced |
 
-## 7. Ghidra e primeira recompilação ([findings/12](findings/12-analise-ghidra.md), [13](findings/13-primeira-recompilacao.md))
+## 7. Ghidra and the first recompilation ([findings/12](findings/12-ghidra-analysis.md), [13](findings/13-first-recompilation.md))
 
-- **4.420 funções**, 95,5% do `.text` coberto. 845 delas só apareceram
-  lendo a tabela da API de script (1.586 nomes do próprio jogo).
-- As 585 palavras suspeitas estão todas numa tabela de dados de 20 KB
-  fora de qualquer função.
-- PS2Recomp: **0 instruções não suportadas**, 0 falhas; 2.016 saltos
-  indiretos ficam para despacho por endereço. Amostra do C++ gerado (33
-  arquivos, incluindo os mais específicos do PS2) compila.
+- **4,420 functions**, 95.5% of `.text` covered. 845 of them appeared only
+  by reading the script API table (1,586 of the game's own names).
+- The 585 suspect words are all in a 20 KB data table outside every
+  function.
+- PS2Recomp: **0 unsupported instructions**, 0 failures; 2,016 indirect
+  jumps are left to dispatch by address.
 
-## 8. Lista de tarefas priorizada
+## 8. Since then
 
-1. ~~Ghidra~~, ~~inventário~~, ~~tabela `ass_*`~~, ~~primeira recompilação~~: feitos.
-2. Criar o repositório git e adicionar o fork do PS2Recomp (commit
-   `e563698`); compilar com MSVC; rodar os testes dele.
-3. Compilar todo o C++ gerado e ligar ao `ps2xRuntime`.
-4. Testes por instrução para as categorias mais usadas e mais arriscadas
-   (64 bits, likely, FPU com clamp, LQ/SQ, MMI usadas, VU0 macro).
-5. Primeira execução com `ps2xIOP` (D2 temporário): até onde o boot chega.
+- Repository, full build, per-instruction tests and 4 translator fixes:
+  [findings/14](findings/14-repository-build-and-tests.md).
+- First boot, one blocker at a time: [findings/15](findings/15-first-boot.md).

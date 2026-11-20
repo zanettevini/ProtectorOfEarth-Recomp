@@ -1,23 +1,23 @@
 From: Protector of Earth Recomp
-Subject: [PATCH] CMake: caminhos relativos ao proprio arquivo, para usar como submodulo
+Subject: [PATCH] CMake: paths relative to the file itself, to work as a submodule
 
-O que quebrou:
-  Usado com add_subdirectory() a partir de outro projeto, o PS2Recomp nao
-  configura: "include could not find requested file:
-  <projeto>/ps2xRuntime/cmake/ReleaseMode.cmake".
+What broke:
+  Used with add_subdirectory() from another project, PS2Recomp does not
+  configure: "include could not find requested file:
+  <project>/ps2xRuntime/cmake/ReleaseMode.cmake".
 
-Por que:
-  Quatro CMakeLists.txt montam caminhos com ${CMAKE_SOURCE_DIR}/ps2x...
-  CMAKE_SOURCE_DIR e a raiz do projeto PRINCIPAL; so coincide com a raiz do
-  PS2Recomp quando ele e o projeto principal.
+Why:
+  Four CMakeLists.txt build paths with ${CMAKE_SOURCE_DIR}/ps2x...
+  CMAKE_SOURCE_DIR is the root of the TOP-LEVEL project; it only matches
+  PS2Recomp's root when PS2Recomp is the top-level project.
 
-A correcao:
+The fix:
   ${CMAKE_SOURCE_DIR}/ps2x...  ->  ${CMAKE_CURRENT_LIST_DIR}/../ps2x...
-  Mesmo destino quando o PS2Recomp e o projeto principal; o destino certo
-  quando e submodulo.
+  Same destination when PS2Recomp is the top-level project; the right
+  destination when it is a submodule.
 
-Como foi achado:
-  Primeiro configure do CMakeLists.txt do port (docs/findings/14 s.2).
+How it was found:
+  First configure of the port's CMakeLists.txt (docs/findings/14 s.2).
 
 diff --git a/ps2xAnalyzer/CMakeLists.txt b/ps2xAnalyzer/CMakeLists.txt
 index 5933bca..695917c 100644

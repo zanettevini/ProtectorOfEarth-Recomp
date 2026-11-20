@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""make_test_elf.py: monta um ELF minúsculo de PS2 (EE) para testar o recompilador.
+"""make_test_elf.py: builds a tiny PS2 (EE) ELF to test the recompiler.
 
-PARA QUE SERVE
-    Os testes por instrução (tests/instructions/) precisam passar pelo
-    tradutor DE VERDADE do PS2Recomp, não só pelas macros do runtime: é o
-    texto C++ que o ps2_recomp escreve para cada instrução que roda no jogo.
-    Este script escreve, sem nenhum dado do jogo:
+WHAT IT IS FOR
+    The per-instruction tests (tests/instructions/) must go through
+    PS2Recomp's REAL translator, not just the runtime macros: what runs in
+    the game is the C++ text ps2_recomp writes for each instruction.
+    This script writes, with no game data at all:
 
-      <saída>/test_program.elf   ELF32 little-endian, MIPS R5900, um só
-                                 segmento em 0x00100000 com as funções de teste
-      <saída>/functions.csv      a lista de funções, no formato que o
-                                 ExportPS2Functions.java do Ghidra produz
-      <saída>/test_program.toml  a config do ps2_recomp para este ELF
-      <saída>/test_cases.h       um #define por caso: CASE_<nome> -> o nome da
-                                 função C++ gerada, e o endereço dela
+      <out>/test_program.elf   ELF32 little-endian, MIPS R5900, a single
+                               segment at 0x00100000 holding the test functions
+      <out>/functions.csv      the function list, in the format Ghidra's
+                               ExportPS2Functions.java produces
+      <out>/test_program.toml  the ps2_recomp config for this ELF
+      <out>/test_cases.h       one #define per case: CASE_<name> -> the name
+                               of the generated C++ function, and its address
 
-    O CMake de tests/ roda este script, depois o ps2_recomp, depois compila o
-    C++ gerado junto com os testes GoogleTest.
+    The tests/ CMake runs this script, then ps2_recomp, then compiles the
+    generated C++ together with the GoogleTest tests.
 
-CODIFICAÇÃO
-    Os formatos das instruções seguem o manual do R5900 ("EE Core
-    Instruction Set Manual") e as tabelas de decodificação do PCSX2
-    (pcsx2/R5900OpcodeTables.cpp). Os testes conferem, além do resultado, o
-    comentário de disassembly que o ps2_recomp escreve: se a codificação
-    aqui estiver errada, o mnemônico gerado não bate e o erro aparece.
+ENCODING
+    Instruction formats follow the R5900 manual ("EE Core Instruction Set
+    Manual") and PCSX2's decode tables (pcsx2/R5900OpcodeTables.cpp). Besides
+    the result, the disassembly comment ps2_recomp writes was checked: if an
+    encoding here were wrong, the generated mnemonic would not match and the
+    mistake would show.
 
-USO
-    python3 -I make_test_elf.py <pasta de saída>
+USAGE
+    python3 -I make_test_elf.py <output folder>
 """
 import struct
 import sys
 from pathlib import Path
 
-BASE = 0x00100000  # mesmo endereço de carga do jogo (findings/09 s.4)
+BASE = 0x00100000  # same load address as the game (findings/09 s.4)
 
 # ---------------------------------------------------------------------------
-# Codificador
+# Encoder
 # ---------------------------------------------------------------------------
-# Registradores pelo número; nomes só para legibilidade dos casos.
+# Registers by number; names only make the cases readable.
 ZERO, AT, V0, V1, A0, A1, A2, A3 = range(8)
 T0, T1, T2, T3 = 8, 9, 10, 11
 RA = 31
@@ -51,7 +51,7 @@ def i_type(op, rs, rt, imm):
     return (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
 
 
-# Inteiros
+# Integers
 def nop():                 return 0
 def addiu(rt, rs, imm):    return i_type(0x09, rs, rt, imm)
 def ori(rt, rs, imm):      return i_type(0x0D, rs, rt, imm)
@@ -61,13 +61,13 @@ def daddu(rd, rs, rt):     return r_type(0, rs, rt, rd, 0, 0x2D)
 def dsra32(rd, rt, sa):    return r_type(0, 0, rt, rd, sa, 0x3F)
 def jr(rs):                return r_type(0, rs, 0, 0, 0, 0x08)
 
-# Memória
+# Memory
 def lq(rt, off, base):     return i_type(0x1E, base, rt, off)
 def sq(rt, off, base):     return i_type(0x1F, base, rt, off)
 def lw(rt, off, base):     return i_type(0x23, base, rt, off)
 
 
-# Desvios: o deslocamento é relativo à instrução SEGUINTE (pc + 4), em palavras.
+# Branches: the offset is relative to the NEXT instruction (pc + 4), in words.
 def _branch(op, rs, rt, pc, target):
     return i_type(op, rs, rt, (target - (pc + 4)) >> 2)
 
@@ -76,7 +76,7 @@ def beq(rs, rt, pc, target):   return _branch(0x04, rs, rt, pc, target)
 def beql(rs, rt, pc, target):  return _branch(0x14, rs, rt, pc, target)
 def bnel(rs, rt, pc, target):  return _branch(0x15, rs, rt, pc, target)
 
-# FPU (COP1). Formato S: fd = fs op ft.
+# FPU (COP1). S format: fd = fs op ft.
 COP1 = 0x11
 def mtc1(rt, fs):          return r_type(COP1, 0x04, rt, fs, 0, 0)
 def mfc1(rt, fs):          return r_type(COP1, 0x00, rt, fs, 0, 0)
@@ -85,10 +85,10 @@ def add_s(fd, fs, ft):     return _fpu_s(0x00, fd, fs, ft)
 def sub_s(fd, fs, ft):     return _fpu_s(0x01, fd, fs, ft)
 def mul_s(fd, fs, ft):     return _fpu_s(0x02, fd, fs, ft)
 def div_s(fd, fs, ft):     return _fpu_s(0x03, fd, fs, ft)
-def sqrt_s(fd, ft):        return _fpu_s(0x04, fd, 0, ft)   # no R5900, SQRT.S lê ft
+def sqrt_s(fd, ft):        return _fpu_s(0x04, fd, 0, ft)   # on the R5900, SQRT.S reads ft
 def cvt_w_s(fd, fs):       return _fpu_s(0x24, fd, fs, 0)
 
-# MMI (opcode 0x1C). MMI0..MMI3 escolhem a operação pelo campo sa.
+# MMI (opcode 0x1C). MMI0..MMI3 pick the operation by the sa field.
 MMI = 0x1C
 def plzcw(rd, rs):         return r_type(MMI, rs, 0, rd, 0, 0x04)
 def paddsh(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x14, 0x08)  # MMI0
@@ -100,24 +100,24 @@ def pcpyld(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x0E, 0x09)  # MMI2
 def pcpyud(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x0E, 0x29)  # MMI3
 def pnor(rd, rs, rt):      return r_type(MMI, rs, rt, rd, 0x13, 0x29)  # MMI3
 
-# VU0 em modo macro (COP2)
+# VU0 macro mode (COP2)
 COP2 = 0x12
 def qmtc2(rt, vf):         return r_type(COP2, 0x05, rt, vf, 0, 0)
 def qmfc2(rt, vf):         return r_type(COP2, 0x01, rt, vf, 0, 0)
 
 
 def vadd(dest, fd, fs, ft):
-    """VADD.dest fd, fs, ft. dest: string com x/y/z/w (bit 24 = x ... bit 21 = w)."""
+    """VADD.dest fd, fs, ft. dest: a string of x/y/z/w (bit 24 = x ... bit 21 = w)."""
     mask = sum(bit for c, bit in (("x", 8), ("y", 4), ("z", 2), ("w", 1)) if c in dest)
     return (COP2 << 26) | (1 << 25) | (mask << 21) | (ft << 16) | (fs << 11) | (fd << 6) | 0x28
 
 
 # ---------------------------------------------------------------------------
-# Os casos
+# The cases
 # ---------------------------------------------------------------------------
-# Cada caso é uma função: recebe "pc" (o endereço de cada instrução, para os
-# desvios) e devolve a lista de palavras. Toda função termina em "jr ra; nop".
-# O teste C++ prepara os registradores, chama a função gerada e confere.
+# Each case is a function: it takes "pc" (the address of each instruction, for
+# branches) and returns the list of words. Every function ends in "jr ra; nop".
+# The C++ test sets up the registers, calls the generated function and checks.
 
 def ret():
     return [jr(RA), nop()]
@@ -131,10 +131,10 @@ def case(fn):
     return fn
 
 
-# --- Inteiros de 32/64 bits ---------------------------------------------------
+# --- 32/64-bit integers -------------------------------------------------------
 @case
 def t_addu_sign_extends(pc):
-    # v0 = a0 + a1 (32 bits) com o resultado estendido em sinal para 64 bits.
+    # v0 = a0 + a1 (32 bits) with the result sign-extended to 64 bits.
     return [addu(V0, A0, A1)] + ret()
 
 
@@ -145,13 +145,13 @@ def t_daddu_64bit(pc):
 
 @case
 def t_dsra32(pc):
-    return [dsra32(V0, A0, 4)] + ret()   # deslocamento de 4 + 32 = 36
+    return [dsra32(V0, A0, 4)] + ret()   # shift by 4 + 32 = 36
 
 
-# --- LQ / SQ alinham o endereço em 16 bytes ----------------------------------
+# --- LQ / SQ align the address to 16 bytes ----------------------------------
 @case
 def t_lq_ignores_low_bits(pc):
-    return [lq(V0, 0x7, A0)] + ret()     # a0 + 7: o LQ usa (a0 + 7) & ~0xF
+    return [lq(V0, 0x7, A0)] + ret()     # a0 + 7: LQ uses (a0 + 7) & ~0xF
 
 
 @case
@@ -159,17 +159,17 @@ def t_sq_ignores_low_bits(pc):
     return [sq(A1, 0x9, A0)] + ret()
 
 
-# --- Desvios e delay slots ----------------------------------------------------
-# Layout comum: v0 = 0; desvio; delay slot "v0 += 1"; (caminho não tomado)
-# "v0 += 0x10"; alvo: jr ra; nop.
+# --- Branches and delay slots -------------------------------------------------
+# Common layout: v0 = 0; branch; delay slot "v0 += 1"; (not-taken path)
+# "v0 += 0x10"; target: jr ra; nop.
 def _branch_case(kind):
     def build(pc):
         words = []
         words.append(addiu(V0, ZERO, 0))                 # pc+0
-        target = pc + 4 * 5                               # aponta para o jr ra
+        target = pc + 4 * 5                               # points at the jr ra
         words.append(kind(A0, A1, pc + 4, target))        # pc+4
         words.append(addiu(V0, V0, 1))                    # pc+8  delay slot
-        words.append(addiu(V0, V0, 0x10))                 # pc+12 só se não desviar
+        words.append(addiu(V0, V0, 0x10))                 # pc+12 only if not taken
         words.append(nop())                               # pc+16
         words += ret()                                    # pc+20
         return words
@@ -182,7 +182,7 @@ CASES["t_bnel_delay_slot"] = _branch_case(bnel)
 
 
 # --- FPU ----------------------------------------------------------------------
-# Entradas por $f12/$f13 (como bits, via mtc1), saída lida de volta em v0.
+# Inputs through $f12/$f13 (as bits, via mtc1), output read back into v0.
 def _fpu_case(op):
     def build(pc):
         return [mtc1(A0, 12), mtc1(A1, 13), op, mfc1(V0, 0)] + ret()
@@ -207,9 +207,9 @@ CASES["t_ppach"] = lambda pc: [ppach(V0, A0, A1)] + ret()
 CASES["t_pnor"] = lambda pc: [pnor(V0, A0, A1)] + ret()
 CASES["t_plzcw"] = lambda pc: [plzcw(V0, A0)] + ret()
 
-# --- VU0 em modo macro --------------------------------------------------------
-# vf1 = a0, vf2 = a1 (128 bits); vf3 recebe uma base conhecida (a2);
-# VADD com máscara de destino; v0 = vf3.
+# --- VU0 macro mode -----------------------------------------------------------
+# vf1 = a0, vf2 = a1 (128 bits); vf3 gets a known base (a2);
+# VADD with a destination mask; v0 = vf3.
 CASES["t_vadd_xyzw"] = lambda pc: [qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3),
                                    vadd("xyzw", 3, 1, 2), qmfc2(V0, 3)] + ret()
 CASES["t_vadd_x_only"] = lambda pc: [qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3),
@@ -220,8 +220,8 @@ CASES["t_vadd_x_only"] = lambda pc: [qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3),
 # ELF
 # ---------------------------------------------------------------------------
 def build_program():
-    """Coloca os casos um depois do outro, alinhados em 16 bytes."""
-    layout = []   # (nome, início, fim)
+    """Lays the cases out one after another, aligned to 16 bytes."""
+    layout = []   # (name, start, end)
     code = bytearray()
     for name, fn in CASES.items():
         while len(code) % 16:
@@ -240,8 +240,8 @@ def write_elf(path, text):
     shstr_off = text_off + len(text)
     shoff = (shstr_off + len(shstr) + 3) & ~3
 
-    # e_flags 0x20924001: os mesmos bits do ELF do jogo (noreorder, 5900,
-    # eabi64, mips3), para o ps2_recomp tratar igual (findings/09 s.4).
+    # e_flags 0x20924001: the same bits as the game's ELF (noreorder, 5900,
+    # eabi64, mips3), so ps2_recomp treats it the same way (findings/09 s.4).
     hdr = b"\x7fELF" + bytes([1, 1, 1, 0]) + bytes(8)
     hdr += struct.pack("<HHIIIIIHHHHHH", 2, 8, 1, BASE, ehsize, shoff, 0x20924001,
                        ehsize, phsize, 1, shsize, 3, 2)
@@ -288,7 +288,7 @@ def main():
         "skip = []\n", encoding="utf-8")
 
     with open(outdir / "test_cases.h", "w", encoding="utf-8") as f:
-        f.write("// Gerado por tests/tools/make_test_elf.py: não editar.\n#pragma once\n")
+        f.write("// Generated by tests/tools/make_test_elf.py: do not edit.\n#pragma once\n")
         for name, start, end in layout:
             f.write(f"#define CASE_{name} {name}_0x{start:x}\n")
             f.write(f"#define ADDR_{name} 0x{start:08X}u\n")

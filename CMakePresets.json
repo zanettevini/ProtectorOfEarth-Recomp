@@ -13,7 +13,7 @@
     },
     {
       "name": "linux-debug",
-      "displayName": "Linux, jogo, sem otimização (build mais rápido)",
+      "displayName": "Linux, game, no optimisation (fastest build)",
       "inherits": "base",
       "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
@@ -26,7 +26,7 @@
     },
     {
       "name": "linux-tests",
-      "displayName": "Linux, só os testes",
+      "displayName": "Linux, tests only",
       "inherits": "base",
       "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
@@ -38,7 +38,7 @@
     },
     {
       "name": "windows-debug",
-      "displayName": "Windows (MSVC), jogo. Rodar no Developer PowerShell for VS 2022",
+      "displayName": "Windows (MSVC), game. Run from the Developer PowerShell for VS 2022",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {
@@ -51,7 +51,7 @@
     },
     {
       "name": "windows-tests",
-      "displayName": "Windows (MSVC), só os testes",
+      "displayName": "Windows (MSVC), tests only",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
       "cacheVariables": {

@@ -1,31 +1,31 @@
-# Compilar
+# Building
 
-Do seu `.iso` até o executável `ben10_poe`, mais os testes. São quatro
-etapas: tirar o executável do disco, analisá-lo no Ghidra, traduzir para C++
-e compilar.
+From your `.iso` to the `ben10_poe` executable, plus the tests. Four stages:
+take the executable off the disc, analyse it in Ghidra, translate it to C++
+and compile.
 
-| Etapa | Linux | Windows |
+| Stage | Linux | Windows |
 |---|---|---|
-| Tirar os arquivos do disco | `bsdtar`/`7z` (s.3) | `tools\coletar_disco.ps1` |
-| Ghidra headless | `tools/ghidra_analisar.sh` (**testado**) | `tools\ghidra_analisar.ps1` (não testado) |
-| Configurar, traduzir, compilar | presets `linux-*` (**testado**, GCC 13) | presets `windows-*` (não testado) |
-| Testes | `ctest --preset linux-tests` (**testado**: 33/33) | `ctest --preset windows-tests` (não testado) |
+| Take the files off the disc | `bsdtar`/`7z` (s.3) | `tools\collect_disc.ps1` |
+| Headless Ghidra | `tools/ghidra_analyze.sh` (**tested**) | `tools\ghidra_analyze.ps1` (untested) |
+| Configure, translate, compile | `linux-*` presets (**tested**, GCC 13) | `windows-*` presets (untested) |
+| Tests | `ctest --preset linux-tests` (**tested**: 33/33) | `ctest --preset windows-tests` (untested) |
 
-## 1. O que instalar
+## 1. What to install
 
-| Ferramenta | Versão | Para quê |
+| Tool | Version | For |
 |---|---|---|
-| Git | qualquer recente | o repositório e o submódulo; o CMake usa para aplicar os patches |
-| CMake | 3.21+ | o build |
-| Ninja | qualquer recente | o gerador do build |
-| Python | 3.10+ | ferramentas e geração dos testes |
-| Compilador C++20 | Windows: Visual Studio 2022 (ou só as "Ferramentas de Build"), com "Desenvolvimento para desktop com C++"; Linux: GCC 13+ ou Clang 17+ | |
-| JDK | 21 (Eclipse Temurin, por exemplo) | o Ghidra |
-| Ghidra | 12.1.x | a lista de funções |
-| ghidra-emotionengine-reloaded | a mesma versão do Ghidra | suporte ao processador do PS2 no Ghidra |
+| Git | any recent | the repository and submodule; CMake uses it to apply the patches |
+| CMake | 3.21+ | the build |
+| Ninja | any recent | the build generator |
+| Python | 3.10+ | tools and test generation |
+| C++20 compiler | Windows: Visual Studio 2022 (or just its "Build Tools"), with "Desktop development with C++"; Linux: GCC 13+ or Clang 17+ | |
+| JDK | 21 (Eclipse Temurin, for example) | Ghidra |
+| Ghidra | 12.1.x | the function list |
+| ghidra-emotionengine-reloaded | the same version as Ghidra | PS2 CPU support in Ghidra |
 
-Linux (Ubuntu/Debian), bibliotecas que o runtime do PS2Recomp pede para a
-janela (raylib):
+Linux (Ubuntu/Debian): the libraries the PS2Recomp runtime needs for its
+window (raylib):
 
 ```bash
 sudo apt install build-essential cmake ninja-build git python3 unzip \
@@ -33,80 +33,83 @@ sudo apt install build-essential cmake ninja-build git python3 unzip \
     libxi-dev libasound2-dev libwayland-dev libxkbcommon-dev
 ```
 
-Memória e disco: o C++ gerado tem ~160 MB em ~20 mil arquivos. O build
-`-O0` usou pouca memória com 2 tarefas em paralelo; com mais tarefas,
-acompanhe a RAM. Reserve ~10 GB livres.
+Memory and disk: the generated C++ is ~160 MB in ~20,000 files. The `-O0`
+build used little memory with 2 parallel jobs; with more jobs, watch the
+RAM. Keep ~10 GB free.
 
-## 2. Clonar
+## 2. Clone
 
 ```bash
-git clone --recursive <url do repositório> ProtectorOfEarth-Recomp
+git clone --recursive https://github.com/zanettevini/ProtectorOfEarth-Recomp.git
 cd ProtectorOfEarth-Recomp
 ```
 
-Já tem a pasta mas falta o submódulo (`thirdparty/PS2Recomp` vazio)?
+Already have the folder but `thirdparty/PS2Recomp` is empty?
 
 ```bash
 git submodule update --init
 ```
 
-Não aplique patches à mão: o configure do CMake aplica os de
-`patches/ps2recomp/` sozinho (docs/DECISIONS.md D10).
+Don't apply patches by hand: CMake's configure applies the ones in
+`patches/ps2recomp/` by itself (docs/DECISIONS.md D10).
 
-## 3. Os arquivos do disco
+## 3. The disc files
 
-Só a versão americana: **SLUS-21661** (`SYSTEM.CNF` com `VER = 1.01`). O
-que importa é `game/SLUS_216.61`.
+USA release only: **SLUS-21661** (`SYSTEM.CNF` with `VER = 1.01`). The
+runtime treats the ELF's folder as the disc's root, so the disc files go in
+`game/` next to `game/SLUS_216.61` (findings/15 s.5).
 
-**Windows**: ponha o `.iso` numa pasta `iso\` na raiz do repositório e rode
-num PowerShell, na raiz:
+**Windows**: put the `.iso` in an `iso\` folder at the repository root and
+run, in PowerShell at the root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\coletar_disco.ps1
+powershell -ExecutionPolicy Bypass -File tools\collect_disc.ps1
 ```
 
-Ele monta o `.iso` só para leitura, copia o ELF e os IRX para `game\`, e
-grava SHA-1, lista de arquivos e um relatório do ambiente em `out\disco\`.
+It mounts the `.iso` read-only, copies the ELF, the IRX modules,
+`GAME.DIR` and `IOPRP300.IMG` into `game\`, and writes the SHA-1, the file
+list and an environment report into `out\disc\`. `GAME.WAD` (2.4 GB) is not
+copied by default; copy it into `game\` by hand to run the game.
 
 **Linux**:
 
 ```bash
 mkdir -p game
-bsdtar -xf /caminho/jogo.iso -C game SYSTEM.CNF SLUS_216.61 MODULES
+bsdtar -xf /path/to/game.iso -C game
 ```
 
-(ou `7z x /caminho/jogo.iso -ogame SYSTEM.CNF SLUS_216.61 MODULES`)
+(or `7z x /path/to/game.iso -ogame`)
 
-## 4. A lista de funções (Ghidra)
+## 4. The function list (Ghidra)
 
-O recompilador precisa saber onde começa e termina cada função; o
-executável não tem símbolos. O Ghidra descobre, e um script nosso dá nome às
-1.586 funções da API de script do jogo (docs/findings/12).
+The recompiler needs to know where each function starts and ends; the
+executable has no symbols. Ghidra finds them, and a script of ours names the
+1,586 functions of the game's script API (docs/findings/12).
 
-Ponha o `.zip` da extensão ghidra-emotionengine-reloaded em
-`<Ghidra>/Extensions/Ghidra/` (o script instala a partir dali).
+Put the zip of the ghidra-emotionengine-reloaded extension in
+`<Ghidra>/Extensions/Ghidra/` (the script installs it from there).
 
 **Linux**:
 
 ```bash
-GHIDRA_DIR=/caminho/ghidra_12.1.4_PUBLIC tools/ghidra_analisar.sh
+GHIDRA_DIR=/path/to/ghidra_12.1.4_PUBLIC tools/ghidra_analyze.sh
 ```
 
-**Windows** (PowerShell, na raiz):
+**Windows** (PowerShell, at the root):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\ghidra_analisar.ps1 -GhidraDir "C:\caminho\ghidra_12.1.4_PUBLIC"
+powershell -ExecutionPolicy Bypass -File tools\ghidra_analyze.ps1 -GhidraDir "C:\path\to\ghidra_12.1.4_PUBLIC"
 ```
 
-Leva alguns minutos e escreve `generated/ghidra/functions.csv`. O log deve
-mostrar `criadas=845 renomeadas=1586 ... falhas=0` e `Exported 4420
+It takes a few minutes and writes `generated/ghidra/functions.csv`. The log
+should show `created=845 renamed=1586 ... failed=0` and `Exported 4420
 functions`.
 
-## 5. Traduzir e compilar
+## 5. Translate and compile
 
-**Windows**: abra o **"x64 Native Tools Command Prompt for VS 2022"** (menu
-Iniciar). Ele põe o compilador da Microsoft de 64 bits no PATH; num prompt
-comum o `cl` não existe. Na raiz do repositório:
+**Windows**: open the **"x64 Native Tools Command Prompt for VS 2022"**
+(Start menu). It puts Microsoft's 64-bit compiler on the PATH; in a plain
+prompt `cl` does not exist. At the repository root:
 
 ```bat
 cmake --preset windows-debug
@@ -124,24 +127,31 @@ cmake --preset linux-debug
 cmake --build --preset linux-debug --target ben10_poe
 ```
 
-Por que configurar duas vezes: o executável é feito a partir dos arquivos de
-`generated/default/`, que só existem depois do `ben10_codegen`. O segundo
-configure os encontra (a mensagem diz `ben10_poe: 20235 arquivos gerados`).
+Why configure twice: the executable is made from the files in
+`generated/default/`, which only exist after `ben10_codegen`. The second
+configure finds them (the message says `ben10_poe: 20235 generated files`).
 
-O que esperar:
+What to expect:
 
-- configure: `PS2Recomp: aplicado 0001-...` até `0005-...` (só da primeira vez);
-- `ben10_codegen`: o relatório termina com `Unhandled instructions: 0` e
+- configure: `PS2Recomp: applied 0001-...` up to `0005-...` (the first time
+  only);
+- `ben10_codegen`: the report ends with `Unhandled instructions: 0` and
   `errors: 0`;
-- `ben10_poe`: no Linux, ~5 minutos com 2 núcleos; o executável fica em
+- `ben10_poe`: on Linux, ~5 minutes on 2 cores; the executable is
   `out/build/<preset>/ben10_poe`.
 
-**Ainda não dá para jogar**: o executável compila e liga, mas a primeira
-execução não foi feita (docs/NEXT_TASK.md).
+## 6. Run
 
-## 6. Testes
+```bash
+out/build/linux-debug/ben10_poe game/SLUS_216.61
+```
 
-Não precisam do jogo.
+The game is not playable yet: the boot is being brought up one blocker at a
+time (docs/findings/15).
+
+## 7. Tests
+
+No game needed.
 
 ```bash
 cmake --preset linux-tests          # Windows: windows-tests
@@ -149,14 +159,14 @@ cmake --build --preset linux-tests
 ctest --preset linux-tests
 ```
 
-Resultado esperado: todos passam e 1 aparece como desligado
-(`MulsDenormalOperandIsZero`, diferença conhecida: KNOWN_ISSUES R10).
+Expected result: all pass and 1 shows as disabled
+(`MulsDenormalOperandIsZero`, a known difference: KNOWN_ISSUES R10).
 
-## 7. Problemas conhecidos do build
+## 8. Known build problems
 
-| Mensagem | Causa | O que fazer |
+| Message | Cause | What to do |
 |---|---|---|
-| `include could not find requested file: .../ps2xRuntime/cmake/ReleaseMode.cmake` | o patch 0001 não foi aplicado | rode o configure de novo; se persistir, `git -C thirdparty/PS2Recomp status` e veja se o submódulo está no commit `e563698` |
-| `Patch 0002-... nao aplicou` | o submódulo está noutro commit ou foi editado à mão | `git -C thirdparty/PS2Recomp checkout . && git submodule update` |
-| `inlining failed ... target specific option mismatch` (GCC/Clang) | faltam as flags de SSE4 | o `CMakeLists.txt` já põe `-march=x86-64-v2`; confira se `BEN10_ARCH_FLAGS` não foi apagado do cache |
-| `ben10_poe: generated/default/ vazio` | o codegen ainda não rodou | passo 5, `ben10_codegen`, depois configure de novo |
+| `include could not find requested file: .../ps2xRuntime/cmake/ReleaseMode.cmake` | patch 0001 not applied | configure again; if it persists, `git -C thirdparty/PS2Recomp status` and check the submodule is at commit `e563698` |
+| `Patch 0002-... did not apply` | the submodule is at another commit or was edited by hand | `git -C thirdparty/PS2Recomp checkout . && git submodule update` |
+| `inlining failed ... target specific option mismatch` (GCC/Clang) | SSE4 flags missing | `CMakeLists.txt` already sets `-march=x86-64-v2`; check `BEN10_ARCH_FLAGS` was not cleared from the cache |
+| `ben10_poe: generated/default/ is empty` | codegen has not run | step 5, `ben10_codegen`, then configure again |

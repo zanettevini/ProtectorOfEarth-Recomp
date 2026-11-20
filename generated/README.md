@@ -1,12 +1,12 @@
 # generated/
 
-Tudo aqui é feito na sua máquina a partir do SEU disco e **nunca é
-versionado** (`.gitignore`):
+Everything here is made on your machine from YOUR disc and is **never
+versioned** (`.gitignore`):
 
-| Pasta | O que é | Quem faz |
+| Folder | What it is | Made by |
 |---|---|---|
-| `generated/ghidra/` | o projeto do Ghidra e `functions.csv`, a lista de funções que o recompilador lê | `tools/ghidra_analisar.sh` / `.ps1` |
-| `generated/default/` | o C++ gerado: o código do jogo traduzido, ~20 mil arquivos | alvo `ben10_codegen` do CMake |
+| `generated/ghidra/` | the Ghidra project and `functions.csv`, the function list the recompiler reads | `tools/ghidra_analyze.sh` / `.ps1` |
+| `generated/default/` | the generated C++: the game's code, translated, ~20 thousand files | the CMake target `ben10_codegen` |
 
-Para refazer do zero, apague a pasta e rode os dois passos de novo
+To redo it from scratch, delete the folder and run both steps again
 (docs/01-building.md).
