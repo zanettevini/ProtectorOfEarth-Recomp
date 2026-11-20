@@ -5,8 +5,8 @@ execution): started.** The game's code is translated, compiles, links and
 starts running on Linux; the boot gets through SIF, RPC, CD init, the IOP
 reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 `GAME.WAD`, loads the 8 IOP modules, sets the video mode, opens the pads,
-and now waits for a frame to finish drawing: the VBlank interrupt stops
-after 3 frames (findings/15 s.12, findings/16).
+runs about 30 frames, and then stalls with the IOP interpreter busy in a
+disc read (findings/15 s.12, findings/16).
 
 Read first: [INITIAL_AUDIT.md](INITIAL_AUDIT.md) (what is known about the
 game) and the [README](../README.md#-going-native) board.

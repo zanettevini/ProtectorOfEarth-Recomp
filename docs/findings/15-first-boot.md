@@ -219,7 +219,7 @@ driver and `CDARB`: to confirm).
   `FUN_00123348` call them.
 - Result: the pad wait is gone.
 
-## 12. Where it stops now: the draw wait
+## 12. Where it stops now: the draw wait and the IOP disc reads
 
 - The game thread loops in `FUN_0012e580(state)`: while bit 0x10 of
   `state+8` is set and the frame counter `state+0xC` has not advanced by 10
@@ -234,16 +234,29 @@ driver and `CDARB`: to confirm).
   `AddIntcHandler(2, func, -1)` and `EnableIntc(2)` and returns the
   previous callback).
 - Measured by reading guest RAM through `/proc/<pid>/mem` while the game
-  runs: `state+8` = 0x16 and `state+0xC` = 3, unchanged for seconds. The
-  VBlank handler ran three times and then stopped being called, so the
-  wait never times out, and the VIF1 DMA end never clears bit 0x10.
-- Tried: binding `FUN_001c00d0` to the runtime's `sceGsSyncVCallback` (the
-  runtime calls such a callback at every VBlank start). Same result
-  (counter stuck at 3), so the binding was not kept.
-- Next: find why the runtime stops delivering the VBlank interrupt (and the
-  VIF1 DMA end) after the first frames: the EE scheduler's interrupt
-  invocations (`EeScheduler::processEvent`, the pending invocation queue)
-  and the guest interrupt-enable state around the wait.
+  runs: `state+8` = 0x16 and `state+0xC` = 3, unchanged for seconds.
+- Wrong turn: this looked like the VBlank interrupt no longer being
+  delivered, and binding `FUN_001c00d0` to the runtime's
+  `sceGsSyncVCallback` was tried (no change, not kept). Sampling the game
+  thread showed the real cause: almost all the time went to the IOP
+  interpreter's disc read (`IopCdvd::Impl::readSectors`), inside a
+  per-byte check of the destination (`IopMemory::ownsRamRange`). The EE
+  only advances its cycle count between those IOP steps, and VBlank events
+  are due by EE cycles, so at -O0 a guest frame took many seconds.
+- Fix: `CMakeLists.txt` now builds `ps2_runtime` and `ps2_iop` with `-O2`
+  even in the -O0 presets (GCC/Clang; the generated code stays -O0).
+  Result: the frame counter reaches 31 instead of 3.
+- Still stuck after that: the counter stays at 31, flags 0x16, and the
+  samples are again almost all in `readSectors` / `ownsRamRange`, now from
+  an IOP-side reader (the game's `CDARB`/`ALASD` modules run in the IOP
+  interpreter, debt T1). A first trace saw a 32-sector read from disc
+  sector `0x20054F` into IOP address `0x00125200`. Not yet known: whether
+  that read fails the ownership check (the destination was never written
+  or allocated through the IOP allocator) and the module retries it
+  forever.
+- Next: trace `readSectors` results and the IOP module's retry loop; then
+  decide between a PS2Recomp patch (the ownership rule) and native
+  services for `CDARB`/`ALASD` (decision D2).
 
 ## 13. What was not checked
 

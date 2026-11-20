@@ -2,13 +2,13 @@
 
 ## For the agent
 
-1. **Next boot blocker: VBlank interrupts stop after 3 frames.** The game
-   waits in `FUN_0012e580` for a frame to finish; its VBlank handler
-   (`FUN_0012e5f8`, frame counter at `0x0026854C`) ran 3 times and then
-   was never called again (findings/15 s.12). Study how the PS2Recomp EE
-   scheduler delivers INTC/DMAC handlers (`EeScheduler::processEvent`, the
-   pending invocation queue) and fix the cause with a patch in
-   `patches/ps2recomp/` plus a test.
+1. **Next boot blocker: an IOP disc read that never finishes.** After
+   ~30 frames the game waits in its draw wait (`FUN_0012e580`) while the
+   IOP interpreter spends its time in `IopCdvd::Impl::readSectors` /
+   `IopMemory::ownsRamRange` (findings/15 s.12). Trace the read results
+   (lsn, sector count, destination, success) and the IOP module's retry
+   loop; fix with a PS2Recomp patch or move `CDARB`/`ALASD` to native
+   services (D2).
 2. Keep going one blocker at a time; record each in findings/15. Update the
    "Boot" milestone in `tools/native_progress.py` when it changes.
 3. More per-instruction tests for the game's instructions still untested

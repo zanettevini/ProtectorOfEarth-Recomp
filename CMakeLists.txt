@@ -86,6 +86,22 @@ endforeach()
 
 add_subdirectory(thirdparty/PS2Recomp)
 
+# Optimise the runtime and the IOP library even in -O0 builds.
+# The presets build the ~20 thousand generated files at -O0 so they compile
+# in minutes. The runtime and the IOP code, though, do per-byte and
+# per-cycle work: at -O0 one IOP disc read spent nearly all the run time in
+# a per-byte ownership check (IopMemory::ownsRamRange), so a guest frame
+# took many seconds and the boot looked frozen (findings/15 s.12).
+# GCC/Clang only: with MSVC, /O2 cannot be combined with the Debug /RTC1
+# flags; not done there yet.
+if(NOT MSVC)
+    foreach(BEN10_FAST_TARGET ps2_runtime ps2_iop)
+        if(TARGET ${BEN10_FAST_TARGET})
+            target_compile_options(${BEN10_FAST_TARGET} PRIVATE -O2)
+        endif()
+    endforeach()
+endif()
+
 # PS2Recomp also defines the generic ps2EntryRunner executable (no game).
 # We do not use it: it stays out of "build all".
 if(TARGET ps2EntryRunner)
