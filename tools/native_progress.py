@@ -53,8 +53,9 @@ MILESTONES = [
     ("First frame", "done",
      "the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet"),
     ("Main menu", "done",
-     "memory card found (libmc bound), save created, title screen and main menu; the first level loads but shows a blue screen (findings/18)"),
-    ("Playable level", "pending", ""),
+     "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
+    ("Playable level", "in progress",
+     "the first level runs and draws its HUD; the 3D world is still black, ~1 fps (findings/18 s.8)"),
 ]
 
 # -----------------------------------------------------------------------------

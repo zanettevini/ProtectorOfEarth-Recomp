@@ -102,11 +102,68 @@ for that stream or a rendering problem.
 The heap break pointer reaches `0x01FD7000` in the level, 36 KB below the
 runtime's limit for this game.
 
-## 5. Open
+## 6. The blue screen: a switch Ghidra split, and a case nobody exported
+
+- The blue picture of s.4 was not the level: the game's main thread had
+  stopped. The EE scheduler's table (gdb) showed it **dormant**, and the
+  log held one `guest-branch:missing-target` report: an indirect jump
+  (`jr`) at `0x00186980` to `0x00186B98`, which is in no function. The
+  frame counter kept moving because the VBlank handler still ran.
+- `0x00186980` is the `jr` of a 158-case switch (`FUN_00186960`: bound
+  check `sltiu $v0, $a2, 0x9E`, table at `0x0023DD40`). Ghidra did not keep
+  it whole: 155 of its case blocks became separate entries in the function
+  list (the export's pointer pass, `collectDataFunctionPointerEntries`,
+  takes a data pointer as a function when a `jr $ra` follows within 8
+  words), and the recompiler, which cannot resolve that `jr` as a switch,
+  jumps to the case by address. The 3 other cases (`0x00186B10`,
+  `0x00186B98`, `0x00186BB4`) branch back into shared code instead of
+  returning, so they were left in the gaps.
+- A survey of the executable's switches (the same pattern: `sltiu`, then
+  `lui`/`addiu` of the table and a `jr` that is not `jr $ra`) finds 91
+  tables. The recompiler turned most of them into C++ `switch`es; two
+  `jr`s it could not resolve, `0x00186980` and the script interpreter's
+  `0x00193BF8` (256 cases, all inside `FUN_00193b00`'s range, where the
+  recompiler keeps labels the jump can resume at).
+- Wrong turns: first in `CreatePointerTargetFunctions.java` (Ghidra
+  step 1). Creating a function at every switch case outside a function
+  made 394 functions, 220 of them inside the script interpreter; judging
+  by the range of the function holding the `jr` did not work either,
+  because at step 1 Ghidra has not split the switch yet (that happens in
+  the export, step 2).
+- Fix, in our copy of `ExportPS2Functions.java`: a new pass,
+  `collectSplitSwitchEntries`, finds the switch tables and, when more than
+  half of a table's targets are already entries, adds the rest. It adds 7
+  entries: the 3 cases above and 4 of the switch at `0x00123FC0`.
+
+## 7. An empty virtual method
+
+- Next stop: an indirect call (`jalr`) at `0x0018BB30` to `0x002069F0`,
+  slot 5 of the vtable at `0x00236430`. The code there is `jr $ra` +
+  `nop`: an empty method. `CreatePointerTargetFunctions.java` had
+  rejected it: no prologue, and the previous `jr $ra` is followed by two
+  stray `addiu $sp, $sp, 16` words, not padding.
+- Fix: a new rule c in that script, a whole leaf function of one or two
+  instructions (`jr $ra` first, or second after an instruction that is not
+  a jump or branch). 16 more functions (4,801 in total).
+
+## 8. The first level: HUD only
+
+- With s.6 and s.7 the game stays in the level. After "X Continue" on the
+  loading screen it draws the HUD (the health bar and the Omnitrix) over a
+  black picture, still black a few minutes later
+  (`docs/images/screenshots/05-first-level-hud-only.png`).
+- The frame counter slows to about 1 frame per second. Samples of the game
+  thread: the runtime's software GS rasteriser
+  (`GSCpuBackend::DrawTriangle`, texture sampling, alpha test) and, again,
+  the IOP interpreter's disc reads. So triangles are being drawn; why the
+  world does not show is not known yet (wrong buffer, wrong blending,
+  geometry from the VU programs, which run interpreted, T2).
+
+## 9. Open
 
 - Where saves should live: next to the disc files is not a good place for
   players' data; a per-user folder is the plan (KNOWN_ISSUES R21).
-- The blue screen in the first level (s.4).
+- The black world in the first level (s.8), and the speed there.
 - The heap: 36 KB left under `0x01FE0000` in the first level (R19).
 - The memory card is still the runtime's generic handler (status
   "emulated" on the README board); the native goal is the port's own save

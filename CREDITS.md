@@ -20,7 +20,7 @@ this project's.
 
 | Project | Used for | License |
 |---|---|---|
-| [PS2Recomp](https://github.com/ran-j/PS2Recomp) (ran-j and contributors) | the recompiler and runtime (submodule `thirdparty/PS2Recomp`); `tools/ghidra_scripts/ExportPS2Functions.java` is a copy of its script | GPL-3.0 |
+| [PS2Recomp](https://github.com/ran-j/PS2Recomp) (ran-j and contributors) | the recompiler and runtime (submodule `thirdparty/PS2Recomp`); `tools/ghidra_scripts/ExportPS2Functions.java` is a copy of its script, with one pass added (docs/findings/18 s.6) | GPL-3.0 |
 | [GoogleTest](https://github.com/google/googletest) | automated tests (fetched by CMake) | BSD-3-Clause |
 | PS2Recomp's dependencies (ELFIO, toml11, fmt, libdwarf, rabbitizer, raylib...) | fetched by PS2Recomp's CMake | each project's own |
 

@@ -1,4 +1,8 @@
 // Exports PS2Recomp TOML config (+ optional CSV) from Ghidra
+//
+// A copy of PS2Recomp's ExportPS2Functions.java (CREDITS.md), with one
+// addition for this port: collectSplitSwitchEntries (findings/18 s.6).
+//
 // @category PS2Recomp
 
 import ghidra.app.script.GhidraScript;
@@ -880,6 +884,102 @@ public class ExportPS2Functions extends GhidraScript {
         }
     }
 
+    // Ben 10 port addition (findings/18 s.6).
+    //
+    // collectDataFunctionPointerEntries turns most entries of some switch
+    // jump tables into separate entries: the case blocks that end with
+    // "jr $ra" look like leaf functions. The cases that instead branch back
+    // into shared code do not, and stay in the gaps between the new entries.
+    // The recompiler then cannot resolve the switch's "jr" as a switch and
+    // jumps to the case by address, so a missed case stops the game
+    // ("guest-branch:missing-target", e.g. 0x00186B98 in the switch at
+    // 0x00186980, 3 of 158 cases missed).
+    //
+    // This pass finds every switch jump table in the code (the compiler's
+    // pattern: "sltiu $t, $index, N", then within 13 words "lui $b, hi" and
+    // "addiu $b, $b, lo", and a "jr" that is not "jr $ra"; the table is N
+    // words at hi + lo, all pointing into executable memory). When more than
+    // half of a table's targets are already entries (Ghidra or the passes
+    // above split the switch), the remaining targets become entries too.
+    // Switches kept whole (most cases are labels inside one function, like
+    // the script interpreter at 0x00193B00) are left alone.
+    private void collectSplitSwitchEntries(List<FunctionRecord> records, Set<Long> existingStarts) {
+        final int maxLookahead = 13;
+        final int maxCases = 2048;
+        int tables = 0, split = 0, added = 0;
+
+        for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
+            if (block == null || !block.isExecute() || !block.isInitialized()) {
+                continue;
+            }
+            for (long offset = 0;
+                 offset + MIPS_INSTRUCTION_SIZE * (maxLookahead + 1L) <= block.getSize() && !monitor.isCancelled();
+                 offset += MIPS_INSTRUCTION_SIZE) {
+                Long bound = readWord(block.getStart().add(offset));
+                if (bound == null || opcode(bound) != OPCODE_SLTIU) {
+                    continue;
+                }
+                int cases = immediate(bound);
+                if (cases < 2 || cases > maxCases) {
+                    continue;
+                }
+
+                long upper = -1L;
+                long table = -1L;
+                boolean jumps = false;
+                for (int k = 1; k <= maxLookahead; ++k) {
+                    Long raw = readWord(block.getStart().add(offset + k * (long) MIPS_INSTRUCTION_SIZE));
+                    if (raw == null) {
+                        break;
+                    }
+                    if (opcode(raw) == OPCODE_LUI) {
+                        upper = ((long) immediate(raw)) << MIPS_IMMEDIATE_BITS;
+                    } else if (opcode(raw) == OPCODE_ADDIU && upper >= 0 && table < 0) {
+                        table = (upper + (short) immediate(raw)) & UINT32_MASK;
+                    } else if (opcode(raw) == OPCODE_SPECIAL && function(raw) == SPECIAL_JR && rs(raw) != GPR_RA) {
+                        jumps = true;
+                        break;
+                    }
+                }
+                if (table < 0 || !jumps) {
+                    continue;
+                }
+
+                long[] targets = new long[cases];
+                boolean valid = true;
+                int alreadyEntries = 0;
+                for (int i = 0; i < cases && valid; ++i) {
+                    Long target = readWord(addressFromOffset(table + i * (long) MIPS_INSTRUCTION_SIZE));
+                    valid = target != null && (target % MIPS_INSTRUCTION_SIZE) == 0 &&
+                            isExecutableAddress(addressFromOffset(target));
+                    if (valid) {
+                        targets[i] = target;
+                        if (existingStarts.contains(target)) {
+                            ++alreadyEntries;
+                        }
+                    }
+                }
+                if (!valid) {
+                    continue;
+                }
+                ++tables;
+                if (alreadyEntries * 2 <= cases) {
+                    continue;
+                }
+                ++split;
+                for (long target : targets) {
+                    if (!existingStarts.contains(target) &&
+                        currentProgram.getListing().getInstructionAt(addressFromOffset(target)) != null) {
+                        addSyntheticEntry(records, existingStarts, target);
+                        ++added;
+                        println(String.format("split switch at table 0x%08X: case entry 0x%08X", table, target));
+                    }
+                }
+            }
+        }
+        println(String.format("switch tables=%d split=%d case entries added=%d", tables, split, added));
+    }
+
     private List<FunctionRecord> collectExecutableLabelRecords(List<FunctionRecord> functionRecords) {
         List<FunctionRecord> labelRecords = new ArrayList<>();
         Set<Long> existingStarts = new HashSet<>();
@@ -963,6 +1063,7 @@ public class ExportPS2Functions extends GhidraScript {
         // callback and vtable entries that are only address-taken.
         collectMaterializedCodeEntries(labelRecords, existingStarts);
         collectDataFunctionPointerEntries(labelRecords, existingStarts);
+        collectSplitSwitchEntries(labelRecords, existingStarts);
 
         if (labelRecords.isEmpty()) {
             return labelRecords;

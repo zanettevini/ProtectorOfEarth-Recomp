@@ -9,6 +9,7 @@ They are listed here in the order they were taken.
 | `02-title-screen.png` | The title screen, once the memory card was found ([findings/18](../../findings/18-memory-card-and-menus.md) s.4) | same; the game's 640x448 area cut out of the window |
 | `03-main-menu.png` | The main menu | same |
 | `04-level-loading.png` | The loading screen of the first level, with a tip | same |
+| `05-first-level-hud-only.png` | The first level: the HUD is drawn, the 3D world is still black ([findings/18](../../findings/18-memory-card-and-menus.md) s.8) | same |
 
 ## Whose work this is
 

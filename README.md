@@ -58,8 +58,8 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
-| Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu; the first level loads but shows a blue screen (findings/18) |
-| Playable level | ⏳ |  |
+| Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu (findings/18) |
+| Playable level | 🔧 | the first level runs and draws its HUD; the 3D world is still black, ~1 fps (findings/18 s.8) |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 

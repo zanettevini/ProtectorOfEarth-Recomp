@@ -21,6 +21,13 @@
 //         words in between (zero, or "addiu $x, $x, 0", a no-op the
 //         toolchain also uses as padding): a leaf function (no stack frame)
 //         placed right after the previous function's return.
+//      c. it is a whole leaf function of one or two instructions: its first
+//         word is "jr $ra", or its second word is "jr $ra" and the first is
+//         not a jump or branch. Empty C++ virtual methods look like this
+//         ("jr $ra" + "nop", or "jr $ra" with the return value set in the
+//         delay slot); rule b misses them when other code sits between them
+//         and the previous return (findings/18 s.7: 0x002069F0, placed
+//         after two stray "addiu $sp, $sp, 16").
 //      Anything else is rejected: pointers that land in a switch's jump
 //      targets, in the data table at the start of .text (findings/12 s.6),
 //      or that are just numbers.
@@ -96,7 +103,7 @@ public class CreatePointerTargetFunctions extends GhidraScript {
             // addiu $sp, $sp, imm: opcode 0x09, rs = rt = 29 -> 0x27BD in the
             // top half; a frame allocation has a negative immediate.
             boolean prologue = (first >>> 16) == 0x27BD && (first & 0x8000) != 0;
-            if (!prologue && !followsReturn(mem, v)) {
+            if (!prologue && !followsReturn(mem, v) && !isTinyLeaf(mem, v)) {
                 rejected++;
                 println(String.format("rejected (no function start): 0x%08X", v));
                 continue;
@@ -114,6 +121,32 @@ public class CreatePointerTargetFunctions extends GhidraScript {
         }
         println(String.format("pointer targets=%d created=%d already_in_function=%d rejected=%d failed=%d",
                 targets.size(), created, already, rejected, failed));
+    }
+
+    // Rule c: "jr $ra" at v, or at v + 4 after an instruction that is not a
+    // jump or branch (it would make the "jr" its delay slot).
+    private boolean isTinyLeaf(Memory mem, long v) {
+        try {
+            int first = mem.getInt(toAddr(v));
+            if (first == 0x03E00008) {
+                return true;
+            }
+            return mem.getInt(toAddr(v + 4)) == 0x03E00008 && !isJumpOrBranch(first);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // MIPS jumps and branches: J/JAL, the SPECIAL JR/JALR, REGIMM branches
+    // and the conditional branches (likely forms included).
+    private static boolean isJumpOrBranch(int w) {
+        int op = w >>> 26;
+        if (op == 0x00) {
+            int funct = w & 0x3F;
+            return funct == 0x08 || funct == 0x09;
+        }
+        return op == 0x01 || op == 0x02 || op == 0x03 || (op >= 0x04 && op <= 0x07)
+                || (op >= 0x14 && op <= 0x17);
     }
 
     // True when "jr $ra" (0x03E00008) sits 2..5 words before v, and every word

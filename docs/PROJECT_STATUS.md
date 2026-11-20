@@ -8,7 +8,8 @@ reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 reads the game's data through a native replacement of CDARB's EE reads,
 finds the memory card (libmc bound to the runtime's card, findings/18),
 creates its save, shows the title screen and the main menu, and loads the
-first level, which shows only a blue picture so far (findings/18 s.4).
+first level, where it draws the HUD but not yet the 3D world
+(findings/18 s.8).
 On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
 because the game's heap needs the memory the runtime kept at the top of RAM
 (findings/15 s.15).

@@ -33,4 +33,4 @@ again. Format of each finding: see [AGENTS.md](../../AGENTS.md) s.3.
 | [15](15-first-boot.md) | First boot: Sony libraries identified by RPC SID and bound to runtime handlers, one blocker at a time | in progress |
 | [16](16-game-dir-and-wad.md) | `GAME.DIR` / `GAME.WAD`: the index layout (423 entries of 72 bytes), sector-aligned archive, what is inside | measured |
 | [17](17-cdarb-and-alasd.md) | The game's IOP modules: CDARB (disc streaming, SID 0x01212122) and ALASD (sound engine, SID 0x01212121); CDARB's RPC table; what a native replacement needs | in progress |
-| [18](18-memory-card-and-menus.md) | The memory card library (libmc, XMCSERV numbers) identified and bound; the save is created; title screen, main menu, first level loading | in progress |
+| [18](18-memory-card-and-menus.md) | The memory card library (libmc, XMCSERV numbers) bound; title screen and menus; two function-list gaps (a split switch, an empty virtual method); the first level draws its HUD | in progress |

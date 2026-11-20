@@ -2,12 +2,13 @@
 
 ## For the agent
 
-1. **Next blocker: the blue screen in the first level** (KNOWN_ISSUES B10,
-   findings/18 s.4). The game thread spends its time in the IOP
-   interpreter's disc reads. Find which module reads and what for (a
-   CDARB stream for ALASD?), then either make that path native (D12) or
-   find whether the picture is a separate rendering problem (dump the GS
-   draws of one frame).
+1. **Next blocker: the black world in the first level** (KNOWN_ISSUES B11,
+   findings/18 s.8). The HUD is drawn, the 3D world is not, and the game
+   runs at about 1 frame per second (software GS rasteriser, IOP
+   interpreter disc reads). Dump the GS state and draws of one frame
+   (frame buffers, what each draw targets, the display buffer) to see
+   whether the world is drawn somewhere else or not at all; check the
+   VU1 path (T2).
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.
