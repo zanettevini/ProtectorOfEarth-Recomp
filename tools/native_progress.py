@@ -52,7 +52,8 @@ MILESTONES = [
      "loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15)"),
     ("First frame", "done",
      "the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet"),
-    ("Main menu", "pending", ""),
+    ("Main menu", "done",
+     "memory card found (libmc bound), save created, title screen and main menu; the first level loads but shows a blue screen (findings/18)"),
     ("Playable level", "pending", ""),
 ]
 

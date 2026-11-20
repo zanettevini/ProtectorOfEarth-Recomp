@@ -5,7 +5,8 @@
 | # | Blocker | Blocks | See |
 |---|---|---|---|
 | B6 | ~~The boot does not reach the first frame yet~~ resolved: the first screen (memory card warning) is drawn; next, the game sees no memory card | | [findings/15](findings/15-first-boot.md) s.16 |
-| B9 | The game reports no memory card in slot 1 | saving; it may also gate the menus | [findings/15](findings/15-first-boot.md) s.16 |
+| B9 | ~~The game reports no memory card in slot 1~~ resolved: libmc bound to the runtime's memory card | | [findings/18](findings/18-memory-card-and-menus.md) |
+| B10 | The first level shows a solid blue picture; the game thread spends its time in the IOP interpreter's disc reads | gameplay | [findings/18](findings/18-memory-card-and-menus.md) s.4 |
 | B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
 | B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 
@@ -40,3 +41,4 @@
 | R18 | Runtime handlers for GS image upload, the font library, IOP-host buffers and the libc `malloc` family still take guest memory from `guestMalloc`, which starts at the game's heap base | memory corruption in a game that also has its own `sbrk`, if one of those handlers is ever bound (none is for Ben 10) | give them kernel RAM like the SIF packets, or keep them unbound ([findings/15](findings/15-first-boot.md) s.15) |
 | R19 | Main thread stack for `SetupThread(stack = -1)`: the runtime returns `sp = 0x02000000 - size`, so the stack is `0x01FE0000`-`0x01FF0000`; where the console kernel puts it was not checked | the heap ends 64 KB lower than it might on hardware | check against a kernel reference before changing it ([findings/15](findings/15-first-boot.md) s.15) |
 | R20 | Callback stacks: 8 of 16 KB in kernel RAM (one per thread and nesting depth) | "EE invocation stack space exhausted" if a game nests more | enlarge the window in `ps2_kernel_ram.h` ([findings/15](findings/15-first-boot.md) s.15) |
+| R21 | The runtime stores memory card 0 in `mc0/` next to the game's ELF (`game/mc0/`), not in a per-user folder | players' saves mixed with the disc files; lost if `game/` is replaced | move to a per-user folder, copying any existing save ([findings/18](findings/18-memory-card-and-menus.md) s.4) |

@@ -19,7 +19,7 @@
 <br>
 
 > [!WARNING]
-> **Not playable yet.** The game's code is translated to C++, compiles in full, runs, and draws its first screen. See the milestones below.
+> **Not playable yet.** The game's code is translated to C++, compiles in full and runs up to its menus and the loading of the first level. See the milestones below.
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own disc of *Ben 10: Protector of Earth* (PS2, **USA**, SLUS-21661) dumped to an `.iso`. The game is built on your computer from it.
@@ -36,8 +36,8 @@ The project follows the organisation of [Mind over Recomp](https://github.com/Ma
 
 <div align="center">
 
-<img src="docs/images/screenshots/01-first-screen-memory-card.png" alt="The game's memory card warning, drawn by the port" width="480"><br>
-<sub>The first screen the port drew (Linux): the game's own memory card warning. <a href="docs/findings/15-first-boot.md">findings/15</a> s.16</sub>
+<img src="docs/images/screenshots/02-title-screen.png" alt="The title screen, drawn by the port" width="400"> <img src="docs/images/screenshots/03-main-menu.png" alt="The main menu, drawn by the port" width="400"><br>
+<sub>The title screen and the main menu, drawn by the port on Linux (<a href="docs/findings/18-memory-card-and-menus.md">findings/18</a>). More in <a href="docs/images/screenshots/README.md">docs/images/screenshots/</a>.</sub>
 
 </div>
 
@@ -58,7 +58,7 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
-| Main menu | ⏳ |  |
+| Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu; the first level loads but shows a blue screen (findings/18) |
 | Playable level | ⏳ |  |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`

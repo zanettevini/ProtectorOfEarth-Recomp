@@ -300,6 +300,60 @@ stubs = [
   "scePadEnterPressMode@0x001C1FA8",
   # Command 0x12 (GET_MODVER); its caller compares the major version with 4.
   "scePadGetModVersion@0x001C2018",
+
+  # --- libmc (memory card, MCSERV SID 0x80000400) --------------------------
+  # Why: the game's first screen says no memory card is in slot 1
+  # (findings/15 s.16): its library asks MCSERV, which runs in the IOP
+  # interpreter with no card behind it. The runtime keeps the memory card
+  # as a folder on the PC (mc0/, mc1/) and answers libmc by name, with the
+  # library's own asynchronous model (each call queues one command; sceMcSync
+  # reports it).
+  # The whole family is bound together: every call goes through the
+  # library's "current command" word (0x00227618), its semaphore
+  # (0x0022761C) and its receive buffer (0x00273880), which only the
+  # library's own end callbacks fill.
+  # How we found them (findings/18 s.2): tools/analyzer/rpc_calls.py lists
+  # one bind to SID 0x80000400 (FUN_001c2088) and ten calls whose function
+  # numbers are the XMCSERV numbers of the PS2SDK's libmc.c (mcRpcCmd row 1:
+  # 0xFE init, 0x01 get info, 0x02 open, 0x03 close, 0x05 read, 0x06 write,
+  # 0x0C chdir, 0x0D getdir, 0x0F delete, 0x10 format); the calls that carry
+  # a path send 0x414 bytes (the PS2SDK's name parameter: 5 words and a
+  # 1024-byte name). Argument registers checked in each function against the
+  # Sony prototypes (GetInfo: a0-a3 and t0; GetDir: a0-a3, t0, t1).
+  # Not bound (only called by the functions below, as SIF end callbacks):
+  # 0x001C22B0, 0x001C24E8 (copies read data), 0x001C2C18 (copies the
+  # current directory).
+
+  # Binds SID 0x80000400 and sends function 0xFE with a 12-byte reply (the
+  # XMCSERV version check).
+  "sceMcInit@0x001C2088",
+  # Function 0x02, 0x414-byte request (port, slot, flags, path).
+  "sceMcOpen@0x001C22C8",
+  # Calls sceMcOpen(port, slot, name, 0x40) and stores command 0x0B, the
+  # PS2SDK's mcMkDir.
+  "sceMcMkdir@0x001C23F0",
+  # Function 0x03 (fd).
+  "sceMcClose@0x001C2428",
+  # Function 0x05 (fd, buffer, size); end callback 0x001C24E8.
+  "sceMcRead@0x001C2598",
+  # Function 0x06 (fd, buffer, size).
+  "sceMcWrite@0x001C26B0",
+  # No RPC: -1 when no command is current (0x00227618 == 0); polls (mode != 0)
+  # or waits on the semaphore 0x0022761C, writes the command to *cmd and the
+  # reply word 0x00273880 to *result, returns 1 when done. The PS2SDK's
+  # mcSync.
+  "sceMcSync@0x001C2828",
+  # Function 0x01 (port, slot, *type, *free, *format).
+  "sceMcGetInfo@0x001C2948",
+  # Function 0x0D (port, slot, name, mode, maxent, table).
+  "sceMcGetDir@0x001C2AC8",
+  # Function 0x0C (port, slot, new dir, *current dir); end callback
+  # 0x001C2C18 copies the current directory back.
+  "sceMcChdir@0x001C2CA8",
+  # Function 0x10 (port, slot).
+  "sceMcFormat@0x001C2DE8",
+  # Function 0x0F (port, slot, name).
+  "sceMcDelete@0x001C2EB8",
 ]
 
 # No function skipped.

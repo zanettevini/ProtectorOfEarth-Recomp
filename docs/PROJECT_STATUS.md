@@ -6,7 +6,9 @@ starts running on Linux; the boot gets through SIF, RPC, CD init, the IOP
 reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 `GAME.WAD`, loads the 8 IOP modules, sets the video mode, opens the pads,
 reads the game's data through a native replacement of CDARB's EE reads,
-and draws its first screen: the memory card warning (findings/15 s.16).
+finds the memory card (libmc bound to the runtime's card, findings/18),
+creates its save, shows the title screen and the main menu, and loads the
+first level, which shows only a blue picture so far (findings/18 s.4).
 On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
 because the game's heap needs the memory the runtime kept at the top of RAM
 (findings/15 s.15).
@@ -49,7 +51,7 @@ game) and the [README](../README.md#-going-native) board.
 **Untested**: everything on Windows except the study version of the disc
 collection (MSVC, `ghidra_analyze.ps1`, the repository version of
 `collect_disc.ps1`); an optimised build; the first screen compared with
-PCSX2; anything past the memory card warning.
+PCSX2; anything past the loading of the first level.
 
 ## Unresolved
 

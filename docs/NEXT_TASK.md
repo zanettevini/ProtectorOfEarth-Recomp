@@ -2,12 +2,12 @@
 
 ## For the agent
 
-1. **Next blocker: the memory card.** The game draws its first screen, the
-   warning that slot 1 has no memory card (findings/15 s.16). Find how the
-   game's libmc asks (RPC to `MCSERV`, which runs in the IOP interpreter,
-   debt T1) and what comes back; the native answer is a save folder on the
-   PC (the "Saves" piece of the board). Then check how the game reacts to
-   the X button on that screen (the pads are bound, findings/15 s.11).
+1. **Next blocker: the blue screen in the first level** (KNOWN_ISSUES B10,
+   findings/18 s.4). The game thread spends its time in the IOP
+   interpreter's disc reads. Find which module reads and what for (a
+   CDARB stream for ALASD?), then either make that path native (D12) or
+   find whether the picture is a separate rendering problem (dump the GS
+   draws of one frame).
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.

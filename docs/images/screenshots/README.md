@@ -6,6 +6,9 @@ They are listed here in the order they were taken.
 | File | What it shows | Captured |
 |---|---|---|
 | `01-first-screen-memory-card.png` | The first screen the port drew: the game's autosave warning that no memory card is inserted in slot 1 ([findings/15](../../findings/15-first-boot.md) s.16) | Linux, Xvfb with Mesa software OpenGL, 1280x1024 window |
+| `02-title-screen.png` | The title screen, once the memory card was found ([findings/18](../../findings/18-memory-card-and-menus.md) s.4) | same; the game's 640x448 area cut out of the window |
+| `03-main-menu.png` | The main menu | same |
+| `04-level-loading.png` | The loading screen of the first level, with a tip | same |
 
 ## Whose work this is
 
