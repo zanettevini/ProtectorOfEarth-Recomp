@@ -257,7 +257,45 @@ Protector of Earth (High Voltage Software / D3 Publisher; Ben 10 is a
 trademark of Cartoon Network); it is not the work of this project. See
 [the screenshots README](../images/screenshots/README.md).*
 
-## 11. Open
+## 11. A palette cache for indexed textures (patch 0016)
+
+- **Where the GS thread's time goes.** 60 gdb samples of the GS thread in
+  the level: `SampleTexture` in 28 (the CLUT lookup 7, the swizzled
+  address calculation 8, the texture page buffer's copy 3, `lroundf` of
+  the bilinear blend 2), the rest of `DrawTriangle` in 37 (samples count
+  once per frame they appear in).
+- **The change (patch 0016).** Every T8/T4 texel, four per pixel with
+  bilinear filtering, went through `LookupCLUT`: the CLUT index from CSA,
+  CSM and the source format, the CLUT read, then the TEXA alpha rules.
+  `SampleTexture` now keeps the final colour per source index in a
+  256-entry table filled on first use. The table's key packs every input
+  of `LookupCLUT` except the index and the CLUT itself (CPSM, CSM, CSA,
+  4-bit or 8-bit source, TA0, AEM, TA1); every CLUT write sets the key to
+  a value no draw state packs to. A hit returns exactly what `LookupCLUT`
+  would. A new ps2xTest case reloads the CLUT and changes TEXA between
+  draws (it fails if the CLUT load does not reset the key); 454/454 pass.
+- **Tried and dropped:** replacing `std::lround` in the bilinear blend by
+  an inline exact rounding made the same draw loop 20% slower than libm's
+  `lroundf` here.
+- **Measured.** A throw-away timing loop in ps2xTest (100 full-screen
+  T8 triangles, CT16 CLUT, bilinear): 3.47 s before, 3.30 s after (-5%).
+  In the game the frame rate of this cloud machine moved by up to 20%
+  between two runs of the same binary (2.97 and 3.55 frames per second,
+  first level, same route), so it cannot show a 5% change. CPU time per
+  game frame of each thread (from `/proc`, 90 s in the level):
+
+  | Thread | Before | After (two runs) |
+  |---|---|---|
+  | GS thread | 306 ms | 274 ms, 285 ms |
+  | game thread | 219 ms | 197 ms, 213 ms |
+  | Mesa llvmpipe (presenting through Xvfb, 2 threads) | 64 ms | 54 ms, 54 ms |
+  | main (window) thread | 24 ms | 21 ms, 22 ms |
+
+  The four add up to about two cores' worth per frame: on this 2-core
+  machine every thread's CPU time counts, including software OpenGL for
+  the window, which a real GPU does instead.
+
+## 12. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

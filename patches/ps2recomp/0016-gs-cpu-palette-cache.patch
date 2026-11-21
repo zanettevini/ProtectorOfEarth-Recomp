@@ -1,0 +1,201 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: cache the final palette of indexed textures
+
+What was slow:
+  Every T8/T4 texel (four per pixel with bilinear filtering) went through
+  LookupCLUT: CLUT index from CSA/CSM and the source format, the CLUT
+  read, then applyTexa with its format switch.
+
+The change:
+  SampleTexture keeps the final colour (CLUT entry after TEXA) per source
+  index in a 256-entry table filled lazily (a valid bit per index). The
+  table's key packs every input of LookupCLUT except the index and the
+  CLUT itself: CPSM, CSM, CSA, whether the source is 4-bit or 8-bit, and
+  TEXA (TA0, AEM, TA1). A new key empties the table. Every write to the
+  CLUT (LoadClutUnlocked, ResetUnlocked) sets the key to UINT64_MAX,
+  which no draw state packs to (the packed key uses 43 bits), so the next
+  texel rebuilds. A hit returns exactly what LookupCLUT returns.
+  Tried and left out: an inline replacement of std::lround in the
+  bilinear lerp was slower than libm's lroundf here.
+  Tested: new ps2xTest case "GS T8 sampling sees a reloaded CLUT and a
+  new TEXA between draws" (fails if the CLUT load does not reset the
+  key); 454/454 pass. A T8, CT16-CLUT, bilinear full-screen draw loop
+  took 3.47 s before and 3.30 s after (-5%).
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -533,6 +533,7 @@
+ void GSCpuBackend::ResetUnlocked()
+ {
+     m_clut.fill(0u);
++    m_paletteKey = UINT64_MAX;
+     m_clutCbp.fill(0u);
+     m_texturePageCache.Invalidate();
+     m_transfer = {};
+@@ -596,6 +597,7 @@
+     if (!sixteenBit && !thirtyTwoBit)
+         return;
+ 
++    m_paletteKey = UINT64_MAX;
+     const uint32_t entryCount = fourBit ? 16u : 256u;
+     const uint32_t csaMask = sixteenBit ? 0x1Fu : 0x0Fu;
+     const uint32_t destinationBase = (static_cast<uint32_t>(tex0.csa) & csaMask) << 4u;
+@@ -1116,7 +1118,30 @@
+         case GS_PSM_T4:
+         case GS_PSM_T4HL:
+         case GS_PSM_T4HH:
+-            return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
++        {
++            const uint64_t key = (static_cast<uint64_t>(tex.cpsm) << 35u) |
++                                 (static_cast<uint64_t>(tex.csm) << 27u) |
++                                 (static_cast<uint64_t>(tex.csa) << 19u) |
++                                 (static_cast<uint64_t>(isFourBitIndexedPsm(tex.psm) ? 1u : 0u) << 18u) |
++                                 (static_cast<uint64_t>(isEightBitIndexedPsm(tex.psm) ? 1u : 0u) << 17u) |
++                                 (static_cast<uint64_t>(state.texa.aem ? 1u : 0u) << 16u) |
++                                 (static_cast<uint64_t>(state.texa.ta1) << 8u) |
++                                 static_cast<uint64_t>(state.texa.ta0);
++            if (key != m_paletteKey)
++            {
++                m_paletteKey = key;
++                m_paletteValid.fill(0u);
++            }
++            const uint32_t index = out & 0xFFu;
++            const uint64_t bit = 1ull << (index & 63u);
++            uint64_t &valid = m_paletteValid[index >> 6u];
++            if ((valid & bit) == 0u)
++            {
++                m_palette[index] = LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
++                valid |= bit;
++            }
++            return m_palette[index];
++        }
+         }
+ 
+         return 0xFFFF00FFu;
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -89,6 +89,13 @@
+     std::array<WriteVramFunc, kPsmHandlerCount> m_writeVramFuncs{};
+     std::array<uint16_t, 512> m_clut{};
+     std::array<uint32_t, 2> m_clutCbp{};
++    // Final colours (CLUT entry after TEXA) by source index, filled lazily.
++    // The key holds every input of LookupCLUT except the index and m_clut;
++    // every write to m_clut sets the key to UINT64_MAX, which no draw state
++    // packs to, so a hit returns exactly what LookupCLUT would.
++    uint64_t m_paletteKey = UINT64_MAX;
++    std::array<uint64_t, 4> m_paletteValid{};
++    std::array<uint32_t, 256> m_palette{};
+     GSMem::TexturePageCache m_texturePageCache;
+ 
+     GSTransferCommand m_transfer{};
+--- a/ps2xTest/src/ps2_gs_tests.cpp
++++ b/ps2xTest/src/ps2_gs_tests.cpp
+@@ -1956,6 +1956,108 @@
+             }
+         });
+ 
++        tc.Run("GS T8 sampling sees a reloaded CLUT and a new TEXA between draws", [](TestCase &t)
++        {
++            constexpr uint32_t kTexTbp = 64u;
++            constexpr uint32_t kClutCbp = 128u;
++            constexpr uint8_t kIndex = 7u;
++            constexpr uint64_t kFrame =
++                (0ull << 0) |
++                (1ull << 16) |
++                (static_cast<uint64_t>(GS_PSM_CT32) << 24);
++            constexpr uint64_t kZbuf = (1ull << 32);
++            constexpr uint64_t kScissor =
++                (0ull << 0) |
++                (4ull << 16) |
++                (0ull << 32) |
++                (4ull << 48);
++            constexpr uint64_t kPrim =
++                static_cast<uint64_t>(GS_PRIM_TRIANGLE) |
++                (1ull << 4);
++            constexpr uint64_t kRgbaq = 0x3F80000080808080ull;
++
++            // T8, TBW 2 (128 texels), 64x64, TCC 1, DECAL, CSM2, CLD as given.
++            auto tex0 = [](uint8_t cpsm, uint64_t cld) -> uint64_t
++            {
++                return (static_cast<uint64_t>(kTexTbp) << 0) |
++                       (2ull << 14) |
++                       (static_cast<uint64_t>(GS_PSM_T8) << 20) |
++                       (6ull << 26) |
++                       (6ull << 30) |
++                       (1ull << 34) |
++                       (1ull << 35) |
++                       (static_cast<uint64_t>(kClutCbp) << 37) |
++                       (static_cast<uint64_t>(cpsm) << 51) |
++                       (1ull << 55) |
++                       (cld << 61);
++            };
++
++            auto packFloat = [](float value) -> uint32_t
++            {
++                uint32_t bits = 0u;
++                std::memcpy(&bits, &value, sizeof(bits));
++                return bits;
++            };
++            const uint64_t st = static_cast<uint64_t>(packFloat(0.1f)) |
++                                (static_cast<uint64_t>(packFloat(0.1f)) << 32);
++
++            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
++            GS gs;
++            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
++            for (uint32_t y = 0u; y < 64u; ++y)
++                for (uint32_t x = 0u; x < 64u; ++x)
++                    vram[referenceAddrPSMT8(kTexTbp, 2u, x, y)] = kIndex;
++
++            auto setClut = [&](uint32_t color)
++            {
++                const uint32_t off = referenceAddrPSMCT32(kClutCbp, 1u, kIndex, 0u);
++                std::memcpy(vram.data() + off, &color, sizeof(color));
++            };
++
++            auto draw = [&](uint64_t texReg, uint64_t texa) -> uint32_t
++            {
++                gs.writeRegister(GS_REG_FRAME_1, kFrame);
++                gs.writeRegister(GS_REG_ZBUF_1, kZbuf);
++                gs.writeRegister(GS_REG_SCISSOR_1, kScissor);
++                gs.writeRegister(GS_REG_XYOFFSET_1, 0ull);
++                gs.writeRegister(GS_REG_TEST_1, 0x30000ull);
++                gs.writeRegister(GS_REG_ALPHA_1, 0ull);
++                gs.writeRegister(GS_REG_TEXA, texa);
++                gs.writeRegister(GS_REG_TEX0_1, texReg);
++                gs.writeRegister(GS_REG_TEX1_1, 0ull);
++                gs.writeRegister(GS_REG_PRIM, kPrim);
++                gs.writeRegister(GS_REG_RGBAQ, kRgbaq);
++                gs.writeRegister(GS_REG_ST, st);
++                gs.writeRegister(GS_REG_XYZ2, 0ull);
++                gs.writeRegister(GS_REG_ST, st);
++                gs.writeRegister(GS_REG_XYZ2, (64ull << 0) | (0ull << 16));
++                gs.writeRegister(GS_REG_ST, st);
++                gs.writeRegister(GS_REG_XYZ2, (0ull << 0) | (64ull << 16));
++                return readReferencePSMCT32Pixel(vram, 0u, 1u, 1u, 1u);
++            };
++
++            setClut(0xFF0000FFu);
++            t.Equals(draw(tex0(GS_PSM_CT32, 1u), 0ull), 0xFF0000FFu,
++                     "the first T8 draw should return the loaded CT32 CLUT entry");
++
++            setClut(0xFF00FF00u);
++            t.Equals(draw(tex0(GS_PSM_CT32, 1u), 0ull), 0xFF00FF00u,
++                     "a T8 draw after a CLUT reload should return the new entry");
++
++            setClut(0x77123456u);
++            t.Equals(draw(tex0(GS_PSM_CT32, 0u), 0ull), 0xFF00FF00u,
++                     "a T8 draw without CLD should keep the loaded CLUT");
++
++            constexpr uint64_t kTexaA = 0x20ull;
++            constexpr uint64_t kTexaB = 0x60ull;
++            const uint32_t ct24A = draw(tex0(GS_PSM_CT24, 1u), kTexaA);
++            t.Equals(ct24A, 0x20123456u,
++                     "a CT24 CLUT entry should take TA0 as its alpha");
++            const uint32_t ct24B = draw(tex0(GS_PSM_CT24, 0u), kTexaB);
++            t.Equals(ct24B, 0x60123456u,
++                     "a new TEXA between draws should change the alpha of the same CLUT entry");
++        });
++
+         tc.Run("PSMT8 address mapping matches Veronica Conv8to32 layout", [](TestCase &t)
+         {
+             constexpr uint32_t kBaseBlock = 0u;

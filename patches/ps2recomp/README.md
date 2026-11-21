@@ -23,8 +23,9 @@ fix and how it was found.
 | `0013-vu-interpreter-hot-path.patch` | VU interpreter: cheaper hot path (pipeline commit only when due and only valid slots, fast XGKICK drain, decoded pairs by reference and decoded lazily after a code upload, bit scans for VI/lanes, inline operand normaliser); same results and cycle counts | findings/19 s.9, findings/20 |
 | `0014-gs-cpu-row-bands.patch` | GS CPU backend: `SetRowBand` draws only some rows, so several backends can draw one picture on several threads with the same bytes | findings/20 s.7 |
 | `0015-pad-only-port-0.patch` | Pad: only port 0, slot 0 has a controller; other ports report DISCONNECTED and read nothing (they mirrored player 1 before) | findings/20 s.9 |
+| `0016-gs-cpu-palette-cache.patch` | GS CPU backend: the final colour of each CLUT index (after TEXA) is kept per draw state and rebuilt after a CLUT load; same results | findings/20 s.11 |
 
-Patches 0002-0010, 0012 and 0015 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013 and 0014 speed-ups with the same results) and should also go to upstream
+Patches 0002-0010, 0012 and 0015 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014 and 0016 speed-ups with the same results) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the
