@@ -184,7 +184,34 @@ with more cores there is.
   same, and the level runs at the same rate as with one band (about 4
   frames per second: no spare core).
 
-## 8. Open
+## 8. The frame wait loop (src/overrides/draw_wait.cpp)
+
+- In the samples of s.6 the game thread was often in the IOP interpreter
+  called from `entry_0012e590`: the loop of `FUN_0012e580`, which spins
+  until the VIF1 DMA end handler clears bit 0x10 of the flags at
+  `0x00268548` or ten VBlanks pass (disassembly: `lw`/`andi`/`beqz`,
+  `lw`/`slt`/`bnez`). Each turn counts 32 EE cycles at a checkpoint, and
+  each checkpoint steps the IOP by 32 cycles. While the game waits, the
+  PS2's clock, which brings the next interrupts, moves in 32-cycle steps,
+  each paying the checkpoint's fixed cost.
+- The override runs the same loop natively and counts 1024 cycles per
+  turn: the loop only reads two words, so nothing on the EE side changes
+  between turns; the interrupts that end it are taken at most 1024 cycles
+  (3.5 microseconds of PS2 time) after they are due, instead of 32. EE
+  timer interrupts inside a step are taken at its end.
+  `BEN10_DRAW_WAIT_STEP=32` gives back the original step.
+- Result (same route, GS thread on, one band): first level 4.13 -> 4.41
+  game frames per second, boot screens 8.60 -> 9.03. Small here, because
+  the GS thread is the limit on this 2-core machine (s.6); it matters more
+  once drawing has more cores.
+- Ben still walks in the level (W). Observed, not investigated: pressing
+  Cross (X) in the level opened the pause menu ("Game Paused", with
+  "Drop Player One"); also seen once before this change.
+
+## 9. Open
+
+- Why Cross opens the pause menu in the level (s.8): the game's controls,
+  or a controller-state problem (the pause menu offers "Drop Player One").
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

@@ -57,7 +57,7 @@ game) and the [README](../README.md#-going-native) board.
 | Patches applied by CMake | Linux | 0001-0014 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); CMake resets the submodule and reapplies them all when the patch set changes (stamp file) |
 | VU1 replay (`ben10_vu1_replay --sum`), 40 workloads from the first level | Linux | identical checksums before and after patch 0013 (findings/20 s.3) |
 | First level, under Xvfb | Linux | renders (screenshot 06); Ben walks with W (screenshot 07); reached from New Game too (findings/19 s.7) |
-| Frame rate (`BEN10_FPS_LOG`) | Linux, game code `-O0` | menus: 3 fps before patch 0012, 8-9 now; first level: 1.4 before patch 0013, 4.1 with it and the GS thread (findings/19-20) |
+| Frame rate (`BEN10_FPS_LOG`) | Linux, game code `-O0` | menus: 3 fps before patch 0012, 8-9 now; first level: 1.4 before patch 0013, 4.4 now (findings/19-20) |
 | Full `ben10_poe` build, `windows-release` | Windows, MSVC 17.14 | compiles and links; reaches the first level's Omnitrix tutorial (screenshot 08); 3-4 fps before patch 0012, 7 fps on the title screen after; New Game then stopped (B14, fixed since on Linux, not yet rebuilt on Windows) |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 

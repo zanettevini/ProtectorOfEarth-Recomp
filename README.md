@@ -65,7 +65,7 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
 | Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu (findings/18) |
-| Playable level | 🔧 | the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 4 fps there (findings/20 s.5): the VU1 interpreter and the software GS renderer are the limit |
+| Playable level | 🔧 | the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 4.4 fps there (findings/20 s.5, s.8): the VU1 interpreter and the software GS renderer are the limit |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 
