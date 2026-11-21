@@ -129,7 +129,7 @@ thirdparty/PS2Recomp     the recompiler + runtime (git submodule, pinned)
 *.iso, game/             your disc and the files taken from it
 generated/               the generated C++ and the Ghidra analysis (it is the game's code)
 out/, logs/, user/       builds, logs, your local test files
-(saves: %APPDATA%\ProtectorOfEarth-Recomp on Windows, ~/.local/share/protectorofearth-recomp on Linux)
+(your saves are in game/saves/)
 ```
 
 </details>

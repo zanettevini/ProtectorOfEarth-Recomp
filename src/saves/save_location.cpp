@@ -1,21 +1,19 @@
-// save_location.cpp: the memory cards live in a per-user folder, not next to the game's files.
+// save_location.cpp: the memory cards live in their own "saves" folder inside the game folder.
 //
 // WHAT IT IS FOR
 //   PS2Recomp's runtime keeps memory card 0 in "mc0/" (and card 1 in
-//   "mc1/") next to the game's ELF, so here inside game/: the player's saves
-//   sit among the disc files and are lost if game/ is replaced
-//   (KNOWN_ISSUES R21).
+//   "mc1/") directly next to the game's ELF, so here in game/, mixed with
+//   the files taken from the disc (KNOWN_ISSUES R21).
 //
 // WHAT IT DOES
-//   Moves the cards to a per-user folder:
+//   Keeps the cards with the game's files, in a folder of their own:
 //     - BEN10_SAVE_DIR, if set (the cards go in BEN10_SAVE_DIR/mc0 and mc1);
-//     - Windows: %APPDATA%\ProtectorOfEarth-Recomp;
-//     - elsewhere: $XDG_DATA_HOME/protectorofearth-recomp, or
-//       ~/.local/share/protectorofearth-recomp.
+//     - otherwise "saves" next to the ELF: game/saves/mc0 and game/saves/mc1.
 //   On first use, when a card folder does not exist in the new place but
-//   exists next to the ELF, it is copied there (the old copy is left as it
-//   is). If no folder can be found or created, or the copy fails, the cards
-//   stay next to the ELF, as before, and the log says why.
+//   exists directly next to the ELF (the runtime's old place), it is copied
+//   there; the old copy is left as it is (AGENTS.md s.6: saves are copied,
+//   never moved). If the folder cannot be created or the copy fails, the
+//   cards stay where the runtime puts them, and the log says why.
 //
 // HOW IT HOOKS IN
 //   A game override: PS2Runtime::loadELF sets the I/O paths from the ELF
@@ -41,7 +39,7 @@ namespace ben10::saves
     fs::path envPath(const char *name)
     {
 #ifdef _WIN32
-        // Wide API: user folders may contain characters outside the ANSI code page.
+        // Wide API: folder names may contain characters outside the ANSI code page.
         std::wstring wideName(name, name + std::char_traits<char>::length(name));
         const wchar_t *value = _wgetenv(wideName.c_str());
         return (value != nullptr && *value != L'\0') ? fs::path(value) : fs::path();
@@ -49,22 +47,6 @@ namespace ben10::saves
         const char *value = std::getenv(name);
         return (value != nullptr && *value != '\0') ? fs::path(value) : fs::path();
 #endif
-    }
-
-    fs::path userSaveFolder()
-    {
-        if (fs::path explicitDir = envPath("BEN10_SAVE_DIR"); !explicitDir.empty())
-            return explicitDir;
-#ifdef _WIN32
-        if (fs::path appData = envPath("APPDATA"); !appData.empty())
-            return appData / "ProtectorOfEarth-Recomp";
-#else
-        if (fs::path dataHome = envPath("XDG_DATA_HOME"); !dataHome.empty())
-            return dataHome / "protectorofearth-recomp";
-        if (fs::path home = envPath("HOME"); !home.empty())
-            return home / ".local" / "share" / "protectorofearth-recomp";
-#endif
-        return {};
     }
 
     // Copies oldCard to newCard when newCard does not exist yet. False if the
@@ -93,13 +75,18 @@ namespace ben10::saves
     void apply(PS2Runtime &)
     {
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
-        const fs::path oldCard0 = paths.mcRoot;
-        const fs::path folder = userSaveFolder();
+        const fs::path oldCard0 = paths.mcRoot; // <elf dir>/mc0, set by loadELF
+
+        fs::path folder = envPath("BEN10_SAVE_DIR");
         if (folder.empty())
         {
-            std::fprintf(stderr, "[saves] no per-user folder (BEN10_SAVE_DIR, APPDATA or HOME unset); memory cards stay in %s\n",
-                         oldCard0.string().c_str());
-            return;
+            if (paths.elfDirectory.empty())
+            {
+                std::fprintf(stderr, "[saves] the game folder is not known; memory cards stay in %s\n",
+                             oldCard0.string().c_str());
+                return;
+            }
+            folder = paths.elfDirectory / "saves";
         }
 
         std::error_code ec;
@@ -130,4 +117,4 @@ namespace ben10::saves
     }
 }
 
-PS2_REGISTER_GAME_OVERRIDE("Memory cards in a per-user folder", "SLUS_216.61", 0x00100008u, 0u, &ben10::saves::apply);
+PS2_REGISTER_GAME_OVERRIDE("Memory cards in the game folder's saves/", "SLUS_216.61", 0x00100008u, 0u, &ben10::saves::apply);
