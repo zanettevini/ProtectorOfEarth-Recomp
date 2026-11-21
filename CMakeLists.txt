@@ -129,11 +129,54 @@ if(NOT MSVC)
     endforeach()
 endif()
 
+# ---------------------------------------------------------------------------
+# Translated VU1 code (decision D14, findings/21)
+# ---------------------------------------------------------------------------
+# tools/vu1_translate reads the VU microprograms from the game's ELF and
+# writes one C++ function per instruction pair into generated/vu1/ (the
+# game's code: never versioned). ben10_vu1_native compiles them with the
+# resolver that hands them to the VU1 interpreter (src/vu/vu1_native.h).
+set(BEN10_GAME_ELF "${CMAKE_SOURCE_DIR}/game/SLUS_216.61")
+set(BEN10_VU1_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated/vu1")
+if(TARGET ps2_runtime AND EXISTS "${BEN10_GAME_ELF}")
+    add_executable(ben10_vu1_translate EXCLUDE_FROM_ALL tools/vu1_translate/vu1_translate.cpp)
+    target_link_libraries(ben10_vu1_translate PRIVATE ps2_runtime)
+
+    set(BEN10_VU1_GENERATED_SOURCES "${BEN10_VU1_GENERATED_DIR}/vu1_native_index.cpp")
+    foreach(BEN10_VU1_FILE RANGE 0 7)
+        list(APPEND BEN10_VU1_GENERATED_SOURCES "${BEN10_VU1_GENERATED_DIR}/vu1_native_${BEN10_VU1_FILE}.cpp")
+    endforeach()
+    add_custom_command(
+        OUTPUT ${BEN10_VU1_GENERATED_SOURCES}
+        COMMAND $<TARGET_FILE:ben10_vu1_translate> "${BEN10_GAME_ELF}" "${BEN10_VU1_GENERATED_DIR}"
+        DEPENDS ben10_vu1_translate "${BEN10_GAME_ELF}"
+        COMMENT "Translating the VU microprograms of game/SLUS_216.61 into generated/vu1/"
+        VERBATIM)
+
+    add_library(ben10_vu1_native STATIC
+        ${BEN10_VU1_GENERATED_SOURCES}
+        "${CMAKE_SOURCE_DIR}/src/vu/vu1_native_resolver.cpp")
+    target_include_directories(ben10_vu1_native PUBLIC "${CMAKE_SOURCE_DIR}/src")
+    target_link_libraries(ben10_vu1_native PUBLIC ps2_runtime)
+    if(MSVC)
+        target_compile_options(ben10_vu1_native PRIVATE /bigobj)
+    else()
+        # Optimised in every build, like the runtime (each pair's step must
+        # be inlined and folded to be worth having).
+        target_compile_options(ben10_vu1_native PRIVATE -O2 -g)
+    endif()
+endif()
+
 # Offline replay of captured VU1 workloads (tools/vu1_replay, findings/20).
 # Not part of "build all": build it with --target ben10_vu1_replay.
+# --native runs them with the translated VU1 code (findings/21).
 if(TARGET ps2_runtime)
     add_executable(ben10_vu1_replay EXCLUDE_FROM_ALL tools/vu1_replay/vu1_replay.cpp)
     target_link_libraries(ben10_vu1_replay PRIVATE ps2_runtime)
+    if(TARGET ben10_vu1_native)
+        target_link_libraries(ben10_vu1_replay PRIVATE ben10_vu1_native)
+        target_compile_definitions(ben10_vu1_replay PRIVATE BEN10_HAVE_VU1_NATIVE=1)
+    endif()
 endif()
 
 # PS2Recomp also defines the generic ps2EntryRunner executable (no game).
@@ -167,6 +210,11 @@ if(BEN10_BUILD_GAME AND BEN10_GENERATED_SOURCES)
     # calls the recompiled entry point. The port will have its own in src/
     # when it needs one (window, options, saves).
     file(GLOB_RECURSE BEN10_PORT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
+    # The resolver is part of ben10_vu1_native (shared with the replay tool).
+    list(FILTER BEN10_PORT_SOURCES EXCLUDE REGEX "/src/vu/vu1_native_resolver\\.cpp$")
+    if(NOT TARGET ben10_vu1_native)
+        list(FILTER BEN10_PORT_SOURCES EXCLUDE REGEX "/src/vu/vu1_native_install\\.cpp$")
+    endif()
 
     add_executable(ben10_poe
         ${BEN10_GENERATED_SOURCES}
@@ -177,6 +225,9 @@ if(BEN10_BUILD_GAME AND BEN10_GENERATED_SOURCES)
         "${CMAKE_SOURCE_DIR}/generated/default"
         "${CMAKE_SOURCE_DIR}/src")
     target_link_libraries(ben10_poe PRIVATE ps2_runtime)
+    if(TARGET ben10_vu1_native)
+        target_link_libraries(ben10_poe PRIVATE ben10_vu1_native)
+    endif()
 
     # Like ps2EntryRunner: merges ~32 generated files per compilation unit and
     # precompiles the heavy headers. Without it, each of the ~20 thousand

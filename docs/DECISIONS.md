@@ -136,7 +136,11 @@ Each decision: what, why, alternatives, and status
 
 ## D14. Native VU1: the .vutext programs translated to C++, the interpreter as the reference
 
-- **Status**: proposed (design; nothing translated yet).
+- **Status**: in progress. Phase 1 done (findings/21): every pair of
+  every overlay chunk is translated to a function running the
+  interpreter's own step with the pair decoded as a constant; same
+  checksums as the interpreter. Phases 2-3 (direct operations, static
+  timing, flags only where read) to do.
 - **What**: the game's VU1 microprograms (closed list in `.vutext`,
   [findings/11](findings/11-vu-microprograms.md); the first level runs
   group F, entries #13-#20, [findings/20](findings/20-vu1-census-and-gs-thread.md)

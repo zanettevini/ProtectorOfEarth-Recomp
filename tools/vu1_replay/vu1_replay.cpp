@@ -23,16 +23,21 @@
 //   runtime's GS into a private 4 MB VRAM). Two builds that print the same
 //   lines computed the same thing.
 //   Always: total VU cycles, wall time, VU cycles per second.
+//   --native: the translated VU1 code (src/vu/vu1_native.h, findings/21)
+//   runs every pair it has; the sums must not change.
 //
 // USAGE
 //   cmake --build --preset linux-debug --target ben10_vu1_replay
-//   out/build/linux-debug/ben10_vu1_replay user/vu1_captures [--sum] [--reps N]
+//   out/build/linux-debug/ben10_vu1_replay user/vu1_captures [--sum] [--reps N] [--native]
 //   Profiling: valgrind --tool=callgrind out/build/.../ben10_vu1_replay ...
 //
 // The data files are the game's: they stay in user/ and are never versioned.
 
 #include "runtime/ps2_vu1.h"
 #include "runtime/gs/gs_frontend.h"
+#if defined(BEN10_HAVE_VU1_NATIVE)
+#include "vu/vu1_native.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -76,7 +81,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s <capture folder> [--sum] [--reps N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <capture folder> [--sum] [--reps N] [--native]\n", argv[0]);
         return 2;
     }
     const std::string folder = argv[1];
@@ -88,6 +93,16 @@ int main(int argc, char **argv)
             printSums = true;
         else if (std::strcmp(argv[i], "--reps") == 0 && i + 1 < argc)
             reps = std::max(1, std::atoi(argv[++i]));
+        else if (std::strcmp(argv[i], "--native") == 0)
+        {
+#if defined(BEN10_HAVE_VU1_NATIVE)
+            VU1Interpreter::setNativeResolver(&ben10::vu1_native::resolve);
+            std::fprintf(stderr, "translated VU1 code: %zu pairs\n", ben10::vu1_native::pairCount());
+#else
+            std::fprintf(stderr, "--native: this build has no translated VU1 code (no game ELF at configure time)\n");
+            return 2;
+#endif
+        }
     }
 
     // Load every NNN_* triple, from 000 up to the first missing one.

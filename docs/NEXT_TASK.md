@@ -2,19 +2,20 @@
 
 ## For the agent
 
-1. **Next: native VU1 (decision D14, KNOWN_ISSUES T2), then play
-   further.** The first level runs at about 4 fps (findings/20 s.5): the
-   VU1 interpreter costs about 1,300 host instructions per VU cycle. Start
-   with group F (findings/20 s.1, hot resume PCs in the table) and check
-   every translation with `ben10_vu1_replay --sum` against the
-   interpreter (tools/vu1_replay). Where the interpreter's time goes and what
-   group F reads: findings/20 s.14. Measure speed changes with
-   `tools/perf/cpu_per_frame.sh` (CPU per frame per thread): the frame rate
-   of this test machine varies by up to 20% between runs (s.11). Also: measure `BEN10_GS_THREADS` (row bands, findings/20 s.7) on a
-   machine with more than 2 cores and make the best value the default. Then play on past the first fight
-   (findings/20 s.10: Cross jumps and closes tips, Z/V attack, Right Shift
-   picks an alien, E transforms) and fix the next
-   thing that breaks. Key presses in scripted runs: hold 2.5 s.
+1. **Next: native VU1 phase 2 (decision D14, findings/21 s.3).** Phase 1
+   is in: every VU pair is translated to a function running the
+   interpreter's own step (`tools/vu1_translate`, `generated/vu1/`,
+   `src/vu/`). Next, in order: per-operation functions called directly by
+   the translated pairs; static timing per block (the pipelines are empty
+   at every resume); flags only where read. After each step,
+   `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
+   checksums as without `--native`; measure with `callgrind` on the replay
+   and `tools/perf/cpu_per_frame.sh` in the game (the frame rate of the
+   Linux test machine varies by up to 20% between runs). On Windows the
+   game thread limits the first level (findings/20 s.18), so that is where
+   the gain shows. Then play on (the maintainer reached the first Sumo
+   Slammer card on Windows, findings/20 s.17) and fix the next thing that
+   breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.
@@ -23,7 +24,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0017 upstream to PS2Recomp.
+5. Send patches 0002-0018 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
