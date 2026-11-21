@@ -336,7 +336,8 @@ needs either more speed or input chosen by looking at each picture.
 About 1,200 host instructions per VU cycle. The decoding line is mostly an
 artefact of the replay: it passes no `PS2Memory`, so the interpreter
 decodes every pair at every step; in the game the decoded pairs are kept
-until the next code upload.
+until the next code upload. Without it, the VU code takes 1,175M
+instructions; the shares below are of that.
 
 **What group F reads.** The VU1 code memory captured in the level (group
 F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
@@ -353,13 +354,13 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
 **What this means for the native VU1 (D14).**
 
 - A translation that keeps the interpreter's model (phase 1) saves the
-  pair loop, the decoding and the dispatch inside `execUpper`/`execLower`:
-  at most about a third of the time above.
-- The bookkeeping (about 38%) goes away only where the translator works
+  pair loop (18%) and the dispatch inside `execUpper`/`execLower` (part
+  of their 17%): at most about a third.
+- The bookkeeping (about 40%) goes away only where the translator works
   out the timing at translation time (phase 2): the pipelines are empty at
   every resume (s.2), so each block's timing can be computed from its
   entry.
-- The flag model (about 24%) is needed only for results whose MAC flags
+- The flag model (about 25%) is needed only for results whose MAC flags
   can reach one of the 24 MAC-flag reads before the next FMAC instruction
   replaces them; the status flags are never read inside group F. Whether
   the EE reads VU1's status register was not checked; the replay's checksum
