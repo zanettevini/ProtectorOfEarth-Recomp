@@ -282,7 +282,8 @@ trademark of Cartoon Network); it is not the work of this project. See
   In the game the frame rate of this cloud machine moved by up to 20%
   between two runs of the same binary (2.97 and 3.55 frames per second,
   first level, same route), so it cannot show a 5% change. CPU time per
-  game frame of each thread (from `/proc`, 90 s in the level):
+  game frame of each thread (from `/proc`, 90 s in the level, with
+  `tools/perf/cpu_per_frame.sh`):
 
   | Thread | Before | After (two runs) |
   |---|---|---|

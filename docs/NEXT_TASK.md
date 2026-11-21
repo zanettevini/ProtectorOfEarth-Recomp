@@ -7,7 +7,10 @@
    VU1 interpreter costs about 1,300 host instructions per VU cycle. Start
    with group F (findings/20 s.1, hot resume PCs in the table) and check
    every translation with `ben10_vu1_replay --sum` against the
-   interpreter (tools/vu1_replay). Also: measure `BEN10_GS_THREADS` (row bands, findings/20 s.7) on a
+   interpreter (tools/vu1_replay). Where the interpreter's time goes and what
+   group F reads: findings/20 s.14. Measure speed changes with
+   `tools/perf/cpu_per_frame.sh` (CPU per frame per thread): the frame rate
+   of this test machine varies by up to 20% between runs (s.11). Also: measure `BEN10_GS_THREADS` (row bands, findings/20 s.7) on a
    machine with more than 2 cores and make the best value the default. Then play on past the first fight
    (findings/20 s.10: Cross jumps and closes tips, Z/V attack, Right Shift
    picks an alien, E transforms) and fix the next

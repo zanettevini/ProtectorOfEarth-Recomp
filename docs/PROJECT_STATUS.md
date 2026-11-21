@@ -11,10 +11,12 @@ creates its save, shows the title screen and the main menu, and loads the
 first level, which now renders (findings/18 s.12): the last blocker was the
 game's software skinning, broken by a wrong PROT3W translation and by VU0
 macro-mode memory instructions that wrote EE RAM (patches 0009-0010), after
-a VF0 fix (patch 0008). Ben walks from the keyboard (patch 0011). It runs at
-about 5-6 fps: patch 0012 stopped CDARB retrying an audio read the IOP could
-not serve (the EE and the IOP numbered the disc differently); the software
-GS renderer is now the limit (findings/19, KNOWN_ISSUES B13).
+a VF0 fix (patch 0008). Ben walks from the keyboard (patch 0011). New Game reaches
+the first level, which is playable (walking, combat, the Omnitrix). It runs
+at about 9 fps in the menus and 3-4.4 fps in the first level on the 2-core
+Linux test machine; the software GS renderer (on its own thread) and the
+VU1 interpreter are the limits (findings/19-20, KNOWN_ISSUES B13). Saves
+live in a per-user folder (findings/18 s.14).
 On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
 because the game's heap needs the memory the runtime kept at the top of RAM
 (findings/15 s.15).
