@@ -399,7 +399,24 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
 - Not kept: a timing change with no measured gain. The patch and the
   override were removed before committing; this section is the record.
 
-## 16. Open
+## 16. Windows: the keyboard did nothing (patch 0017)
+
+- Symptom: the Windows build (MSVC Release, commit `a09e8fa`) booted,
+  found the save and showed the title screen at about 7.6 game frames per
+  second, but no key did anything, for the maintainer at the keyboard
+  either.
+- Cause: PS2Recomp's pad backend read either the first host gamepad or
+  the keyboard. When raylib reports gamepad 0 as available (a connected
+  controller, or any device Windows presents as one), the keyboard was
+  never read. The Linux test machine has no gamepad, so it never showed
+  there.
+- Fix (patch 0017): both are read; a key and a gamepad button for the
+  same PS2 button both press it, and W/A/S/D override the gamepad's left
+  stick on their axis. The first read logs `[pad] gamepad 0: <name>` or
+  `[pad] no gamepad: keyboard only`. Linux, no gamepad: Start still opens
+  the main menu; ps2xTest 454/454.
+
+## 17. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

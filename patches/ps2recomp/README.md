@@ -24,8 +24,9 @@ fix and how it was found.
 | `0014-gs-cpu-row-bands.patch` | GS CPU backend: `SetRowBand` draws only some rows, so several backends can draw one picture on several threads with the same bytes | findings/20 s.7 |
 | `0015-pad-only-port-0.patch` | Pad: only port 0, slot 0 has a controller; other ports report DISCONNECTED and read nothing (they mirrored player 1 before) | findings/20 s.9 |
 | `0016-gs-cpu-palette-cache.patch` | GS CPU backend: the final colour of each CLUT index (after TEXA) is kept per draw state and rebuilt after a CLUT load; same results | findings/20 s.11 |
+| `0017-pad-keyboard-with-gamepad.patch` | Pad backend: the keyboard is read even when a host gamepad is connected (it was switched off entirely); logs which gamepad was found | findings/20 s.16 |
 
-Patches 0002-0010, 0012 and 0015 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014 and 0016 speed-ups with the same results) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014 and 0016 speed-ups with the same results) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

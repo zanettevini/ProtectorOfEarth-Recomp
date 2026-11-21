@@ -1,0 +1,81 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] Pad backend: the keyboard works when a gamepad is connected
+
+What broke:
+  On a Windows PC the keyboard did nothing in Ben 10: Protector of Earth
+  (Start did not leave the title screen), while the same build of the
+  game ran normally.
+
+Why:
+  PSPadBackend::readState read either the first host gamepad or the
+  keyboard: when raylib reported gamepad 0 as available (a connected
+  controller, or any device the system presents as one), every key was
+  ignored.
+
+The fix:
+  The gamepad (when there is one) and then the keyboard are both read: a
+  key and a gamepad button for the same PS2 button both press it, and a
+  W/A/S/D key overrides the gamepad's left stick on its axis. Without a
+  gamepad the result is the same as before. The first read logs which
+  gamepad, if any, was found ("[pad] gamepad 0: <name>" or
+  "[pad] no gamepad: keyboard only").
+  Tested on Linux without a gamepad (Start opens the main menu); the
+  Windows case: findings/20 s.16.
+
+--- a/ps2xRuntime/src/lib/ps2_pad.cpp
++++ b/ps2xRuntime/src/lib/ps2_pad.cpp
+@@ -1,5 +1,7 @@
+ #include "runtime/ps2_pad.h"
+ #include "ps2_host_backend.h"
++#include <atomic>
++#include <cstdio>
+ #include <cstring>
+ 
+ namespace
+@@ -43,6 +45,20 @@
+     auto clearBit = [&btns](uint16_t mask)
+     { btns &= ~mask; };
+ 
++    // Say once which host gamepad, if any, drives the pad (keyboard input
++    // works either way, see below).
++    static std::atomic<bool> s_reported{false};
++    if (!s_reported.exchange(true))
++    {
++        if (useGamepad)
++        {
++            const char *name = GetGamepadName(kGamepad);
++            std::fprintf(stderr, "[pad] gamepad 0: %s (the keyboard also works)\n", name ? name : "(no name)");
++        }
++        else
++            std::fprintf(stderr, "[pad] no gamepad: keyboard only\n");
++    }
++
+     if (useGamepad)
+     {
+         if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_UP))
+@@ -87,7 +103,11 @@
+         data[4] = static_cast<uint8_t>(128 + rx * 127);
+         data[5] = static_cast<uint8_t>(128 + ry * 127);
+     }
+-    else
++
++    // The keyboard is read whether or not a gamepad is connected: a connected
++    // gamepad (or a device the system reports as one) used to switch the
++    // keyboard off completely. A key and a gamepad button for the same PS2
++    // button both press it; a WASD key overrides the gamepad's left stick axis.
+     {
+         // Arrows: the D-pad. WASD: the left analog stick (full tilt), as the keyboard map in
+         // Kernel/Stubs/Pad.cpp documents. This backend always reports analog (DualShock) mode,
+@@ -104,8 +124,10 @@
+         // data[6] = left stick X (0x00 left .. 0xFF right), data[7] = left stick Y (0x00 up).
+         const int stickX = (IsKeyDown(KEY_D) ? 1 : 0) - (IsKeyDown(KEY_A) ? 1 : 0);
+         const int stickY = (IsKeyDown(KEY_S) ? 1 : 0) - (IsKeyDown(KEY_W) ? 1 : 0);
+-        data[6] = stickX < 0 ? 0x00 : (stickX > 0 ? 0xFF : kPadStickCenter);
+-        data[7] = stickY < 0 ? 0x00 : (stickY > 0 ? 0xFF : kPadStickCenter);
++        if (stickX != 0)
++            data[6] = stickX < 0 ? 0x00 : 0xFF;
++        if (stickY != 0)
++            data[7] = stickY < 0 ? 0x00 : 0xFF;
+         if (IsKeyDown(KEY_X) || IsKeyDown(KEY_SPACE))
+             clearBit(PAD_CROSS);
+         if (IsKeyDown(KEY_C) || IsKeyDown(KEY_ESCAPE))
