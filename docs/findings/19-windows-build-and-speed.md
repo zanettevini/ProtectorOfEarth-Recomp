@@ -174,8 +174,48 @@ likely because the code that reaches it now runs (to be confirmed).
 - Untested: whether the same stop could come from other indirect jumps
   that are not switches (none seen so far).
 
-## 8. Open
+## 8. What is slow in the level
 
+The same gdb sampling (60 stack traces of the game thread) in the first
+level, after s.7:
+
+| Where | Samples with it on the stack |
+|---|---|
+| VU1 interpreter (`VU1Interpreter`, T2) | 44 (30 of them not inside the GS) |
+| Software GS renderer (`GSCpuBackend`), mostly called from VU1's XGKICK | 20 |
+| IOP interpreter | 8 |
+| the game's own code (`FUN_`) | 33 (as callers: VIF1 DMA kicks, the draw loop) |
+
+So in the level the VU1 interpreter, not the renderer, is the largest
+cost. Its top frames were `commitReadyPipelines` (called on every
+simulated cycle; it walks about 50 pipeline entries each time) and the
+cycle loop that drains PATH1 after a microprogram ends (`flushPipelines`,
+2 cycles per qword of the XGKICK packet, with the same scans on each).
+
+## 9. VU1 pipeline scans (patch 0013)
+
+- `commitReadyPipelines` now returns at once while the current cycle is
+  below the earliest `readyCycle` of the queued entries (kept up to date
+  at every insertion and after every commit). Entries still commit in the
+  same order and on the same cycle.
+- `flushPipelines`: when only XGKICK is left, it steps the cycle counter
+  and PATH1 directly, which is all `advanceOneCycle` does then.
+- `progressXgkick` copies a qword with one `memcpy` when it does not wrap.
+- Tests: 451/451 ps2xTest cases (VU1 timing and XGKICK included).
+- In the game, first level, same route (New Game), about 80 s measured:
+
+| Build | Game frames per second | VBlanks per second |
+|---|---|---|
+| before patch 0013 | 1.43 | 2.85 |
+| with patch 0013 | 2.03 | 4.05 |
+
+  A new sampling still has VU1 frames in 43 of 60 traces (34 outside the
+  GS): what is left is the interpretation itself (decoding, operand
+  normalisation, hazard checks), which only native VU1 code (T2) removes.
+
+## 10. Open
+
+- Native VU1 microprograms (T2): the largest cost in the level.
 - A GPU GS renderer (B13).
 - The Windows build with the new function list (copy the new
   `functions.csv`, or run `tools/ghidra_analyze.ps1`).

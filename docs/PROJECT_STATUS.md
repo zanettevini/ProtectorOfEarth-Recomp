@@ -49,14 +49,14 @@ game) and the [README](../README.md#-going-native) board.
 | What | Where | Result |
 |---|---|---|
 | `ctest` (41 cases: 38 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **40/40 pass** |
-| PS2Recomp's own `ps2x_tests` with patches 0001-0012 (built separately, Release) | Linux, GCC 13 | **451/451 pass** (run from `ps2xTest/` or the submodule root) |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0013 (built separately, Release) | Linux, GCC 13 | **451/451 pass** (run from `ps2xTest/` or the submodule root) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 0001-0012 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); each reverse-applies on the patched tree |
+| Patches applied by CMake | Linux | 0001-0013 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); each reverse-applies on the patched tree |
 | First level, under Xvfb | Linux | renders (screenshot 06); Ben walks with W (screenshot 07); reached from New Game too (findings/19 s.7) |
-| Frame rate (`BEN10_FPS_LOG`), menus | Linux, game code `-O0` | 3 fps before patch 0012, 5-6 after (findings/19) |
+| Frame rate (`BEN10_FPS_LOG`) | Linux, game code `-O0` | menus: 3 fps before patch 0012, 5-6 after; first level: 1.4 before patch 0013, 2.0 after (findings/19) |
 | Full `ben10_poe` build, `windows-release` | Windows, MSVC 17.14 | compiles and links; reaches the first level's Omnitrix tutorial (screenshot 08); 3-4 fps before patch 0012, 7 fps on the title screen after; New Game then stopped (B14, fixed since on Linux, not yet rebuilt on Windows) |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 

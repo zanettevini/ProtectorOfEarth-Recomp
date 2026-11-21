@@ -1,0 +1,245 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: skip pipeline scans when nothing is due
+
+What broke:
+  Nothing is wrong, but slow: in Ben 10: Protector of Earth's first level
+  about half of the game thread's time was in the VU1 interpreter
+  (44 of 60 gdb stack samples had VU1Interpreter frames). The top frames
+  were commitReadyPipelines and the cycle loop that drains XGKICK after a
+  microprogram ends (flushPipelines -> advanceOneCycle -> progressXgkick).
+
+Why:
+  commitReadyPipelines walks every pipeline array (flags, FDIV, EFU,
+  stores, VF/VI/ACC writes: about 50 entries) on every simulated cycle,
+  even when no entry is due. flushPipelines steps one cycle at a time
+  until PATH1 has copied the whole XGKICK packet (2 cycles per qword),
+  paying that scan and pipelinesPending's scan for each cycle, and
+  progressXgkick copied each qword byte by byte with a modulo.
+
+The fix (same results, same cycle counts):
+  - m_nextCommitCycle keeps the earliest readyCycle of the queued entries
+    (updated at every insertion, recomputed after each commit, reset with
+    the scheduler). commitReadyPipelines returns at once while m_cycle is
+    below it; entries are still committed in the same order and at the
+    same cycle as before.
+  - flushPipelines: when only XGKICK is still active, it steps the cycle
+    counter and PATH1 directly, which is what advanceOneCycle does when no
+    pipeline entry is queued.
+  - progressXgkick copies a qword with one memcpy when it does not wrap
+    around VU memory.
+  Tested: all 451 ps2xTest cases pass (the VU1 timing and XGKICK cases
+  included). In the game (Linux, first level, the same route): from 1.43
+  to 2.03 game frames per second (2.85 to 4.05 VBlanks per second),
+  findings/19 s.9.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -225,6 +225,11 @@
+     std::array<uint64_t, 4> m_accLatestWrite{};
+ 
+     uint64_t m_cycle = 0;
++    // Earliest readyCycle of any queued pipeline entry (a lower bound: it
++    // may be stale-low, never too high). commitReadyPipelines returns at
++    // once while m_cycle is below it, instead of scanning ~50 entries on
++    // every cycle.
++    uint64_t m_nextCommitCycle = 0;
+     uint64_t m_nextWriteSequence = 0;
+     uint64_t m_efuResourceReady = 0;
+     uint32_t m_workingClip = 0;
+@@ -278,6 +283,12 @@
+ 
+     void resetScheduler();
+     void commitReadyPipelines();
++    void notePipelineReady(uint64_t readyCycle) noexcept
++    {
++        if (readyCycle < m_nextCommitCycle)
++            m_nextCommitCycle = readyCycle;
++    }
++    uint64_t earliestPendingReadyCycle() const noexcept;
+     void advanceOneCycle();
+     void advanceTo(uint64_t targetCycle);
+     void flushPipelines();
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -81,6 +81,7 @@
+     m_viLatestWrite = {};
+     m_accLatestWrite = {};
+     m_nextWriteSequence = 0;
++    m_nextCommitCycle = 0;
+     m_efuResourceReady = 0;
+     m_workingClip = m_state.clip;
+     m_viBranchBackupValue = 0;
+@@ -533,6 +534,7 @@
+     entry->valid = true;
+     entry->issueCycle = m_cycle;
+     entry->readyCycle = m_cycle + kFmacLatency;
++    notePipelineReady(entry->readyCycle);
+     entry->mac = mac;
+     entry->status = status;
+     entry->extraSticky = extraSticky;
+@@ -572,6 +574,7 @@
+             entry.valid = true;
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.status = static_cast<uint32_t>(immediate) & 0xFC0u;
+             entry.writesSticky = true;
+             return;
+@@ -591,6 +594,7 @@
+             entry.valid = true;
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.clip = m_workingClip;
+             entry.writesClip = true;
+             return;
+@@ -615,6 +619,7 @@
+             entry.valid = true;
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.clip = m_workingClip;
+             entry.writesClip = true;
+             return;
+@@ -629,6 +634,7 @@
+     value = normalizeResult(value, ignoredFlags);
+     m_fdiv.valid = true;
+     m_fdiv.readyCycle = m_cycle + latency;
++    notePipelineReady(m_fdiv.readyCycle);
+     m_fdiv.value = value;
+     m_fdiv.statusDi = statusDi & 0x30u;
+ }
+@@ -643,6 +649,7 @@
+         {
+             entry.valid = true;
+             entry.readyCycle = m_cycle + latency;
++            notePipelineReady(entry.readyCycle);
+             entry.value = value;
+             // EFU throughput is one cycle shorter than result visibility.
+             m_efuResourceReady = m_cycle + (latency > 0u ? latency - 1u : 0u);
+@@ -660,6 +667,7 @@
+         {
+             store.valid = true;
+             store.readyCycle = m_cycle + 1u;
++            notePipelineReady(store.readyCycle);
+             store.address = address;
+             store.laneMask = laneMask;
+             std::copy(words, words + 4, store.words.begin());
+@@ -681,6 +689,7 @@
+             write = {};
+             write.valid = true;
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.reg = reg;
+             write.laneMask = laneMask;
+@@ -707,6 +716,7 @@
+             write = {};
+             write.valid = true;
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.reg = reg;
+             write.value = value;
+@@ -728,6 +738,7 @@
+             write = {};
+             write.valid = true;
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.laneMask = laneMask;
+             std::copy(value, value + 4, write.value.begin());
+@@ -742,8 +753,38 @@
+     reportReservedInstruction(true, 0xFFFFFFF5u);
+ }
+ 
++uint64_t VU1Interpreter::earliestPendingReadyCycle() const noexcept
++{
++    uint64_t earliest = UINT64_MAX;
++    auto consider = [&earliest](bool valid, uint64_t readyCycle)
++    {
++        if (valid && readyCycle < earliest)
++            earliest = readyCycle;
++    };
++    for (const FlagPipelineEntry &entry : m_flagPipeline)
++        consider(entry.valid, entry.readyCycle);
++    consider(m_fdiv.valid, m_fdiv.readyCycle);
++    for (const ScalarPipelineEntry &entry : m_efu)
++        consider(entry.valid, entry.readyCycle);
++    for (const PendingStore &store : m_storePipeline)
++        consider(store.valid, store.readyCycle);
++    for (const PendingVfWrite &write : m_vfWritePipeline)
++        consider(write.valid, write.readyCycle);
++    for (const PendingViWrite &write : m_viWritePipeline)
++        consider(write.valid, write.readyCycle);
++    for (const PendingAccWrite &write : m_accWritePipeline)
++        consider(write.valid, write.readyCycle);
++    return earliest;
++}
++
+ void VU1Interpreter::commitReadyPipelines()
+ {
++    // Nothing can be ready before the earliest queued readyCycle: skip the
++    // scan. Entries are still committed in the same order, at the same
++    // cycle, as with a scan on every cycle.
++    if (m_cycle < m_nextCommitCycle)
++        return;
++
+     for (FlagPipelineEntry &entry : m_flagPipeline)
+     {
+         if (!entry.valid || entry.readyCycle > m_cycle)
+@@ -838,6 +879,8 @@
+         }
+         write = {};
+     }
++
++    m_nextCommitCycle = earliestPendingReadyCycle();
+ }
+ 
+ void VU1Interpreter::progressXgkick()
+@@ -857,10 +900,19 @@
+         }
+ 
+         const uint32_t qwordOffset = m_xgkick.copiedBytes;
+-        for (uint32_t i = 0; i < 16u; ++i)
++        const uint32_t firstSource = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
++        if (firstSource + 16u <= m_activeVuDataSize)
+         {
+-            const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
+-            m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
++            // The qword does not wrap around VU memory: one copy.
++            std::memcpy(m_xgkick.packet.data() + m_xgkick.copiedBytes, m_activeVuData + firstSource, 16u);
++        }
++        else
++        {
++            for (uint32_t i = 0; i < 16u; ++i)
++            {
++                const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
++                m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
++            }
+         }
+         m_xgkick.copiedBytes += 16u;
+ 
+@@ -983,7 +1035,22 @@
+ void VU1Interpreter::flushPipelines()
+ {
+     while (pipelinesPending())
++    {
++        if (m_xgkick.active && earliestPendingReadyCycle() == UINT64_MAX)
++        {
++            // Only PATH1 is still running: each cycle only counts and moves
++            // XGKICK on (commitReadyPipelines has nothing to do), so step
++            // just those two, without the per-cycle pipeline scans.
++            while (m_xgkick.active)
++            {
++                ++m_cycle;
++                m_state.cycles = m_cycle;
++                progressXgkick();
++            }
++            continue;
++        }
+         advanceOneCycle();
++    }
+ }
+ 
+ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &decoded) const

@@ -55,7 +55,7 @@ MILESTONES = [
     ("Main menu", "done",
      "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
     ("Playable level", "in progress",
-     "the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 5-6 fps, the software GS renderer is the limit (findings/19)"),
+     "the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 2 fps there: the VU1 interpreter and the software GS renderer are the limit (findings/19 s.8)"),
 ]
 
 # -----------------------------------------------------------------------------

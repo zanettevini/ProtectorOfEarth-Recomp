@@ -20,8 +20,9 @@ fix and how it was found.
 | `0010-vu0-macro-memory-ops.patch` | VU0 macro VLQI/VSQI/VLQD/VSQD/VILWR/VISWR use VU0 data memory; VSQI/VSQD operand fields | findings/18 s.12 |
 | `0011-pad-keyboard-wasd-left-stick.patch` | Pad backend: W/A/S/D drive the left analog stick (arrows stay the D-pad) | findings/18 s.13 |
 | `0012-cd-shared-sector-numbers.patch` | CD: sceCdSearchFile on the EE uses the IOP's virtual-disc LSNs, so LSNs the game passes to IOP modules match; faster `ownsRamRange` | findings/19 s.3 |
+| `0013-vu1-skip-idle-pipeline-scans.patch` | VU1 interpreter: skip the per-cycle pipeline scans when nothing is due; fast XGKICK drain; same results and cycle counts | findings/19 s.9 |
 
-Patches 0002-0010 and 0012 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime) and should also go to upstream
+Patches 0002-0010 and 0012 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013 a speed-up with the same results) and should also go to upstream
 PS2Recomp.
 
 To undo them all: `git -C thirdparty/PS2Recomp checkout .`, then
