@@ -2,6 +2,9 @@
 
 # Protector of Earth Recomp
 
+<img width="1920" height="620" alt="image" src="https://github.com/user-attachments/assets/cdbb1857-d102-478c-afb1-c35df26b8d5c" />
+
+
 **An unofficial native PC port of *Ben 10: Protector of Earth***<br>
 <sub>PlayStation 2 · 2007 · High Voltage Software: statically recompiled, then rebuilt piece by piece with native code</sub>
 
