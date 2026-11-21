@@ -1,0 +1,149 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU0 macro mode: discard writes to VF0
+
+What broke:
+  VF0 is hard-wired to (0, 0, 0, 1) on the PS2; the hardware ignores any
+  write to it. The game's compiler emits "qmtc2 $reg, $vf0" as a scratch
+  move (120 sites in Ben 10: Protector of Earth, e.g. 0x1101f0 in
+  FUN_0010dd30). The translation wrote the GPR into ctx->vu0_vf[0], so from
+  then on VF0 held garbage in that thread (seen: (1, 0, -16.59, 0)). Every
+  later "vmaddw ..., $vf0w" (the usual way to add a matrix translation row)
+  then used w = 0: the game's sphere-vs-frustum test (FUN_0019e1d8 /
+  FUN_0019e238) dropped the planes' distance terms and its results no
+  longer matched the maths for about 1 call in 100.
+
+Why:
+  QMTC2 and LQC2 translated "vf[rt/rd] = value" with no check for register
+  0, and the generic macro-op templates write their destination the same
+  way.
+
+The fix:
+  QMTC2 and LQC2 with VF0 as destination emit a comment instead of a write.
+  translateVUInstruction restores VF0 to (0, 0, 0, 1) after any macro-mode
+  instruction whose generated code writes ctx->vu0_vf[0] (the write happens
+  after the operands are read, so the restore is exact), and VI0 to 0 after
+  any that writes ctx->vi[0] (e.g. the post-increment of VLQI with VI0 as the
+  address register). CTC2 to VI0 was already ignored.
+  New ps2xTest case: "VU writes to VF0 are discarded" (QMTC2, LQC2, a VADD
+  with fd = VF0, and a QMTC2 to VF1 that must still write).
+
+How it was found:
+  gdb on the running first level: Python breakpoints on FUN_0019e1d8 and
+  FUN_0019e238 read the plane matrix and the sphere from guest memory,
+  recomputed the result, and compared it with $v0 on return. The mismatches
+  all came from one guest thread whose ctx->vu0_vf[0] was not (0, 0, 0, 1);
+  a grep of the generated code for writes to vu0_vf[0] found only
+  "qmtc2.ni $reg, $vf0". After the fix, 3,000 sampled calls match
+  (findings/18 s.11).
+
+--- a/ps2xRecomp/src/lib/vu_translator.cpp
++++ b/ps2xRecomp/src/lib/vu_translator.cpp
+@@ -64,6 +64,12 @@
+             }
+         }
+         case COP2_QMTC2:
++            if (rd == 0)
++            {
++                // VF0 is hard-wired to (0, 0, 0, 1); the hardware discards writes to it.
++                // Some compilers emit "qmtc2 $reg, $vf0" as a scratch move, so this path is hit by real games.
++                return "// QMTC2 write to VF0 ignored";
++            }
+             return fmt::format("ctx->vu0_vf[{}] = _mm_castsi128_ps(GPR_VEC(ctx, {}));", rd, rt);
+         case COP2_CTC2:
+         {
+--- a/ps2xRecomp/src/lib/instruction_translator.cpp
++++ b/ps2xRecomp/src/lib/instruction_translator.cpp
+@@ -213,6 +213,11 @@
+                 inst.rt,
+                 genWrite(32, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), "bits"));
+         case OPCODE_LDC2:
++            if (inst.rt == 0)
++            {
++                // VF0 is hard-wired to (0, 0, 0, 1); the hardware discards writes to it.
++                return "// LQC2 write to VF0 ignored";
++            }
+             return fmt::format("ctx->vu0_vf[{}] = _mm_castsi128_ps({});", inst.rt, genRead(128, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate)));
+         case OPCODE_SDC2:
+             return genWrite(128, fmt::format("ADD32(GPR_U32(ctx, {}), {})", inst.rs, inst.simmediate), fmt::format("_mm_castps_si128(ctx->vu0_vf[{}])", inst.rt)) + ";";
+diff --git a/ps2xTest/src/code_generator_tests.cpp b/ps2xTest/src/code_generator_tests.cpp
+index 463b6cf..156d36e 100644
+--- a/ps2xTest/src/code_generator_tests.cpp
++++ b/ps2xTest/src/code_generator_tests.cpp
+@@ -1056,6 +1056,52 @@ void register_code_generator_tests()
+                 t.IsTrue(ctc2Code.find("Unimplemented") == std::string::npos, "CTC2 VI4 should be implemented");
+         });
+ 
++        tc.Run("VU writes to VF0 are discarded", [](TestCase& t)
++            {
++                // VF0 is hard-wired to (0, 0, 0, 1). Compilers emit "qmtc2 $reg, $vf0" as a scratch
++                // move, and the hardware drops the write; if the translation keeps it, every later
++                // "..., $vf0w" read (the usual way to add a matrix translation row) uses garbage.
++                CodeGenerator gen({}, {});
++
++                Instruction qmtc2{};
++                qmtc2.opcode = OPCODE_COP2;
++                qmtc2.rs = COP2_QMTC2;
++                qmtc2.rt = 4;
++                qmtc2.rd = 0;
++                std::string qmtc2Code = gen.translateInstruction(qmtc2);
++                printGeneratedCode("VU writes to VF0 are discarded (QMTC2)", qmtc2Code);
++                t.IsTrue(qmtc2Code.find("ctx->vu0_vf[0] =") == std::string::npos, "QMTC2 to VF0 must not write VF0");
++
++                Instruction lqc2{};
++                lqc2.opcode = OPCODE_LDC2;
++                lqc2.rs = 5;
++                lqc2.rt = 0;
++                std::string lqc2Code = gen.translateInstruction(lqc2);
++                printGeneratedCode("VU writes to VF0 are discarded (LQC2)", lqc2Code);
++                t.IsTrue(lqc2Code.find("ctx->vu0_vf[0] =") == std::string::npos, "LQC2 to VF0 must not write VF0");
++
++                Instruction qmtc2Vf1 = qmtc2;
++                qmtc2Vf1.rd = 1;
++                std::string vf1Code = gen.translateInstruction(qmtc2Vf1);
++                t.IsTrue(vf1Code.find("ctx->vu0_vf[1] = _mm_castsi128_ps(GPR_VEC(ctx, 4))") != std::string::npos,
++                         "QMTC2 to VF1 should still write VF1");
++
++                Instruction vadd{};
++                vadd.opcode = OPCODE_COP2;
++                vadd.rs = COP2_CO | 0xF;
++                vadd.rt = 2;
++                vadd.rd = 3;
++                vadd.sa = 0; // fd = VF0
++                vadd.function = VU0_S1_VADD;
++                vadd.vectorInfo.vectorField = 0xF;
++                std::string vaddCode = gen.translateInstruction(vadd);
++                printGeneratedCode("VU writes to VF0 are discarded (VADD)", vaddCode);
++                const size_t restore = vaddCode.rfind("ctx->vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);");
++                t.IsTrue(restore != std::string::npos, "a macro op writing VF0 must restore (0, 0, 0, 1)");
++                t.IsTrue(restore != std::string::npos && vaddCode.find("ctx->vu0_vf[0] =") < restore,
++                         "the restore must come after the write");
++        });
++
+         tc.Run("VU special control registers use hardware indices", [](TestCase& t)
+             {
+                 CodeGenerator gen({}, {});
+--- a/ps2xRecomp/src/lib/code_generator.cpp
++++ b/ps2xRecomp/src/lib/code_generator.cpp
+@@ -260,7 +260,21 @@
+ 
+     std::string CodeGenerator::translateVUInstruction(const Instruction &inst)
+     {
+-        return VuTranslator(*this).translate(inst);
++        std::string code = VuTranslator(*this).translate(inst);
++        // VF0 is hard-wired to (0, 0, 0, 1) and the hardware discards writes to it. Any macro-mode
++        // instruction whose destination is VF0 would otherwise corrupt it for every later reader
++        // (for example the "vmaddw ..., $vf0w" translation idiom), so restore it after the write.
++        if (code.find("ctx->vu0_vf[0] =") != std::string::npos)
++        {
++            code = "{ " + code + " ctx->vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f); }";
++        }
++        // VI0 is hard-wired to 0 the same way (e.g. the post-increment of VSQI/VLQI with VI0 as
++        // the address register, or an integer op with VI0 as destination).
++        if (code.find("ctx->vi[0] =") != std::string::npos)
++        {
++            code = "{ " + code + " ctx->vi[0] = 0; }";
++        }
++        return code;
+     }
+ 
+     CodeGenerator::AnalysisResult CodeGenerator::collectInternalBranchTargets(

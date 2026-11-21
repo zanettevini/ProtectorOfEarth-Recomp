@@ -39,6 +39,9 @@ The project follows the organisation of [Mind over Recomp](https://github.com/Ma
 
 <div align="center">
 
+<img src="docs/images/screenshots/06-first-level.png" alt="The first level, drawn by the port: Ben next to the RV" width="640"><br>
+<sub>The first level, drawn by the port on Linux (<a href="docs/findings/18-memory-card-and-menus.md">findings/18</a> s.12).</sub>
+
 <img src="docs/images/screenshots/02-title-screen.png" alt="The title screen, drawn by the port" width="400"> <img src="docs/images/screenshots/03-main-menu.png" alt="The main menu, drawn by the port" width="400"><br>
 <sub>The title screen and the main menu, drawn by the port on Linux (<a href="docs/findings/18-memory-card-and-menus.md">findings/18</a>). More in <a href="docs/images/screenshots/README.md">docs/images/screenshots/</a>.</sub>
 
@@ -58,11 +61,11 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Executable analysis | ✅ | 4,420 functions; the script API table (findings/09-12) |
 | Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
 | Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
-| Per-instruction tests | 🔧 | 33 end-to-end tests; 4 translator bugs found and fixed (findings/14) |
+| Per-instruction tests | 🔧 | 38 end-to-end tests; translator bugs found and fixed: 4 (findings/14), then VF0 writes, 5 MMI permutes and the VU0 macro memory ops (findings/18 s.11-12) |
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
 | Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu (findings/18) |
-| Playable level | 🔧 | the first level runs and draws its HUD; the 3D world is still black, ~1 fps (findings/18 s.8) |
+| Playable level | 🔧 | the first level renders (findings/18 s.12); movement not working yet, about 2-3 fps |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 

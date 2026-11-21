@@ -239,11 +239,101 @@ backend's VRAM with the CT32 page/block/column layout):
   themselves look right in this sample; the giant triangles' origin (which
   program, which vertices) is the next thing to pin down.
 
-## 11. Open
+## 11. The visibility test and VF0 (patch 0008)
+
+The first suspect for the giant triangles was the EE test that decides
+whether a model is drawn with a clipping VU1 program or a faster one that
+does not clip. In `FUN_0010dd30` (the model draw function):
+
+- The model's bounding sphere (`obj+0xE0`, radius `obj+0xEC` times the scale
+  `obj+0xFC`) is moved to world space with the object matrix (`obj+0x20`).
+- `FUN_0019e1d8` tests it against 4 planes at `camera+0x160`: 0 = outside
+  (culled), 2 = not outside. If 2, `FUN_0019e238` tests it against the 4
+  planes at `camera+0x100`: 1 = crosses a plane, 2 = fully inside. Both
+  transform the centre with VU0 macro instructions
+  (`vmulax`/`vmadday`/`vmaddaz`/`vmaddw ..., $vf0w`), take the minimum
+  distance with `vminiy/z/w` and compare it with the radius (`c.lt.s`).
+- "Fully inside" selects the program without clipping (MSCAL offset 0);
+  otherwise the clipping variant (offset 2). An object flag
+  (`obj+0xC & 0x400000`) forces the clipping variant.
+
+A gdb script read the planes and the sphere at each call, recomputed the
+result and compared it with `$v0` on return. About 1 call in 100 disagreed,
+always in one guest thread, whose `vu0_vf[0]` was `(1, 0, -16.59, 0)`
+instead of `(0, 0, 0, 1)`: the `vmaddw ..., $vf0w` dropped the planes'
+distance terms. The game's compiler emits `qmtc2 $reg, $vf0` as a scratch
+move (120 sites); the hardware ignores writes to VF0, the translation did
+not. Patch 0008 discards them (and any macro-mode write to VF0 or VI0).
+After it, 3,000 sampled calls matched. The giant triangles stayed: the
+classification was right, the problem was elsewhere.
+
+## 12. The giant triangles: the game's software skinning (patches 0009, 0010)
+
+- **Which object.** Forcing every call of `FUN_0019e238` to answer "crosses
+  a plane" (gdb, `$v0 = 1` on return) made the whole scene appear: the
+  giant triangles came from objects drawn without clipping. Forcing it for
+  one object at a time found the RV (`Col RV`, object `0x01F1B440`); its
+  VU1 matrix (`vf11`-`vf14` at the giant draw) matched that object's world
+  matrix times the camera's view-projection.
+- **Which data.** The model has 7 records of 32 bytes (material, DMA
+  pointer, flags, two LOD floats; header `+0x20`/`+0x24` give the range
+  drawn by `FUN_0010dd30`). Record byte `+0xA` is a bone index: `0xFF` uses
+  the object matrix, otherwise the matrix at scratchpad
+  `0x70000000 + index * 64`. A record is drawn when its first float times
+  the camera's LOD scale (`camera+0x344`) is larger than the distance. The
+  vertices of record 0 (`0xFF`, 32 vertices) were far outside the model's
+  bounding sphere (radius 4.4, vertices up to 72 units away), so the
+  no-clip program put some of them behind the camera.
+- **Who wrote them.** The model data is fine as loaded: a Python decoder of
+  the game's LZ format (`FUN_001973e8`; token byte b: `0x00`-`0x3F` = a
+  literal run of b + 1 bytes; `0x40`-`0x7F` = b - 0x3E copies of the next
+  byte; `0x80`-`0xFF` = with the next byte, a 16-bit v: copy
+  `(v & 0xF) + 2` bytes from `output + (signed 12-bit v >> 4) - 1`)
+  matched the bytes in memory, and a
+  hardware watchpoint saw the decompressor write them. A second write came
+  later from `FUN_0015f198`, called by the draw function: the game skins
+  this record **on the EE and VU0 every frame** and writes the result back
+  into the DMA packet.
+- **Bug 1, PROT3W.** `FUN_0015f198` packs two skinned vertices into 24
+  bytes with `prot3w` + `pextuw`. PROT3W gave `{w1, w2, w3, w0}` instead of
+  `{w1, w2, w0, w3}`, so every second vertex got its w (0) as x. PEXEW,
+  PEXCW, PEXEH and PEXCH had similar wrong shuffles (not used here). Patch
+  0009 fixes all five (checked against the EE manual's definitions and
+  QEMU's tx79 implementation; PREVH not changed, unverified).
+- **Bug 2, VU0 data memory.** The bone matrices go to VU0 data memory with
+  `vsqi vfN, (vi1++)`; three VU0 microprograms (`VCALLMS 0x0`, `0x38`,
+  `0x140`: load bones, blend position and normal with up to three bones
+  and 12-bit weights) read them back with `LQ`. The translation of the
+  macro-mode VU memory instructions wrote EE RAM at `vi * 16` (kernel RAM at
+  `0x0`-`0x3FF`) and took the stored register of VSQI/VSQD from the wrong
+  field (all four stores wrote `vf1`). A gdb trace of the microprograms
+  showed the "bone matrices" were zeros or vertex data. Patch 0010 points
+  VLQI/VSQI/VLQD/VSQD/VILWR/VISWR at VU0 data memory (EE `0x11004000`) with
+  the right fields.
+- **Result.** After the three patches the record's vertices are inside the
+  bounding sphere (largest distance 4.40 for radius 4.41), no giant
+  triangle is drawn, and the first level renders: Ben, the RV, the fence,
+  the shop, the rocks (screenshot `06-first-level.png`). The first frames
+  after the level loads are still black for a while (the camera intro or a
+  fade, not yet checked).
+- **Wrong turns.** Before the skinning: XGKICK timing, textures, Z, VU1 clip
+  flags (s.10), the visibility test (s.11), the LZ decompressor and the
+  LOD selection were all checked and found right.
+- **Note on VU0 micro mode.** `VCALLMS` runs the microprogram to the end
+  at once. The skinning loop overlaps the EE and VU0 (`qmfc2.ni` right
+  after `vcallms`), but each program here only reads registers the EE wrote
+  before the call and the EE only reads results of the previous program,
+  so running it at once gives the hardware's results. Other code may not be
+  so lucky (KNOWN_ISSUES R22).
+
+## 13. Open
 
 - Where saves should live: next to the disc files is not a good place for
   players' data; a per-user folder is the plan (KNOWN_ISSUES R21).
-- The world in the first level is still mostly black (s.10), and slow.
+- The first level renders (s.12) but runs at about 2-3 frames per second (measured in frames counted by
+  the game over 30 s), and
+  Ben did not move when the arrow keys or W were held (input in the level
+  not checked yet).
 - The heap: 36 KB left under `0x01FE0000` in the first level (R19).
 - The memory card is still the runtime's generic handler (status
   "emulated" on the README board); the native goal is the port's own save

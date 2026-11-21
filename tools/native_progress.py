@@ -47,7 +47,7 @@ MILESTONES = [
     ("Full build", "done",
      "the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested"),
     ("Per-instruction tests", "in progress",
-     "33 end-to-end tests; 4 translator bugs found and fixed (findings/14)"),
+     "38 end-to-end tests; translator bugs found and fixed: 4 (findings/14), then VF0 writes, 5 MMI permutes and the VU0 macro memory ops (findings/18 s.11-12)"),
     ("Boot", "done",
      "loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15)"),
     ("First frame", "done",
@@ -55,7 +55,7 @@ MILESTONES = [
     ("Main menu", "done",
      "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
     ("Playable level", "in progress",
-     "the first level runs and draws its HUD; the 3D world is still black, ~1 fps (findings/18 s.8)"),
+     "the first level renders (findings/18 s.12); movement not working yet, about 2-3 fps"),
 ]
 
 # -----------------------------------------------------------------------------

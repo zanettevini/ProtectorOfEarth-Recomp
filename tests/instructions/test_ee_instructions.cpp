@@ -359,6 +359,51 @@ TEST_F(EeTest, Plzcw) {
     EXPECT_EQ(get64(V0), 0x0000001F'0000001Eull);
 }
 
+// Word and halfword permutes (one source, rt = a1). Expected element orders
+// from the EE Core Instruction Set Manual; PROT3W, PEXEW and PEXEH also match
+// QEMU's target/mips/tx79 implementation. Element 0 is the lowest.
+// Words in: w0 = 0x10, w1 = 0x11, w2 = 0x12, w3 = 0x13.
+// Halfwords in: h0..h7 = 0..7.
+static const uint64_t kWordsLo = 0x00000011'00000010ull, kWordsHi = 0x00000013'00000012ull;
+static const uint64_t kHalvesLo = 0x0003'0002'0001'0000ull, kHalvesHi = 0x0007'0006'0005'0004ull;
+
+// PROT3W: the three low words rotate, word 3 stays -> {w1, w2, w0, w3}.
+// Ben 10's software skinning (FUN_0015f198) packs vertices with it
+// (findings/18 s.12).
+TEST_F(EeTest, Prot3wRotatesTheLowThreeWords) {
+    set128(A1, kWordsHi, kWordsLo);
+    run(CASE_t_prot3w);
+    EXPECT_EQ(get128(V0), (U128{0x00000012'00000011ull, 0x00000013'00000010ull}));
+}
+
+// PEXEW: words 0 and 2 swap -> {w2, w1, w0, w3}.
+TEST_F(EeTest, PexewSwapsEvenWords) {
+    set128(A1, kWordsHi, kWordsLo);
+    run(CASE_t_pexew);
+    EXPECT_EQ(get128(V0), (U128{0x00000011'00000012ull, 0x00000013'00000010ull}));
+}
+
+// PEXCW: words 1 and 2 swap -> {w0, w2, w1, w3}.
+TEST_F(EeTest, PexcwSwapsCenterWords) {
+    set128(A1, kWordsHi, kWordsLo);
+    run(CASE_t_pexcw);
+    EXPECT_EQ(get128(V0), (U128{0x00000012'00000010ull, 0x00000013'00000011ull}));
+}
+
+// PEXEH: in each 64-bit half, halfwords 0 and 2 swap -> {h2, h1, h0, h3}.
+TEST_F(EeTest, PexehSwapsEvenHalfwords) {
+    set128(A1, kHalvesHi, kHalvesLo);
+    run(CASE_t_pexeh);
+    EXPECT_EQ(get128(V0), (U128{0x0003'0000'0001'0002ull, 0x0007'0004'0005'0006ull}));
+}
+
+// PEXCH: in each 64-bit half, halfwords 1 and 2 swap -> {h0, h2, h1, h3}.
+TEST_F(EeTest, PexchSwapsCenterHalfwords) {
+    set128(A1, kHalvesHi, kHalvesLo);
+    run(CASE_t_pexch);
+    EXPECT_EQ(get128(V0), (U128{0x0003'0001'0002'0000ull, 0x0007'0005'0006'0004ull}));
+}
+
 // ---------------------------------------------------------------------------
 // VU0 macro mode (COP2): VADD with a destination mask
 // ---------------------------------------------------------------------------

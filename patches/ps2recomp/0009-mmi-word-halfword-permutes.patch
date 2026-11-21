@@ -1,0 +1,162 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] MMI: PROT3W, PEXEW, PEXCW, PEXEH, PEXCH move the right elements
+
+What broke:
+  The five one-source MMI permutes used the wrong SSE shuffles:
+    PROT3W gave {w1, w2, w3, w0} instead of {w1, w2, w0, w3};
+    PEXEW  gave {w2, w3, w0, w1} instead of {w2, w1, w0, w3};
+    PEXCW  gave {w2, w3, w0, w1} instead of {w0, w2, w1, w3};
+    PEXEH  gave {h2, h3, h0, h1} instead of {h2, h1, h0, h3} (per 64 bits);
+    PEXCH  gave {h2, h3, h0, h1} instead of {h0, h2, h1, h3} (per 64 bits).
+  Ben 10: Protector of Earth's software skinning (FUN_0015f198) packs two
+  skinned vertices into 24 bytes with PROT3W + PEXTUW; with the wrong
+  PROT3W every second vertex got its w (0) written as its x coordinate.
+
+Why:
+  The comments described other operations ("rotate left by 3", "swap 0<>2,
+  1<>3") and the shuffles followed the comments.
+
+The fix:
+  New runtime macros PS2_PEXCH and PS2_PEXCW; PS2_PEXEH, PS2_PEXEW and
+  PS2_PROT3W corrected (element orders documented next to them); the five
+  translators use the macros.
+  Sources: the EE Core Instruction Set Manual's definitions, and QEMU's
+  target/mips tx79 implementation (PROT3W, PEXEW, PEXEH; PEXCH and PEXCW
+  as described in its patch series).
+  New ps2xTest case "MMI word and halfword permutes move the right
+  elements" (fails before, passes after); "Unary MMI permutations read their
+  source from rt" also checks that the translators use the macros.
+  PREVH (reverses all 8 halfwords here; believed to reverse within each
+  64-bit half) is not changed: not verified against a reference yet.
+
+How it was found:
+  findings/18 s.12: the vertices of the giant triangles in the first level
+  came from a DMA buffer the game rewrites every frame; a hardware
+  watchpoint on it stopped in FUN_0015f198, whose packing code showed the
+  x = 0 pattern seen in the bad vertices.
+
+--- a/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/mmi_translation_helpers.cpp
+@@ -455,8 +455,9 @@
+ 
+     std::string CodeGenerator::translatePEXEH(const Instruction &inst)
+     {
+-        // Swaps halfwords 1<->3 and 5<->7 within the 128-bit register
+-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(2,3,0,1)), _MM_SHUFFLE(2,3,0,1)));",
++        // Parallel Exchange Even Halfword: in each 64-bit half, halfwords 0 and 2 swap and
++        // halfwords 1 and 3 stay (rd.h = {rt.h2, rt.h1, rt.h0, rt.h3} per half).
++        return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXEH(GPR_VEC(ctx, {})));",
+                            inst.rd, inst.rt);
+     }
+ 
+@@ -521,8 +522,9 @@
+ 
+     std::string CodeGenerator::translatePROT3W(const Instruction &inst)
+     {
+-        // Rotates words left by 3: [d,c,b,a] -> [a,d,c,b]
+-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(0,3,2,1)));",
++        // Parallel Rotate 3 Words: the three low words rotate, word 3 stays:
++        // rd = {w0: rt.w1, w1: rt.w2, w2: rt.w0, w3: rt.w3}.
++        return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PROT3W(GPR_VEC(ctx, {})));",
+                            inst.rd, inst.rt);
+     }
+ 
+@@ -561,8 +563,9 @@
+ 
+     std::string CodeGenerator::translatePEXCH(const Instruction &inst)
+     {
+-        // Parallel Exchange Center Halfword (same as MMI2 PEXEH)
+-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shufflelo_epi16(_mm_shufflehi_epi16(GPR_VEC(ctx, {}), _MM_SHUFFLE(2,3,0,1)), _MM_SHUFFLE(2,3,0,1)));",
++        // Parallel Exchange Center Halfword: in each 64-bit half, halfwords 1 and 2 swap and
++        // halfwords 0 and 3 stay (rd.h = {rt.h0, rt.h2, rt.h1, rt.h3} per half).
++        return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXCH(GPR_VEC(ctx, {})));",
+                            inst.rd, inst.rt);
+     }
+ 
+@@ -578,8 +581,8 @@
+ 
+     std::string CodeGenerator::translatePEXCW(const Instruction &inst)
+     {
+-        // Parallel Exchange Center Word (Swaps words 0<>2, 1<>3)
+-        return fmt::format("SET_GPR_VEC(ctx, {}, _mm_shuffle_epi32(GPR_VEC(ctx, {}), _MM_SHUFFLE(1,0,3,2)));",
++        // Parallel Exchange Center Word: words 1 and 2 swap, words 0 and 3 stay.
++        return fmt::format("SET_GPR_VEC(ctx, {}, PS2_PEXCW(GPR_VEC(ctx, {})));",
+                            inst.rd, inst.rt);
+     }
+ 
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -964,9 +964,18 @@
+ }
+ #define PS2_QFSRV(rs, rt, sa) ps2_qfsrv((__m128i)(rs), (__m128i)(rt), (uint32_t)(sa))
+ #define PS2_PCPYLD(rs, rt) _mm_unpacklo_epi64(rt, rs)
+-#define PS2_PEXEH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(2, 3, 0, 1)), _MM_SHUFFLE(2, 3, 0, 1))
+-#define PS2_PEXEW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(2, 3, 0, 1))
+-#define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(0, 3, 2, 1))
++// MMI word/halfword permutes (EE Core Instruction Set Manual; element 0 = the lowest):
++//   PEXEH: per 64-bit half, halfwords 0 and 2 swap        -> {h2, h1, h0, h3}
++//   PEXCH: per 64-bit half, halfwords 1 and 2 swap        -> {h0, h2, h1, h3}
++//   PEXEW: words 0 and 2 swap                             -> {w2, w1, w0, w3}
++//   PEXCW: words 1 and 2 swap                             -> {w0, w2, w1, w3}
++//   PROT3W: the three low words rotate, word 3 stays      -> {w1, w2, w0, w3}
++// _MM_SHUFFLE lists the source element for lanes 3, 2, 1, 0 (highest first).
++#define PS2_PEXEH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(3, 0, 1, 2)), _MM_SHUFFLE(3, 0, 1, 2))
++#define PS2_PEXCH(rs) _mm_shufflelo_epi16(_mm_shufflehi_epi16(rs, _MM_SHUFFLE(3, 1, 2, 0)), _MM_SHUFFLE(3, 1, 2, 0))
++#define PS2_PEXEW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(3, 0, 1, 2))
++#define PS2_PEXCW(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(3, 1, 2, 0))
++#define PS2_PROT3W(rs) _mm_shuffle_epi32(rs, _MM_SHUFFLE(3, 0, 2, 1))
+ 
+ // Additional VU0 operations
+ #define PS2_VSQRT(x) sqrtf(x)
+--- a/ps2xTest/src/code_generator_tests.cpp
++++ b/ps2xTest/src/code_generator_tests.cpp
+@@ -1309,6 +1309,14 @@
+                          std::string(item.name) + " should read its source from rt");
+                 t.IsTrue(out.find("GPR_VEC(ctx, 4)") == std::string::npos,
+                          std::string(item.name) + " should not read its source from rs");
++                // The permutes whose element order is checked in "MMI word and halfword permutes
++                // move the right elements" must use those runtime macros.
++                const std::string name(item.name);
++                if (name != "PREVH" && name != "PCPYH")
++                {
++                    t.IsTrue(out.find("PS2_" + name + "(GPR_VEC(ctx, 5))") != std::string::npos,
++                             name + " should use the PS2_" + name + " runtime macro");
++                }
+             }
+         });
+ 
+--- a/ps2xTest/src/ps2_runtime_expansion_tests.cpp
++++ b/ps2xTest/src/ps2_runtime_expansion_tests.cpp
+@@ -315,6 +315,32 @@
+ {
+     MiniTest::Case("PS2RuntimeExpansion", [](TestCase &tc)
+     {
++        tc.Run("MMI word and halfword permutes move the right elements", [](TestCase &t)
++            {
++                // EE Core Instruction Set Manual (element 0 = the lowest). The old shuffles rotated or
++                // swapped the wrong elements; a game's software skinning packs vertices with PROT3W +
++                // PEXTUW, and the wrong PROT3W replaced every other x coordinate with w.
++                auto words = [](__m128i v, uint32_t out[4]) { _mm_storeu_si128(reinterpret_cast<__m128i *>(out), v); };
++                auto halves = [](__m128i v, uint16_t out[8]) { _mm_storeu_si128(reinterpret_cast<__m128i *>(out), v); };
++                const __m128i w = _mm_setr_epi32(0x10, 0x11, 0x12, 0x13);
++                const __m128i h = _mm_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7);
++                uint32_t r[4]{};
++                uint16_t s[8]{};
++
++                words(PS2_PROT3W(w), r);
++                t.IsTrue(r[0] == 0x11 && r[1] == 0x12 && r[2] == 0x10 && r[3] == 0x13, "PROT3W -> {w1, w2, w0, w3}");
++                words(PS2_PEXEW(w), r);
++                t.IsTrue(r[0] == 0x12 && r[1] == 0x11 && r[2] == 0x10 && r[3] == 0x13, "PEXEW -> {w2, w1, w0, w3}");
++                words(PS2_PEXCW(w), r);
++                t.IsTrue(r[0] == 0x10 && r[1] == 0x12 && r[2] == 0x11 && r[3] == 0x13, "PEXCW -> {w0, w2, w1, w3}");
++                halves(PS2_PEXEH(h), s);
++                t.IsTrue(s[0] == 2 && s[1] == 1 && s[2] == 0 && s[3] == 3 && s[4] == 6 && s[5] == 5 && s[6] == 4 && s[7] == 7,
++                         "PEXEH -> {h2, h1, h0, h3} per 64-bit half");
++                halves(PS2_PEXCH(h), s);
++                t.IsTrue(s[0] == 0 && s[1] == 2 && s[2] == 1 && s[3] == 3 && s[4] == 4 && s[5] == 6 && s[6] == 5 && s[7] == 7,
++                         "PEXCH -> {h0, h2, h1, h3} per 64-bit half");
++        });
++
+         tc.Run("differential decoder/codegen gpr-write contract for MULT and DIV families", [](TestCase &t)
+         {
+             R5900Decoder decoder;

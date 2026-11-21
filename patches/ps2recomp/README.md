@@ -15,8 +15,11 @@ fix and how it was found.
 | `0005-padduh-psubuh-saturate.patch` | PADDUH/PSUBUH saturate | findings/14 s.5 |
 | `0006-kernel-data-in-kernel-ram.patch` | The runtime's own guest data (RPC/TLS pools, SIF command packets, callback stacks) moves to EE kernel RAM; the game's heap may grow up to the main stack | findings/15 s.15 |
 | `0007-vu-max-mini-raw-bits.patch` | VU1 MAX/MINI compare raw bits and do not flush denormals (games use MAX as a move of integer data) | findings/18 s.9 |
+| `0008-vu0-discard-vf0-writes.patch` | VU0 macro mode: writes to VF0 (QMTC2, LQC2, macro ops) and VI0 are discarded, as on hardware | findings/18 s.11 |
+| `0009-mmi-word-halfword-permutes.patch` | MMI PROT3W, PEXEW, PEXCW, PEXEH, PEXCH move the right elements | findings/18 s.12 |
+| `0010-vu0-macro-memory-ops.patch` | VU0 macro VLQI/VSQI/VLQD/VSQD/VILWR/VISWR use VU0 data memory; VSQI/VSQD operand fields | findings/18 s.12 |
 
-Patches 0002-0007 fix PS2 behaviour and should also go to upstream
+Patches 0002-0010 fix PS2 behaviour and should also go to upstream
 PS2Recomp.
 
 To undo them all: `git -C thirdparty/PS2Recomp checkout .`, then

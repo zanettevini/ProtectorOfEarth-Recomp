@@ -1,0 +1,210 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU0 macro mode: VLQI/VSQI/VLQD/VSQD/VILWR/VISWR use VU0 data memory
+
+What broke:
+  1. The macro-mode VU memory instructions read and wrote EE RAM at
+     vi * 16 (VILWR/VISWR at vi * 4) instead of VU0 data memory (EE
+     0x11004000). Ben 10: Protector of Earth uploads bone matrices for its
+     software skinning with "vsqi vfN, (vi1++)"; they landed in EE kernel RAM
+     at 0x0-0x3FF and the VU0 microprograms (VCALLMS 0x0/0x38/0x140) read
+     whatever was in VU0 data memory as matrices.
+  2. VSQI/VSQD took the stored register from bits 20-16 and the address
+     register from bits 15-11; it is the other way round for stores
+     ("VSQI.dest fs, (it++)": fs = bits 15-11, it = bits 20-16;
+     0x4be1137d is "vsqi.xyzw vf2, (vi1++)"). The game's four stores of a
+     matrix all wrote vf1 to the addresses vi2..vi4.
+  3. VILWR/VISWR ignored the field (x/y/z/w) named in the destination mask.
+
+The fix:
+  The six instructions address 0x11004000 + (vi & 0xFF) * 16 (VU0 data
+  memory is 256 quadwords and wraps; the VU1 register window that VU0 micro
+  mode sees at 0x400-0x43F is not modelled), plus 4 * field for
+  VILWR/VISWR. VSQI/VSQD read fs from rd and it from rt. VI post-increment
+  and pre-decrement wrap at 16 bits (patch 0008 keeps VI0 at 0).
+  New ps2xTest case "VU0 macro memory ops address VU0 data memory with the
+  right fields".
+
+How it was found:
+  findings/18 s.12: a gdb trace of the skinning microprograms showed bone
+  "matrices" in VU0 data memory that were vertex positions or zeros; the
+  generated code for the VSQI loop at 0x15f358 wrote to EE address vi * 16
+  and stored vf1 for "vsqi vf2, (vi1++)".
+
+--- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+@@ -111,14 +111,42 @@
+                            inst.rt, inst.rt);
+     }
+ 
++    // Macro-mode VU memory instructions (VLQI/VSQI/VLQD/VSQD/VILWR/VISWR) address VU0 data
++    // memory, not EE RAM: the address register holds a quadword index into VU0's 4 KB data
++    // memory, seen from the EE at 0x11004000. Only the low 8 bits select a quadword (256
++    // quadwords; VU0 data memory wraps). The VU1 register window that VU0 micro mode sees at
++    // quadwords 0x400-0x43F is not modelled here.
++    namespace
++    {
++        std::string vu0DataQwordAddress(uint8_t vi)
++        {
++            return fmt::format("(0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4))", vi);
++        }
++
++        // VILWR/VISWR name exactly one field (x, y, z or w) in the destination mask.
++        uint32_t vuFieldByteOffset(uint8_t destMask)
++        {
++            if (destMask & 0x8) return 0;  // x
++            if (destMask & 0x4) return 4;  // y
++            if (destMask & 0x2) return 8;  // z
++            return 12;                     // w
++        }
++    }
++
+     std::string CodeGenerator::translateVU_VILWR(const Instruction &inst)
+     {
+-        return fmt::format("{{ uint32_t addr = (uint32_t)(ctx->vi[{}] << 2) & 0x3FFC; ctx->vi[{}] = static_cast<uint16_t>(READ32(addr)); }}", inst.rd, inst.rt); // VILWR.<f> vit, (vis)
++        // VILWR.<f> vit, (vis): vit = low 16 bits of field f of VU0 data quadword vis.
++        if (inst.rt == 0)
++            return "// VILWR to VI0 ignored";
++        return fmt::format("{{ uint32_t addr = {} + {}u; ctx->vi[{}] = static_cast<uint16_t>(READ32(addr)); }}",
++                           vu0DataQwordAddress(inst.rd), vuFieldByteOffset(inst.vectorInfo.vectorField), inst.rt);
+     }
+ 
+     std::string CodeGenerator::translateVU_VISWR(const Instruction &inst)
+     {
+-        return fmt::format("{{ uint32_t addr = (uint32_t)(ctx->vi[{}] << 2) & 0x3FFC; WRITE32(addr, (uint32_t)ctx->vi[{}]); }}", inst.rd, inst.rt); // VISWR.<f> vit, (vis)
++        // VISWR.<f> vit, (vis): field f of VU0 data quadword vis = vit, zero-extended to 32 bits.
++        return fmt::format("{{ uint32_t addr = {} + {}u; WRITE32(addr, (uint32_t)(uint16_t)ctx->vi[{}]); }}",
++                           vu0DataQwordAddress(inst.rd), vuFieldByteOffset(inst.vectorInfo.vectorField), inst.rt);
+     }
+ 
+     std::string CodeGenerator::translateVU_VIADD(const Instruction &inst)
+@@ -769,11 +797,11 @@
+     {
+         uint8_t vis = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ uint32_t addr = ((uint32_t)(ctx->vi[{}] & 0x3FF)) << 4; "
++        return fmt::format("{{ uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); "
+                            "__m128 res = _mm_castsi128_ps(READ128(addr)); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); "
+-                           "ctx->vi[{}] = (ctx->vi[{}] + 1) & 0x3FF; }}",
++                           "ctx->vi[{}] = static_cast<uint16_t>(ctx->vi[{}] + 1); }}",
+                            vis,
+                            (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
+                            (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0,
+@@ -783,15 +811,18 @@
+ 
+     std::string CodeGenerator::translateVU_VSQI(const Instruction &inst)
+     {
+-        uint8_t vis = inst.rd;
++        // VSQI.dest fs, (it): the stored register fs is in bits 15-11 (rd) and the address register
++        // it in bits 20-16 (rt), the opposite of VLQI/VLQD (e.g. 0x4be1137d = vsqi vf2 at vi1).
++        uint8_t vis = inst.rt;
++        uint8_t vfs = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ uint32_t addr = ((uint32_t)(ctx->vi[{}] & 0x3FF)) << 4; "
++        return fmt::format("{{ uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); "
+                            "__m128i old_val = READ128(addr); "
+                            "__m128 res = _mm_blendv_ps(_mm_castsi128_ps(old_val), ctx->vu0_vf[{}], _mm_castsi128_ps(_mm_set_epi32({}, {}, {}, {}))); "
+                            "WRITE128(addr, _mm_castps_si128(res)); "
+-                           "ctx->vi[{}] = (ctx->vi[{}] + 1) & 0x3FF; }}",
++                           "ctx->vi[{}] = static_cast<uint16_t>(ctx->vi[{}] + 1); }}",
+                            vis,
+-                           inst.rt,
++                           vfs,
+                            (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
+                            (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0,
+                            vis, vis);
+@@ -801,8 +832,8 @@
+     {
+         uint8_t vis = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ ctx->vi[{}] = (ctx->vi[{}] - 1) & 0x3FF; "
+-                           "uint32_t addr = ((uint32_t)(ctx->vi[{}] & 0x3FF)) << 4; "
++        return fmt::format("{{ ctx->vi[{}] = static_cast<uint16_t>(ctx->vi[{}] - 1); "
++                           "uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); "
+                            "__m128 res = _mm_castsi128_ps(READ128(addr)); "
+                            "__m128i mask = _mm_set_epi32({}, {}, {}, {}); "
+                            "ctx->vu0_vf[{}] = _mm_blendv_ps(ctx->vu0_vf[{}], res, _mm_castsi128_ps(mask)); }}",
+@@ -815,16 +846,19 @@
+ 
+     std::string CodeGenerator::translateVU_VSQD(const Instruction &inst)
+     {
+-        uint8_t vis = inst.rd;
++        // VSQD.dest fs, (it): the stored register fs is in bits 15-11 (rd) and the address register
++        // it in bits 20-16 (rt), the opposite of VLQI/VLQD (e.g. 0x4be1137d = vsqd vf2 at vi1).
++        uint8_t vis = inst.rt;
++        uint8_t vfs = inst.rd;
+         uint8_t dest_mask = inst.vectorInfo.vectorField;
+-        return fmt::format("{{ ctx->vi[{}] = (ctx->vi[{}] - 1) & 0x3FF; "
+-                           "uint32_t addr = ((uint32_t)(ctx->vi[{}] & 0x3FF)) << 4; "
++        return fmt::format("{{ ctx->vi[{}] = static_cast<uint16_t>(ctx->vi[{}] - 1); "
++                           "uint32_t addr = 0x11004000u + (((uint32_t)ctx->vi[{}] & 0xFFu) << 4); "
+                            "__m128i old_val = READ128(addr); "
+                            "__m128 res = _mm_blendv_ps(_mm_castsi128_ps(old_val), ctx->vu0_vf[{}], _mm_castsi128_ps(_mm_set_epi32({}, {}, {}, {}))); "
+                            "WRITE128(addr, _mm_castps_si128(res)); }}",
+                            vis, vis,
+                            vis,
+-                           inst.rt,
++                           vfs,
+                            (dest_mask & 0x1) ? -1 : 0, (dest_mask & 0x2) ? -1 : 0,
+                            (dest_mask & 0x4) ? -1 : 0, (dest_mask & 0x8) ? -1 : 0);
+     }
+--- a/ps2xTest/src/code_generator_tests.cpp
++++ b/ps2xTest/src/code_generator_tests.cpp
+@@ -1518,6 +1518,56 @@
+             t.IsTrue(out.find("ctx->vi[20]") == std::string::npos, "S2 VLQI must not use rs(format) as VI index");
+         });
+ 
++        tc.Run("VU0 macro memory ops address VU0 data memory with the right fields", [](TestCase &t) {
++            // VLQI/VLQD: ft = bits 20-16, is = bits 15-11. VSQI/VSQD: fs = bits 15-11, it = bits 20-16
++            // (0x4be1137d is "vsqi.xyzw vf2, (vi1++)"). All of them address VU0 data memory
++            // (EE 0x11004000, 256 quadwords), never EE RAM at vi * 16.
++            auto special2 = [](uint32_t s2, uint8_t rt, uint8_t rd, uint8_t field) {
++                Instruction inst{};
++                inst.opcode = OPCODE_COP2;
++                inst.rs = COP2_CO | 0xF;
++                inst.rt = rt;
++                inst.rd = rd;
++                inst.function = 0x3C; // force the Special2 path
++                inst.vectorInfo.vectorField = field;
++                inst.raw = (((s2 >> 2) & 0x1F) << 6) | (s2 & 0x3);
++                return inst;
++            };
++            CodeGenerator gen({}, {});
++
++            const std::string vsqi = gen.translateInstruction(special2(VU0_S2_VSQI, 1, 2, 0xF));
++            printGeneratedCode("VSQI vf2, (vi1++)", vsqi);
++            t.IsTrue(vsqi.find("0x11004000u + (((uint32_t)ctx->vi[1] & 0xFFu) << 4)") != std::string::npos,
++                     "VSQI addresses VU0 data memory through it = rt");
++            t.IsTrue(vsqi.find("ctx->vu0_vf[2]") != std::string::npos, "VSQI stores fs = rd");
++            t.IsTrue(vsqi.find("ctx->vi[1] = static_cast<uint16_t>(ctx->vi[1] + 1)") != std::string::npos,
++                     "VSQI post-increments it");
++
++            const std::string vsqd = gen.translateInstruction(special2(VU0_S2_VSQD, 3, 4, 0xF));
++            t.IsTrue(vsqd.find("ctx->vi[3] = static_cast<uint16_t>(ctx->vi[3] - 1)") != std::string::npos,
++                     "VSQD pre-decrements it = rt");
++            t.IsTrue(vsqd.find("ctx->vu0_vf[4]") != std::string::npos, "VSQD stores fs = rd");
++
++            const std::string vlqi = gen.translateInstruction(special2(VU0_S2_VLQI, 5, 6, 0xF));
++            t.IsTrue(vlqi.find("0x11004000u + (((uint32_t)ctx->vi[6] & 0xFFu) << 4)") != std::string::npos,
++                     "VLQI addresses VU0 data memory through is = rd");
++            t.IsTrue(vlqi.find("ctx->vu0_vf[5] =") != std::string::npos, "VLQI loads ft = rt");
++
++            const std::string ilwr = gen.translateInstruction(special2(VU0_S2_VILWR, 7, 8, 0x4));
++            printGeneratedCode("VILWR.y vi7, (vi8)", ilwr);
++            t.IsTrue(ilwr.find("0x11004000u + (((uint32_t)ctx->vi[8] & 0xFFu) << 4)) + 4u") != std::string::npos,
++                     "VILWR.y reads the y word of quadword is");
++            t.IsTrue(ilwr.find("ctx->vi[7] = ") != std::string::npos, "VILWR writes it = rt");
++
++            const std::string iswr = gen.translateInstruction(special2(VU0_S2_VISWR, 9, 10, 0x1));
++            t.IsTrue(iswr.find("0x11004000u + (((uint32_t)ctx->vi[10] & 0xFFu) << 4)) + 12u") != std::string::npos,
++                     "VISWR.w writes the w word of quadword is");
++
++            const std::string vlqiVi0 = gen.translateInstruction(special2(VU0_S2_VLQI, 5, 0, 0xF));
++            t.IsTrue(vlqiVi0.rfind("ctx->vi[0] = 0;") != std::string::npos,
++                     "a post-increment of VI0 must leave VI0 at 0");
++        });
++
+         tc.Run("JAL to known function emits call and check", [](TestCase &t) {
+             Function func;
+             func.name = "jal_test";

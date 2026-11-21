@@ -99,6 +99,11 @@ def padduh(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x14, 0x28)  # MMI1
 def pcpyld(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x0E, 0x09)  # MMI2
 def pcpyud(rd, rs, rt):    return r_type(MMI, rs, rt, rd, 0x0E, 0x29)  # MMI3
 def pnor(rd, rs, rt):      return r_type(MMI, rs, rt, rd, 0x13, 0x29)  # MMI3
+def pexeh(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1A, 0x09)   # MMI2
+def pexew(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1E, 0x09)   # MMI2
+def prot3w(rd, rt):        return r_type(MMI, 0, rt, rd, 0x1F, 0x09)   # MMI2
+def pexch(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1A, 0x29)   # MMI3
+def pexcw(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1E, 0x29)   # MMI3
 
 # VU0 macro mode (COP2)
 COP2 = 0x12
@@ -206,6 +211,12 @@ CASES["t_padduh"] = lambda pc: [padduh(V0, A0, A1)] + ret()
 CASES["t_ppach"] = lambda pc: [ppach(V0, A0, A1)] + ret()
 CASES["t_pnor"] = lambda pc: [pnor(V0, A0, A1)] + ret()
 CASES["t_plzcw"] = lambda pc: [plzcw(V0, A0)] + ret()
+# Word/halfword permutes: one source (rt = a1), rs is 0 in the encoding.
+CASES["t_pexeh"] = lambda pc: [pexeh(V0, A1)] + ret()
+CASES["t_pexew"] = lambda pc: [pexew(V0, A1)] + ret()
+CASES["t_prot3w"] = lambda pc: [prot3w(V0, A1)] + ret()
+CASES["t_pexch"] = lambda pc: [pexch(V0, A1)] + ret()
+CASES["t_pexcw"] = lambda pc: [pexcw(V0, A1)] + ret()
 
 # --- VU0 macro mode -----------------------------------------------------------
 # vf1 = a0, vf2 = a1 (128 bits); vf3 gets a known base (a2);

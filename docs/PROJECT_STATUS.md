@@ -8,8 +8,10 @@ reboot, file I/O, IOP heap and module loading; it reads `GAME.DIR` and
 reads the game's data through a native replacement of CDARB's EE reads,
 finds the memory card (libmc bound to the runtime's card, findings/18),
 creates its save, shows the title screen and the main menu, and loads the
-first level, where it draws the HUD and a first piece of the 3D world;
-most of the picture is still black (findings/18 s.8-10).
+first level, which now renders (findings/18 s.12): the last blocker was the
+game's software skinning, broken by a wrong PROT3W translation and by VU0
+macro-mode memory instructions that wrote EE RAM (patches 0009-0010), after
+a VF0 fix (patch 0008). Ben does not move yet and it runs at about 2-3 fps.
 On the way, patch 0006 moved the runtime's own guest data to EE kernel RAM,
 because the game's heap needs the memory the runtime kept at the top of RAM
 (findings/15 s.15).
@@ -35,29 +37,33 @@ game) and the [README](../README.md#-going-native) board.
   identified with evidence and bound to runtime handlers; the boot moved
   past 4 blockers ([findings/15](findings/15-first-boot.md)).
 - Repository translated to English (D7).
+- Main menu and the first level: memory card, menus, black models (patch
+  0007), VF0 (0008), software skinning (0009-0010); the level renders
+  ([findings/18](findings/18-memory-card-and-menus.md)).
 
 ## Tests run
 
 | What | Where | Result |
 |---|---|---|
-| `ctest` (36 cases: 33 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **35/35 pass** |
-| PS2Recomp's own `ps2x_tests` with patches 0001-0007 (built separately) | Linux, GCC 13 | **447/447 pass** (run from `ps2xTest/`) |
+| `ctest` (41 cases: 38 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **40/40 pass** |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0010 (built separately) | Linux, GCC 13 | **450/450 pass** (run from `ps2xTest/`) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 0001-0007 apply in order on a clean checkout of the pinned commit (`git apply` on a worktree) |
+| Patches applied by CMake | Linux | 0001-0010 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); each reverse-applies on the patched tree |
+| First level, under Xvfb | Linux | renders (screenshot 06); Ben did not move with the arrow keys or W |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 
 **Untested**: everything on Windows except the study version of the disc
 collection (MSVC, `ghidra_analyze.ps1`, the repository version of
 `collect_disc.ps1`); an optimised build; the first screen compared with
-PCSX2; anything past the loading of the first level.
+PCSX2; the first level compared with PCSX2; gameplay.
 
 ## Unresolved
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md): temporary debts T1 (interpreted
-IOP) and T2 (interpreted VU), risks R10-R20.
+IOP) and T2 (interpreted VU), risks R10-R23.
 
 ## Next task
 
