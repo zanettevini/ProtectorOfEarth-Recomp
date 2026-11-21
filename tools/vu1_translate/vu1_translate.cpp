@@ -19,7 +19,7 @@
 //      function that calls VU1NativeAccess::execPair (the interpreter's
 //      per-pair step, forced inline) with it, so the compiler drops every
 //      branch the step takes on the decoded fields. The pairs are spread
-//      over kFileCount files (parallel compilation) plus an index file with
+//      over kFileCount (32) files (parallel compilation) plus an index file with
 //      the tables of src/vu/vu1_native.h.
 //
 // USAGE
@@ -43,7 +43,9 @@
 
 namespace
 {
-    constexpr int kFileCount = 8;
+    // Many small files: MSVC compiles each translated file slowly (every pair
+    // inlines the step), so the work is spread over as many cores as there are.
+    constexpr int kFileCount = 32;
     constexpr uint32_t kChunkMax = 0x800u;
     constexpr uint32_t kVuCodeSize = 0x4000u;
 

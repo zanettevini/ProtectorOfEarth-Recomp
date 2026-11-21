@@ -25,7 +25,7 @@ the base for the faster phases:
   decoded pair as a `constexpr` object and a function that runs
   `VU1Interpreter::execPair` (the interpreter's per-pair step, patch 0018,
   forced inline) with it. The compiler drops every branch the step takes
-  on the decoded fields. Output: 8 files plus an index in `generated/vu1/`
+  on the decoded fields. Output: 32 files plus an index in `generated/vu1/`
   (the game's code: never versioned), built into the `ben10_vu1_native`
   library at `-O2`.
 - **Run time.** Patch 0018 lets the game give the VU1 interpreter a
@@ -81,7 +81,10 @@ because the short helper names clash with ps2xRecomp macros).
 So -32% against the replay's interpreter, about -25% against an
 interpreter that keeps its decoded pairs (as in the game). Same checksums
 with and without `--native`; ps2xTest 454/454. Building `ben10_vu1_native`
-now takes about 3.5 minutes on the 2-core Linux machine.
+now takes about 3.5 minutes on the 2-core Linux machine. On Windows (MSVC
+Release) the whole build went from 8 to 24 minutes, the translated files
+compiling slowly; the translator now writes 32 smaller files instead of 8
+so they compile on all cores at once.
 
 In the first level (Linux, 90 s, `tools/perf/cpu_per_frame.sh`): game
 thread 169 ms of CPU per game frame, against 193 ms with phase 1 and

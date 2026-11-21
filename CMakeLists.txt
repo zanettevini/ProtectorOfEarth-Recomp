@@ -143,7 +143,8 @@ if(TARGET ps2_runtime AND EXISTS "${BEN10_GAME_ELF}")
     target_link_libraries(ben10_vu1_translate PRIVATE ps2_runtime)
 
     set(BEN10_VU1_GENERATED_SOURCES "${BEN10_VU1_GENERATED_DIR}/vu1_native_index.cpp")
-    foreach(BEN10_VU1_FILE RANGE 0 7)
+    # 32 files, as kFileCount in tools/vu1_translate/vu1_translate.cpp.
+    foreach(BEN10_VU1_FILE RANGE 0 31)
         list(APPEND BEN10_VU1_GENERATED_SOURCES "${BEN10_VU1_GENERATED_DIR}/vu1_native_${BEN10_VU1_FILE}.cpp")
     endforeach()
     add_custom_command(
