@@ -1,4 +1,4 @@
-// draw_wait.cpp: the game's "wait for the frame's DMA" loop, with a longer time step (findings/20 s.9).
+// draw_wait.cpp: the game's "wait for the frame's DMA" loop, with a longer time step (findings/20 s.8).
 //
 // WHAT IT IS FOR
 //   FUN_0012e580(state) waits, by spinning, until the VIF1 DMA end handler
@@ -11,7 +11,7 @@
 //   PS2's clock (which decides when the next VBlank and DMA-end interrupts
 //   come) therefore advances in 32-cycle steps, each paying the
 //   checkpoint's fixed cost: in the first level about 15% of the game
-//   thread's samples were this loop and the IOP steps it drove (s.9).
+//   thread's samples were this loop and the IOP steps it drove (findings/20 s.6).
 //
 // WHAT IT DOES
 //   The same loop, natively, with one change: each turn counts

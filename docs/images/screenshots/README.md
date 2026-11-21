@@ -13,6 +13,7 @@ They are listed here in the order they were taken.
 | `06-first-level.png` | The first level rendered: Ben, the RV, the fence and the rocks, after the VF0, MMI and VU0 memory fixes ([findings/18](../../findings/18-memory-card-and-menus.md) s.12) | same |
 | `07-first-level-walking.png` | Ben walking towards the RV, moved with the keyboard (W, the left stick) ([findings/18](../../findings/18-memory-card-and-menus.md) s.13) | same |
 | `08-windows-tutorial.png` | The first level's Omnitrix tutorial, in the first Windows (MSVC Release) build ([findings/19](../../findings/19-windows-build-and-speed.md) s.1) | Windows, the game's 638x448 area cut out of a desktop screenshot |
+| `09-first-level-combo.png` | Ben attacking in the first level (the HUD shows the combo name), after the pad fix ([findings/20](../../findings/20-vu1-census-and-gs-thread.md) s.9) | Linux, Xvfb, the game's 640x448 area cut out of the window |
 
 ## Whose work this is
 

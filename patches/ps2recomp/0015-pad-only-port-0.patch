@@ -1,0 +1,90 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] Pad: only port 0 has a controller
+
+What broke:
+  In Ben 10: Protector of Earth's first level, pressing any face button
+  (Square, Triangle, Circle, Cross) opened the game's co-op pause menu
+  ("Game Paused" ... "Drop Player One"), and the next press closed it.
+
+Why:
+  Every opened pad port read the same input (the keyboard and the first
+  host gamepad) and reported itself STABLE: the game saw a second
+  controller in port 1 whose buttons were pressed together with player
+  1's. PSPadBackend::readState ignores its port argument, and the
+  keyboard/gamepad fallback in readPadPortData does too.
+
+The fix:
+  hasHostController(port, slot): only port 0, slot 0 has a controller.
+  scePadGetState reports DISCONNECTED for any other port/slot even when
+  the game opened it, and scePadRead reads nothing there (returns 0).
+  A second player (a second host gamepad in port 1) is future work.
+  Tested: new ps2xTest case "only port 0 has a controller..." (453/453
+  pass); in the game: findings/20 s.9.
+
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+@@ -266,9 +266,20 @@
+             data[19] = pressureValue(state, portState, kPadBtnR2);
+         }
+ 
++        // The host's keyboard and first gamepad are one controller, in port
++        // 0, slot 0. Every other port/slot reports no controller: before,
++        // all opened ports read the same input, so a two-player game saw
++        // player 2 press every button player 1 pressed (Ben 10: Protector
++        // of Earth opened its co-op pause menu, "Drop Player One", on every
++        // face button in the first level).
++        bool hasHostController(int port, int slot)
++        {
++            return port == 0 && slot == 0;
++        }
++
+         bool readPadPortData(int port, int slot, PS2Runtime *runtime, uint8_t *outData, uint32_t dataAddr)
+         {
+-            if (!outData)
++            if (!outData || !hasHostController(port, slot))
+             {
+                 return false;
+             }
+@@ -458,7 +469,8 @@
+         PadPortState *portState = lookupPadPortStateLocked(static_cast<int>(getRegU32(ctx, 4)),
+                                                            static_cast<int>(getRegU32(ctx, 5)));
+         int32_t state = kPadStateDisconnected;
+-        if (portState && portState->open)
++        if (portState && portState->open &&
++            hasHostController(static_cast<int>(getRegU32(ctx, 4)), static_cast<int>(getRegU32(ctx, 5))))
+         {
+             if (portState->transientState != 0u)
+             {
+--- a/ps2xTest/src/pad_input_tests.cpp
++++ b/ps2xTest/src/pad_input_tests.cpp
+@@ -479,6 +479,30 @@
+             closePadPort(ctx, rdram);
+         });
+ 
++        tc.Run("only port 0 has a controller: port 1 reads nothing and reports DISCONNECTED", [](TestCase &t)
++               {
++            std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);
++            R5900Context ctx;
++            openPadPort(ctx, rdram, 1u, 0u);
++            ps2_stubs::setPadOverrideState(static_cast<uint16_t>(0xFFFFu & ~kPadBtnCross), 0x80, 0x80, 0x80, 0x80);
++
++            setRegU32(ctx, 4, 1);
++            setRegU32(ctx, 5, 0);
++            ps2_stubs::scePadGetState(rdram.data(), &ctx, nullptr);
++            t.Equals(static_cast<uint32_t>(getRegU32(&ctx, 2)), static_cast<uint32_t>(0),
++                     "an opened port 1 should report DISCONNECTED (no second controller)");
++
++            setRegU32(ctx, 4, 1);
++            setRegU32(ctx, 5, 0);
++            setRegU32(ctx, 6, kPadDataAddr);
++            ps2_stubs::scePadRead(rdram.data(), &ctx, nullptr);
++            t.Equals(static_cast<uint32_t>(getRegU32(&ctx, 2)), static_cast<uint32_t>(0),
++                     "scePadRead on port 1 should read nothing");
++
++            ps2_stubs::clearPadOverrideState();
++            closePadPort(ctx, rdram, 1u, 0u);
++        });
++
+         tc.Run("pad string helpers map state codes", [](TestCase &t)
+                {
+             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0);

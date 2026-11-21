@@ -11,6 +11,7 @@
 | B12 | ~~Ben did not move in the first level~~ resolved: the keyboard now drives the left stick (patch 0011); the speed is B13 | | [findings/18](findings/18-memory-card-and-menus.md) s.13 |
 | B13 | The game runs at about 9 frames per second in the menus and 4.4 in the first level (15% of full speed, 2-core Linux test machine): the VU1 interpreter (T2) and the software GS renderer, now on its own thread | playing at full speed | [findings/19](findings/19-windows-build-and-speed.md) s.5, s.8-9; [findings/20](findings/20-vu1-census-and-gs-thread.md) |
 | B14 | ~~New Game stopped the game thread at the switch at `0x00185BFC` (resumed through the narrower entry `entry_00185bc8`)~~ resolved: the export adds the switch's case targets as entries; New Game reaches the first level | | [findings/19](findings/19-windows-build-and-speed.md) s.7 |
+| B15 | ~~Face buttons opened the co-op pause menu in the level~~ resolved: every pad port mirrored player 1's input; only port 0 has a controller now (patch 0015) | | [findings/20](findings/20-vu1-census-and-gs-thread.md) s.9 |
 | B7 | ~~Windows (MSVC) build untested~~ resolved: the MSVC Release build (`windows-release`) compiles, links and reaches the first level; the Windows tests preset is still untested | | [findings/19](findings/19-windows-build-and-speed.md) s.1 |
 | B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 

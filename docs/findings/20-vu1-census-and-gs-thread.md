@@ -208,10 +208,33 @@ with more cores there is.
   Cross (X) in the level opened the pause menu ("Game Paused", with
   "Drop Player One"); also seen once before this change.
 
-## 9. Open
+## 9. Face buttons opened the co-op pause menu (patch 0015)
 
-- Why Cross opens the pause menu in the level (s.8): the game's controls,
-  or a controller-state problem (the pause menu offers "Drop Player One").
+- Symptom (s.8): in the first level every face button (Square, Triangle,
+  Circle, Cross) opened "Game Paused" with "Drop Player One", and the next
+  press closed it; the HUD (health bar, Omnitrix) sat at the top right.
+- Cause: the runtime's pad code gave every opened port the same input
+  (the keyboard and the first host gamepad) and reported every opened
+  port STABLE. The game opens port 1 too, so it saw a second player whose
+  buttons were pressed with player 1's: player 2 "joined" and the co-op
+  menu came up. `PSPadBackend::readState` and the keyboard fallback in
+  `readPadPortData` ignore the port.
+- Fix (patch 0015): only port 0, slot 0 has a controller; for any other
+  port/slot `scePadGetState` reports DISCONNECTED and `scePadRead` reads
+  nothing. New ps2xTest case; 453/453 pass.
+- Result: in the level, Square and Triangle now attack (the HUD names
+  the combo, "Light", "Jab Roundhouse"), Cross jumps, and the HUD moved
+  to the top left, the one-player layout (screenshot 09).
+- A second player (a second host gamepad in port 1) is future work.
+
+![Ben attacking in the first level](../images/screenshots/09-first-level-combo.png)
+
+*Captured from this port (Linux). The picture shows the content of Ben 10:
+Protector of Earth (High Voltage Software / D3 Publisher; Ben 10 is a
+trademark of Cartoon Network); it is not the work of this project. See
+[the screenshots README](../images/screenshots/README.md).*
+
+## 10. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

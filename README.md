@@ -39,8 +39,8 @@ The project follows the organisation of [Mind over Recomp](https://github.com/Ma
 
 <div align="center">
 
-<img src="docs/images/screenshots/06-first-level.png" alt="The first level, drawn by the port: Ben next to the RV" width="640"><br>
-<sub>The first level, drawn by the port on Linux (<a href="docs/findings/18-memory-card-and-menus.md">findings/18</a> s.12).</sub>
+<img src="docs/images/screenshots/09-first-level-combo.png" alt="Ben attacking in the first level, drawn by the port" width="640"><br>
+<sub>Ben attacking in the first level, drawn by the port on Linux (<a href="docs/findings/20-vu1-census-and-gs-thread.md">findings/20</a> s.9).</sub>
 
 <img src="docs/images/screenshots/02-title-screen.png" alt="The title screen, drawn by the port" width="400"> <img src="docs/images/screenshots/03-main-menu.png" alt="The main menu, drawn by the port" width="400"><br>
 <sub>The title screen and the main menu, drawn by the port on Linux (<a href="docs/findings/18-memory-card-and-menus.md">findings/18</a>). More in <a href="docs/images/screenshots/README.md">docs/images/screenshots/</a>.</sub>
@@ -65,7 +65,7 @@ The game's code is already translated to C++. What is still emulated is the **PS
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
 | Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu (findings/18) |
-| Playable level | 🔧 | the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 4.4 fps there (findings/20 s.5, s.8): the VU1 interpreter and the software GS renderer are the limit |
+| Playable level | 🔧 | the first level renders, New Game reaches it, Ben walks, jumps and attacks from the keyboard (findings/18-20); about 4.4 fps there (findings/20 s.5, s.8): the VU1 interpreter and the software GS renderer are the limit |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 
