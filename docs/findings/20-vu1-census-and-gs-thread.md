@@ -369,7 +369,27 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
   exact-result part also decides overflow and underflow values, so only
   the flag half can go.
 
-## 15. Open
+## 15. Longer IOP steps: tried, not kept
+
+- **Idea.** The scheduler gives the IOP the EE's elapsed time at every
+  checkpoint: 32 EE cycles, 4 IOP cycles. Each IOP step services DMA
+  interrupts, callbacks and timers and switches into a thread and out
+  again, for 4 cycles of work. A runtime change (`EeScheduler::setIopStepCycles`,
+  default unchanged) collected the cycles and handed them over in steps
+  of at least 256 EE cycles; a ps2xTest case checked that the IOP still
+  got every cycle.
+- **Measured** (first level, same route): game thread 221 ms of CPU per
+  game frame with the old step, 211 ms with 256: inside the spread of
+  repeated runs of one binary (197-221 ms, s.11).
+- **Why so little.** 50 gdb samples of the game thread in the level with
+  the old step: VU1 interpreter 28, waiting for room in the GS queue 16,
+  other 6, the IOP 0. Since the frame wait loop runs natively (s.8), the
+  IOP no longer shows in the level; and on this 2-core machine the game
+  thread spends a third of its time waiting for the GS thread.
+- Not kept: a timing change with no measured gain. The patch and the
+  override were removed before committing; this section is the record.
+
+## 16. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.
