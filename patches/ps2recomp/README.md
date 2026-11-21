@@ -19,8 +19,9 @@ fix and how it was found.
 | `0009-mmi-word-halfword-permutes.patch` | MMI PROT3W, PEXEW, PEXCW, PEXEH, PEXCH move the right elements | findings/18 s.12 |
 | `0010-vu0-macro-memory-ops.patch` | VU0 macro VLQI/VSQI/VLQD/VSQD/VILWR/VISWR use VU0 data memory; VSQI/VSQD operand fields | findings/18 s.12 |
 | `0011-pad-keyboard-wasd-left-stick.patch` | Pad backend: W/A/S/D drive the left analog stick (arrows stay the D-pad) | findings/18 s.13 |
+| `0012-cd-shared-sector-numbers.patch` | CD: sceCdSearchFile on the EE uses the IOP's virtual-disc LSNs, so LSNs the game passes to IOP modules match; faster `ownsRamRange` | findings/19 s.3 |
 
-Patches 0002-0010 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime) and should also go to upstream
+Patches 0002-0010 and 0012 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime) and should also go to upstream
 PS2Recomp.
 
 To undo them all: `git -C thirdparty/PS2Recomp checkout .`, then

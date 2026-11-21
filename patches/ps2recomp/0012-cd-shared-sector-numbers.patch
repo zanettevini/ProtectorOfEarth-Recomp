@@ -1,0 +1,364 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] CD: the EE and the IOP number the disc's sectors the same way
+
+What broke:
+  Ben 10: Protector of Earth ran at 3-4 frames per second, even in its
+  menus, on Linux and on a Windows Release build. Sampling the game thread
+  showed it spent much of its time in the IOP's sceCdRead: the game's
+  CDARB module (run in the IOP interpreter) read the same 8 sectors at LSN
+  2046146 about 2,000 times a second. The IOP's virtual disc has only
+  1,200,598 sectors, so every read failed and CDARB retried forever.
+
+Why:
+  The EE and the IOP each make up their own sector numbers for the files
+  of the extracted disc. The EE's sceCdSearchFile (Kernel/Stubs) hands out
+  "pseudo" LSNs from 0x100000 in search order; the IOP's cdvdman builds a
+  virtual ISO 9660 image of the same folder, where GAME.WAD starts at LSN
+  40. The game asks for GAME.WAD's LSN on the EE and then passes absolute
+  LSNs (the WAD start plus a file's offset) to CDARB, which serves the
+  audio streams (the menu music, 99_91.pss) from the IOP. The EE's LSN
+  pointed past the end of the IOP's disc.
+  A second, smaller cost: each failed read also checked 16 KB of IOP RAM
+  ownership one byte at a time (IopMemory::ownsRamRange, std::all_of).
+
+The fix:
+  - IopSubsystem::findCdFile(path) (through IopEmulator and IopCdvd)
+    returns where the IOP's virtual disc puts a file: LSN, size and the
+    volume size. It answers only for the virtual disc, not when the IOP
+    reads a real disc image.
+  - PS2Runtime::findIopCdFile forwards to it, and sceCdSearchFile passes
+    the result to registerCdFile, which then uses the IOP's LSN instead of
+    a pseudo one. Files the IOP does not know keep pseudo LSNs, now past
+    the end of the IOP's volume so the two kinds cannot overlap.
+    With no runtime (unit tests) the old pseudo numbering is unchanged.
+  - IopMemory::ownsRamRange uses memchr for the zero byte.
+  Tested in the game: GAME.WAD is now found at LSN 40 on both sides, the
+  repeated reads stopped, and the menus went from 3-4 to 5-6 frames per
+  second (findings/19). New ps2xTest case "the IOP's virtual disc reports
+  where a cdrom0 file is"; the test host gained a cdRoot field.
+
+--- a/ps2xIOP/include/ps2x/iop/iop_types.h
++++ b/ps2xIOP/include/ps2x/iop/iop_types.h
+@@ -127,6 +127,16 @@
+         uint32_t size = 0;
+     };
+ 
++    // Where a file sits on the IOP's disc (its virtual ISO 9660 image).
++    // The EE side numbers its sectors the same way through this, so an
++    // LSN handed from the EE to an IOP module points at the same data.
++    struct CdFileLocation
++    {
++        uint32_t lsn = 0;
++        uint32_t sizeBytes = 0;
++        uint32_t volumeSectors = 0;
++    };
++
+     struct DebugMetric
+     {
+         std::string name;
+--- a/ps2xIOP/include/ps2x/iop/iop_subsystem.h
++++ b/ps2xIOP/include/ps2x/iop/iop_subsystem.h
+@@ -4,6 +4,7 @@
+ #include "ps2x/iop/iop_types.h"
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -41,6 +42,10 @@
+         [[nodiscard]] bool zeroMemory(uint32_t address, size_t size);
+         [[nodiscard]] bool isMemoryRange(uint32_t address, size_t size) const;
+ 
++        // The file's place on the IOP's virtual disc; empty when the IOP
++        // reads a real disc image or does not know the file.
++        [[nodiscard]] std::optional<CdFileLocation> findCdFile(std::string_view path);
++
+         [[nodiscard]] DebugSnapshot debugSnapshot() const;
+ 
+     private:
+--- a/ps2xIOP/src/iop_subsystem.cpp
++++ b/ps2xIOP/src/iop_subsystem.cpp
+@@ -249,6 +249,11 @@
+         return m_impl->emulator.isMemoryRange(address, size);
+     }
+ 
++    std::optional<CdFileLocation> IopSubsystem::findCdFile(std::string_view path)
++    {
++        return m_impl->emulator.findCdFile(path);
++    }
++
+     DebugSnapshot IopSubsystem::debugSnapshot() const
+     {
+         DebugSnapshot snapshot;
+--- a/ps2xIOP/src/emulator/iop_emulator.h
++++ b/ps2xIOP/src/emulator/iop_emulator.h
+@@ -5,6 +5,7 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -35,6 +36,7 @@
+         [[nodiscard]] bool writeMemory(uint32_t address, const void *source, size_t size);
+         [[nodiscard]] bool zeroMemory(uint32_t address, size_t size);
+         [[nodiscard]] bool isMemoryRange(uint32_t address, size_t size) const;
++        [[nodiscard]] std::optional<CdFileLocation> findCdFile(std::string_view path);
+ 
+         [[nodiscard]] uint64_t cycles() const noexcept;
+         [[nodiscard]] uint64_t instructions() const noexcept;
+--- a/ps2xIOP/src/emulator/iop_emulator.cpp
++++ b/ps2xIOP/src/emulator/iop_emulator.cpp
+@@ -791,6 +791,11 @@
+                m_impl->memory.zeroRam(address, size);
+     }
+ 
++    std::optional<CdFileLocation> IopEmulator::findCdFile(std::string_view path)
++    {
++        return m_impl->cdvd.findFile(path);
++    }
++
+     bool IopEmulator::isMemoryRange(uint32_t address, size_t size) const
+     {
+         const bool physicalSegment = address < IopMemory::RamSize;
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.h
++++ b/ps2xIOP/src/emulator/imports/iop_cdvd.h
+@@ -3,6 +3,9 @@
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
++#include <string_view>
++
++#include "ps2x/iop/iop_types.h"
+ 
+ namespace ps2x::iop
+ {
+@@ -35,6 +38,7 @@
+ 
+         [[nodiscard]] bool dispatchImport(uint16_t ordinal, IopCpuState &cpu);
+         [[nodiscard]] std::optional<CompletionCallback> takeCompletionCallback() noexcept;
++        [[nodiscard]] std::optional<CdFileLocation> findFile(std::string_view guestPath);
+ 
+     private:
+         class Impl;
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp
++++ b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp
+@@ -355,6 +355,11 @@
+             return result;
+         }
+ 
++        std::optional<CdFileLocation> findFile(std::string_view guestPath)
++        {
++            return findFileLocation(guestPath);
++        }
++
+     private:
+         int ensureInterruptEventFlag()
+         {
+@@ -594,6 +599,18 @@
+             return &nodes[current];
+         }
+ 
++        std::optional<CdFileLocation> findFileLocation(std::string_view guestPath)
++        {
++            // With a real disc image the sectors are the image's own; this
++            // lookup only knows the virtual disc built from the host files.
++            if (!host.hostPath(HostPathKind::CdImage).empty())
++                return std::nullopt;
++            const IsoNode *node = findVirtualIsoNode(guestPath);
++            if (!node || node->directory)
++                return std::nullopt;
++            return CdFileLocation{node->lsn, node->size, volumeSectors};
++        }
++
+         bool searchFile(uint32_t resultAddress, uint32_t nameAddress)
+         {
+             if (resultAddress == 0u || nameAddress == 0u)
+@@ -748,4 +765,9 @@
+     {
+         return m_impl->takeCompletionCallback();
+     }
++
++    std::optional<CdFileLocation> IopCdvd::findFile(std::string_view guestPath)
++    {
++        return m_impl->findFile(guestPath);
++    }
+ }
+--- a/ps2xIOP/src/emulator/core/iop_memory.cpp
++++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
+@@ -191,9 +191,8 @@
+         const uint32_t phys = physicalAddress(address);
+         if (phys > RamSize || size > RamSize - phys)
+             return false;
+-        return std::all_of(m_owned.begin() + phys, m_owned.begin() + phys + size,
+-                           [](uint8_t value)
+-                           { return value != 0u; });
++        // memchr is vectorised; a byte loop here cost most of a disc read.
++        return size == 0u || std::memchr(m_owned.data() + phys, 0, size) == nullptr;
+     }
+ 
+     void IopMemory::markOwned(uint32_t address, size_t size)
+--- a/ps2xIOP/tests/iop_compat_test_support.h
++++ b/ps2xIOP/tests/iop_compat_test_support.h
+@@ -62,7 +62,10 @@
+         uint32_t allocateGuest(uint32_t, uint32_t) override { return 0u; }
+         void freeGuest(uint32_t) override {}
+         void audioCommand(uint32_t, uint32_t, GuestBuffer, GuestBuffer) override { ++audioCalls; }
+-        std::string hostPath(HostPathKind) const override { return {}; }
++        std::string hostPath(HostPathKind kind) const override
++        {
++            return kind == HostPathKind::CdRoot ? cdRoot : std::string{};
++        }
+         std::string translateGuestPath(std::string_view path) const override { return std::string(path); }
+         uint64_t openHostFile(std::string_view) override { return file.empty() ? 0u : 1u; }
+         bool hostFileSize(uint64_t handle, uint64_t &size) const override
+@@ -107,6 +110,8 @@
+         }
+ 
+         std::vector<uint8_t> guest;
++
++        std::string cdRoot; // CdRoot host path; empty = no disc
+         std::vector<uint8_t> file;
+         std::vector<std::string> logs;
+         std::vector<MemoryCardRequest> cardCalls;
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -5,6 +5,7 @@
+ #include <cstdint>
+ #include <vector>
+ #include <string>
++#include <optional>
+ #include <string_view>
+ #include <functional>
+ #if defined(_MSC_VER)
+@@ -300,6 +301,9 @@
+     bool writeIopMemory(uint32_t address, const void *source, size_t size);
+     bool zeroIopMemory(uint32_t address, size_t size);
+     bool isIopMemoryRange(uint32_t address, size_t size) const;
++    // Where the IOP's virtual disc puts a file (empty if it does not know
++    // it); sceCdSearchFile numbers the EE's sectors the same way.
++    [[nodiscard]] std::optional<ps2x::iop::CdFileLocation> findIopCdFile(std::string_view path);
+ 
+     using DebugUiCallback = void (*)(PS2Runtime &runtime, void *userData);
+     void setDebugUiCallbacks(DebugUiCallback initCallback,
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -653,6 +653,13 @@
+     return m_iopSubsystem && m_iopSubsystem->isMemoryRange(address, size);
+ }
+ 
++std::optional<ps2x::iop::CdFileLocation> PS2Runtime::findIopCdFile(std::string_view path)
++{
++    if (!m_iopSubsystem)
++        return std::nullopt;
++    return m_iopSubsystem->findCdFile(path);
++}
++
+ bool PS2Runtime::syncCoreSubsystems()
+ {
+     uint8_t *const rdram = m_memory.getRDRAM();
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+@@ -322,7 +322,11 @@
+         }
+     }
+ 
+-    bool registerCdFile(const std::string &ps2Path, CdFileEntry &entryOut)
++    // iopLocation: where the IOP's virtual disc has the file. When given,
++    // the EE uses the same sector numbers, so an LSN the game passes to an
++    // IOP module (CDARB's audio streams) reaches the same data.
++    bool registerCdFile(const std::string &ps2Path, CdFileEntry &entryOut,
++                        const std::optional<ps2x::iop::CdFileLocation> &iopLocation = std::nullopt)
+     {
+         const std::string key = cdPathKey(ps2Path);
+         if (key.empty())
+@@ -389,10 +393,18 @@
+         CdFileEntry entry;
+         entry.hostPath = path;
+         entry.sizeBytes = static_cast<uint32_t>(std::min<uint64_t>(sizeBytes, 0xFFFFFFFFu));
+-        entry.baseLbn = g_nextPseudoLbn;
+         entry.sectors = sectorsForBytes(sizeBytes);
+-
+-        g_nextPseudoLbn += entry.sectors + 1;
++        if (iopLocation)
++        {
++            entry.baseLbn = iopLocation->lsn;
++            // Files the IOP does not know keep pseudo numbers past its disc.
++            g_nextPseudoLbn = std::max<uint32_t>(g_nextPseudoLbn, iopLocation->volumeSectors + 1u);
++        }
++        else
++        {
++            entry.baseLbn = g_nextPseudoLbn;
++            g_nextPseudoLbn += entry.sectors + 1;
++        }
+         g_cdFilesByKey.emplace(key, entry);
+         entryOut = entry;
+         g_lastCdError = 0;
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
+@@ -600,7 +600,12 @@
+         }
+ 
+         CdFileEntry entry;
+-        bool found = registerCdFile(path, entry);
++        std::optional<ps2x::iop::CdFileLocation> iopLocation;
++        if (runtime)
++        {
++            iopLocation = runtime->findIopCdFile("cdrom0:/" + normalizedPath);
++        }
++        bool found = registerCdFile(path, entry, iopLocation);
+         CdFileEntry resolvedEntry = entry;
+         std::string resolvedPath;
+ 
+--- a/ps2xTest/src/ps2_iop_tests.cpp
++++ b/ps2xTest/src/ps2_iop_tests.cpp
+@@ -2,6 +2,9 @@
+ #include "ps2x/iop/ps2_path.h"
+ #include "../../ps2xIOP/tests/iop_compat_test_support.h"
+ 
++#include <filesystem>
++#include <fstream>
++
+ void register_ps2_iop_tests()
+ {
+     MiniTest::Case("PS2IopSubsystem", [](TestCase &tc)
+@@ -54,6 +57,37 @@
+                       "stopping LIBSD should deactivate its RPC endpoint");
+         });
+ 
++        tc.Run("the IOP's virtual disc reports where a cdrom0 file is", [](TestCase &t)
++        {
++            const std::filesystem::path root = std::filesystem::temp_directory_path() / "ps2x_iop_cd_lookup";
++            std::filesystem::remove_all(root);
++            std::filesystem::create_directories(root / "DATA");
++            {
++                std::ofstream out(root / "DATA" / "TRACK.BIN", std::ios::binary);
++                const std::string payload(5000u, 'x');
++                out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
++            }
++
++            iop_test::Host host;
++            host.cdRoot = root.string();
++            ps2x::iop::IopSubsystem subsystem(host);
++
++            const auto location = subsystem.findCdFile("cdrom0:\\DATA\\TRACK.BIN;1");
++            t.IsTrue(location.has_value(), "a file on the virtual disc should be found");
++            if (location)
++            {
++                t.Equals(location->sizeBytes, 5000u, "the lookup should report the file size");
++                t.IsTrue(location->lsn >= 16u, "files should start after the volume descriptors");
++                t.IsTrue(location->lsn + 3u <= location->volumeSectors,
++                         "the file's three sectors should lie inside the volume");
++            }
++            t.IsFalse(subsystem.findCdFile("cdrom0:\\DATA").has_value(),
++                      "a directory is not a file");
++            t.IsFalse(subsystem.findCdFile("cdrom0:\\MISSING.BIN").has_value(),
++                      "a missing file should not be found");
++            std::filesystem::remove_all(root);
++        });
++
+         tc.Run("unknown SID remains unhandled without a loaded IRX", [](TestCase &t)
+         {
+             iop_test::Host host;
