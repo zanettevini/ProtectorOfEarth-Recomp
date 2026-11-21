@@ -176,7 +176,6 @@ Each step must keep `--sum` identical to the interpreter.
   phases 1-2 above replace it.
 - VU0 programs (VCALLMS) are not translated yet (the resolver is VU1
   only).
-- MSVC compile memory with patch 0023: to be measured (s.6).
 
 ## 6. Windows build: MSVC ran out of memory (patch 0023)
 
@@ -199,7 +198,8 @@ Each step must keep `--sum` identical to the interpreter.
   Clang (no change there) and plain `inline` on MSVC, which then applies
   its own limits. The model is still folded on Linux; on Windows it is
   inlined where MSVC chooses, so the Windows gain of phase 2b can be
-  smaller than on Linux.
+  smaller than on Linux. Measured with the fix, same file and command:
+  0.26 GB at most, 9 s.
 - Guard in `CMakeLists.txt`: the translated files compile in a Ninja job
   pool sized by the machine's memory (half the RAM divided by 3 GB per
   file with MSVC, 1 GB with GCC/Clang; `BEN10_VU1_COMPILE_JOBS`
