@@ -57,7 +57,7 @@ game) and the [README](../README.md#-going-native) board.
 | Patches applied by CMake | Linux | 0001-0012 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); each reverse-applies on the patched tree |
 | First level, under Xvfb | Linux | renders (screenshot 06); Ben walks with W (screenshot 07) |
 | Frame rate (`BEN10_FPS_LOG`), menus | Linux, game code `-O0` | 3 fps before patch 0012, 5-6 after (findings/19) |
-| Full `ben10_poe` build, `windows-release` | Windows, MSVC 17.14 | compiles and links; reaches the first level's Omnitrix tutorial (screenshot 08); 3-4 fps before patch 0012 |
+| Full `ben10_poe` build, `windows-release` | Windows, MSVC 17.14 | compiles and links; reaches the first level's Omnitrix tutorial (screenshot 08); 3-4 fps before patch 0012, 7 fps on the title screen after; New Game then stops (B14) |
 | `tools/collect_disc.ps1` (study version) | Windows | ok |
 
 **Untested**: on Windows, `ghidra_analyze.ps1`, the repository version of

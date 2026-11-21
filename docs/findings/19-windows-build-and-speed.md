@@ -124,9 +124,45 @@ the `GSRasterBackend` interface PS2Recomp already has), or, before that, a
 faster CPU path (drawing on another thread, fewer per-pixel conversions).
 Recorded as KNOWN_ISSUES B13.
 
-## 6. Open
+## 6. Windows after patch 0012
 
-- The Windows Release frame rate after patch 0012 (s.7, when measured).
+The `windows-release` build with patch 0012 (8.4 minutes, a full rebuild
+because `ps2_runtime.h` changed) runs the title screen at **7 frames per
+second** (from 3-4).
+
+## 7. A new stop after "New Game"
+
+On that run, choosing New Game in the main menu stopped the game thread
+with a `guest-branch:missing-target` report: an indirect jump (`jr`) at
+`0x00185BFC` to `0x00186360`. It was not seen before patch 0012, most
+likely because the code that reaches it now runs (to be confirmed).
+
+- `0x00185BFC` is the `jr` of a 158-case switch in `FUN_00185ba0` (bound
+  check `sltiu $v0, $a3, 0x9E`, table at `0x0023DAC0`), the twin of the
+  switch at `0x00186980` ([18](18-memory-card-and-menus.md) s.6). Before
+  the switch, a 3-pass delay loop of `nop`s at `0x00185BC8` branches back.
+- The function list has `FUN_00185ba0` (all 146 distinct case targets are
+  labels inside it, so its own `jr` resolves) and also a synthetic entry
+  `entry_00185bc8` at the loop head, which the recompiler emits as a
+  separate function ending at the next entry (`0x00185CD4`).
+- Generated code returns to the dispatcher at a backward branch when an EE
+  checkpoint is due. Resuming at `0x00185BC8`, the dispatcher picks the
+  exact entry, `entry_00185bc8`, whose `jr` can only reach cases inside
+  it or cases that are entries; `0x00186360` is neither.
+- A scan of the 91 switch tables with this model (the chunk from the
+  nearest entry at or before the `jr` to the next one) finds 4 with case
+  targets that are unreachable from that chunk: `0x00185BFC` (127
+  targets), the script interpreter's `0x00193BF8` (212), `0x001D27D4` (1)
+  and `0x001EA13C` (1). The same stop can happen in any of them, whenever
+  a checkpoint falls in the loop.
+- Planned fix, not done yet: a second rule in `ExportPS2Functions.java`'s
+  `collectSplitSwitchEntries`: case targets outside the `jr`'s chunk that
+  are not entries become entries; then re-run Ghidra, the codegen and the
+  build, and check New Game again (KNOWN_ISSUES B14).
+
+## 8. Open
+
+- B14 (s.7).
 - A GPU GS renderer (B13).
 - With a real disc image (`.iso`), the EE's `sceCdSearchFile` still gives
   pseudo LSNs while the IOP reads the image's own: the same mismatch would
