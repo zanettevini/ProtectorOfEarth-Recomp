@@ -26,8 +26,9 @@ fix and how it was found.
 | `0016-gs-cpu-palette-cache.patch` | GS CPU backend: the final colour of each CLUT index (after TEXA) is kept per draw state and rebuilt after a CLUT load; same results | findings/20 s.11 |
 | `0017-pad-keyboard-with-gamepad.patch` | Pad backend: the keyboard is read even when a host gamepad is connected (it was switched off entirely); logs which gamepad was found | findings/20 s.16 |
 | `0018-vu1-shared-pair-step.patch` | VU1 interpreter: the per-pair step is a header function shared with translated code; a resolver can hand the interpreter one function per pair (VU1 only); decoded-pair types public | findings/21 |
+| `0019-vu1-inline-upper-and-hazards.patch` | VU1 interpreter: `execUpper`, `calculatePairReadyCycle` and `markPairWrites` inline in headers, so translated pairs fold through them; same results | findings/21 s.3 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014 and 0016 speed-ups with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019 speed-ups with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

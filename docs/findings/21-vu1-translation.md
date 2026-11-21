@@ -61,7 +61,38 @@ decoding.
 - Build cost: translating takes under a second; compiling the 6,727 pair
   functions about 1.5 minutes on the 2-core Linux machine.
 
-## 3. Where the time still goes, and phase 2
+## 3. Phase 2a: the step's helpers inline (patch 0019)
+
+`callgrind` of the translated replay showed the rest of the per-pair cost
+in functions the step called out of line, so the constant pair could not
+be folded through them: `execUpper` (a switch on the opcode, the dest mask
+in loops), `calculatePairReadyCycle` and `markPairWrites` (loops over the
+decoded register sets). Patch 0019 moves them unchanged into headers,
+forced inline (the four field extractions of `execUpper` are written out,
+because the short helper names clash with ps2xRecomp macros).
+
+| VU code, 40 workloads x 5 (`callgrind`) | Instructions |
+|---|---|
+| interpreter (replay: decodes at every step) | 793 M |
+| translated, phase 1 | 677 M |
+| + `execUpper` inline | 610 M |
+| + hazard check and write bookkeeping inline | 540 M |
+
+So -32% against the replay's interpreter, about -25% against an
+interpreter that keeps its decoded pairs (as in the game). Same checksums
+with and without `--native`; ps2xTest 454/454. Building `ben10_vu1_native`
+now takes about 3.5 minutes on the 2-core Linux machine.
+
+In the first level (Linux, 90 s, `tools/perf/cpu_per_frame.sh`): game
+thread 169 ms of CPU per game frame, against 193 ms with phase 1 and
+197-221 ms before translation; same picture, no `missing-target`.
+
+What is left per pair: `commitReadyPipelines` and the queues (`queueVfWrite`
+and friends), the FMAC result and flag model (`calculateFmacExactResult`,
+`updateFmacFlags`...), `execLower` (out of line). The next steps below
+target them.
+
+## 4. Where the time still goes, and phase 2
 
 The translated pair still does what the interpreter does per pair:
 `execUpper`/`execLower` (a call each, with the instruction as an argument,
@@ -71,8 +102,8 @@ queues (`queueVfWrite`, `commitReadyPipelines`), `markPairWrites`, and the
 FMAC flag model. Per findings/20 s.14 these are about 40% (pipeline
 bookkeeping) and 25% (flags) of the VU time. Next, in order:
 
-1. Per-operation functions with the decoded fields as arguments, so each
-   translated pair calls the operation directly (no switch).
+1. (Partly done in s.3 for the upper half.) The lower half inline or per
+   operation.
 2. Static timing per block: the pipelines are empty at every resume
    (findings/20 s.2); from a block's entry the stalls and the moments the
    results land are known at build time, so the queues can be replaced by
@@ -82,7 +113,7 @@ bookkeeping) and 25% (flags) of the VU time. Next, in order:
 
 Each step must keep `--sum` identical to the interpreter.
 
-## 4. Open
+## 5. Open
 
 - The board in the README still lists the VU programs as interpreted:
   phase 1 runs the interpreter's own step code; they count as native once
