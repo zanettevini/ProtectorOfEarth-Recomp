@@ -1,0 +1,665 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU interpreter: cheaper hot path (same results, same cycles)
+
+What broke:
+  Nothing is wrong, but slow: in Ben 10: Protector of Earth's first level
+  about half of the game thread's time was in the VU1 interpreter
+  (44 of 60 gdb stack samples had VU1Interpreter frames, findings/19
+  s.8). A callgrind profile of 40 VU1 workloads captured in the level and
+  replayed offline (the port's tools/vu1_replay, findings/20) put the
+  time in the per-pair and per-cycle bookkeeping more than in the
+  arithmetic.
+
+Why:
+  - commitReadyPipelines walked every pipeline array (flags, FDIV, EFU,
+    stores, VF/VI/ACC writes: about 50 slots) on every simulated cycle,
+    even when no entry was due.
+  - flushPipelines stepped one cycle at a time until PATH1 had copied the
+    whole XGKICK packet (2 cycles per qword), paying those scans for each
+    cycle; progressXgkick copied each qword byte by byte with a modulo.
+  - getDecodedInstructionPairForPc returned a copy of a large struct for
+    every pair.
+  - calculatePairReadyCycle and markPairWrites looped over all 15 VI
+    registers and all 4 lanes; normalizeOperand, called for every FMAC
+    operand, was an out-of-line call from the upper-instruction file.
+
+The fix (same results, same cycle counts):
+  - m_nextCommitCycle keeps the earliest readyCycle of the queued entries
+    (updated at every insertion, found again by each commit pass, reset
+    with the scheduler); commitReadyPipelines returns at once below it.
+  - One bit mask per pipeline array marks the valid slots; the commit pass
+    visits only those, in slot order, so entries commit in the same order
+    and on the same cycle as with a full scan.
+  - flushPipelines: when only XGKICK is left, it steps the cycle counter
+    and PATH1 directly (all advanceOneCycle does then); progressXgkick
+    copies a qword with one memcpy when it does not wrap.
+  - getDecodedInstructionPairForPc returns a reference (into the cache, or
+    to one scratch pair for uncached code).
+  - After a code upload (new generation) the decoded-pair cache only
+    forgets its pairs (one valid byte per pair) and decodes each pair when
+    it is first used, instead of decoding all 2048 at once: in the first
+    level the game uploads VU1 code several times per frame (217 VU1 and
+    63 VU0 rebuilds in 15 s), and each run touches a part of the code.
+    Decoding a pair only reads that pair's 8 bytes.
+  - The hazard check, markPairWrites and run() visit only set VI bits and
+    the lanes used; normalizeOperand is inline.
+  Tested: the 40 captured workloads give bit-identical results (VF, VI,
+  ACC, Q, P, I, R, PC, MAC, clip, status, cycle count, VU data memory, GS
+  memory) before and after; instructions executed for them fall from
+  296.5 M to 185.1 M (callgrind). All 451 ps2xTest cases pass (VU1 timing
+  and XGKICK included). In the game: findings/19 s.9 and findings/20.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -3,6 +3,7 @@
+ 
+ #include <array>
+ #include <cstdint>
++#include <cstring>
+ 
+ class GS;
+ class PS2Memory;
+@@ -208,6 +209,11 @@
+     uint32_t m_cachedCodeSize = 0;
+     uint64_t m_cachedCodeGeneration = 0;
+     bool m_decodedCodeCacheValid = false;
++    // Which entries of m_decodedCodeCache hold a decoded pair. A code upload
++    // (new generation) clears them all and pairs are decoded when first
++    // used: the game uploads VU1 code several times a frame and each program
++    // run touches only a part of the 2048 pairs.
++    std::array<uint8_t, kMaxDecodedPairs> m_decodedPairValid{};
+ 
+     std::array<FlagPipelineEntry, kMaxFlagEntries> m_flagPipeline{};
+     ScalarPipelineEntry m_fdiv{};
+@@ -225,6 +231,20 @@
+     std::array<uint64_t, 4> m_accLatestWrite{};
+ 
+     uint64_t m_cycle = 0;
++    // Earliest readyCycle of any queued pipeline entry (a lower bound: it
++    // may be stale-low, never too high). commitReadyPipelines returns at
++    // once while m_cycle is below it, instead of scanning ~50 entries on
++    // every cycle.
++    uint64_t m_nextCommitCycle = 0;
++    // One bit per slot of each pipeline array, set while the slot is valid,
++    // so the commit pass visits only queued entries (in slot order, as the
++    // full scan did).
++    uint32_t m_flagValid = 0;
++    uint32_t m_efuValid = 0;
++    uint32_t m_storeValid = 0;
++    uint32_t m_vfValid = 0;
++    uint32_t m_viValid = 0;
++    uint32_t m_accValid = 0;
+     uint64_t m_nextWriteSequence = 0;
+     uint64_t m_efuResourceReady = 0;
+     uint32_t m_workingClip = 0;
+@@ -250,7 +270,10 @@
+     static void addVfWrite(InstructionUsage &usage, uint8_t reg, uint8_t lanes);
+     static uint8_t vfReadLanes(const InstructionUsage &usage, uint8_t reg);
+     DecodedInstructionPair decodeInstructionPair(const uint8_t *vuCode, uint32_t pc) const;
+-    DecodedInstructionPair getDecodedInstructionPairForPc(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t pc);
++    // Returns a reference into the decoded-code cache, or to m_uncachedDecoded
++    // for a pair the cache does not hold; valid until the next call.
++    const DecodedInstructionPair &getDecodedInstructionPairForPc(const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t pc);
++    DecodedInstructionPair m_uncachedDecoded{};
+     void rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize, const PS2Memory *memory, uint64_t generation);
+ 
+     void execUpper(uint32_t instr);
+@@ -278,6 +301,12 @@
+ 
+     void resetScheduler();
+     void commitReadyPipelines();
++    void notePipelineReady(uint64_t readyCycle) noexcept
++    {
++        if (readyCycle < m_nextCommitCycle)
++            m_nextCommitCycle = readyCycle;
++    }
++    uint64_t earliestPendingReadyCycle() const noexcept;
+     void advanceOneCycle();
+     void advanceTo(uint64_t targetCycle);
+     void flushPipelines();
+@@ -287,7 +316,23 @@
+     void markPairWrites(const DecodedInstructionPair &decoded);
+     bool pipelinesPending() const;
+ 
+-    float normalizeOperand(float value) const;
++    // Inline: called for every operand of every FMAC instruction.
++    float normalizeOperand(float value) const
++    {
++        uint32_t bits = 0;
++        std::memcpy(&bits, &value, sizeof(bits));
++        const uint32_t exponent = (bits >> 23) & 0xFFu;
++        if (exponent == 0u)
++        {
++            bits &= 0x80000000u;
++        }
++        else if (exponent == 0xFFu)
++        {
++            bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
++        }
++        std::memcpy(&value, &bits, sizeof(value));
++        return value;
++    }
+     float normalizeResult(float value, uint32_t &laneFlags) const;
+     uint32_t microAddressMask() const;
+     int32_t readBranchVi(uint8_t reg) const;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -9,6 +9,7 @@
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
++#include <bit>
+ #include <cstring>
+ #include <filesystem>
+ #include <limits>
+@@ -81,6 +82,13 @@
+     m_viLatestWrite = {};
+     m_accLatestWrite = {};
+     m_nextWriteSequence = 0;
++    m_nextCommitCycle = 0;
++    m_flagValid = 0;
++    m_efuValid = 0;
++    m_storeValid = 0;
++    m_vfValid = 0;
++    m_viValid = 0;
++    m_accValid = 0;
+     m_efuResourceReady = 0;
+     m_workingClip = m_state.clip;
+     m_viBranchBackupValue = 0;
+@@ -106,23 +114,6 @@
+     return normalizeOperand(vf[bc & 3u]);
+ }
+ 
+-float VU1Interpreter::normalizeOperand(float value) const
+-{
+-    uint32_t bits = 0;
+-    std::memcpy(&bits, &value, sizeof(bits));
+-    const uint32_t exponent = (bits >> 23) & 0xFFu;
+-    if (exponent == 0u)
+-    {
+-        bits &= 0x80000000u;
+-    }
+-    else if (exponent == 0xFFu)
+-    {
+-        bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
+-    }
+-    std::memcpy(&value, &bits, sizeof(value));
+-    return value;
+-}
+-
+ float VU1Interpreter::normalizeResult(float value, uint32_t &laneFlags) const
+ {
+     uint32_t bits = 0;
+@@ -531,8 +522,10 @@
+ 
+     *entry = {};
+     entry->valid = true;
++    m_flagValid |= 1u << static_cast<uint32_t>(entry - m_flagPipeline.data());
+     entry->issueCycle = m_cycle;
+     entry->readyCycle = m_cycle + kFmacLatency;
++    notePipelineReady(entry->readyCycle);
+     entry->mac = mac;
+     entry->status = status;
+     entry->extraSticky = extraSticky;
+@@ -570,8 +563,10 @@
+         {
+             entry = {};
+             entry.valid = true;
++            m_flagValid |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.status = static_cast<uint32_t>(immediate) & 0xFC0u;
+             entry.writesSticky = true;
+             return;
+@@ -589,8 +584,10 @@
+         {
+             entry = {};
+             entry.valid = true;
++            m_flagValid |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.clip = m_workingClip;
+             entry.writesClip = true;
+             return;
+@@ -613,8 +610,10 @@
+         {
+             entry = {};
+             entry.valid = true;
++            m_flagValid |= 1u << static_cast<uint32_t>(&entry - m_flagPipeline.data());
+             entry.issueCycle = m_cycle;
+             entry.readyCycle = m_cycle + kFmacLatency;
++            notePipelineReady(entry.readyCycle);
+             entry.clip = m_workingClip;
+             entry.writesClip = true;
+             return;
+@@ -629,6 +628,7 @@
+     value = normalizeResult(value, ignoredFlags);
+     m_fdiv.valid = true;
+     m_fdiv.readyCycle = m_cycle + latency;
++    notePipelineReady(m_fdiv.readyCycle);
+     m_fdiv.value = value;
+     m_fdiv.statusDi = statusDi & 0x30u;
+ }
+@@ -642,7 +642,9 @@
+         if (!entry.valid)
+         {
+             entry.valid = true;
++            m_efuValid |= 1u << static_cast<uint32_t>(&entry - m_efu.data());
+             entry.readyCycle = m_cycle + latency;
++            notePipelineReady(entry.readyCycle);
+             entry.value = value;
+             // EFU throughput is one cycle shorter than result visibility.
+             m_efuResourceReady = m_cycle + (latency > 0u ? latency - 1u : 0u);
+@@ -659,7 +661,9 @@
+         if (!store.valid)
+         {
+             store.valid = true;
++            m_storeValid |= 1u << static_cast<uint32_t>(&store - m_storePipeline.data());
+             store.readyCycle = m_cycle + 1u;
++            notePipelineReady(store.readyCycle);
+             store.address = address;
+             store.laneMask = laneMask;
+             std::copy(words, words + 4, store.words.begin());
+@@ -680,7 +684,9 @@
+         {
+             write = {};
+             write.valid = true;
++            m_vfValid |= 1u << static_cast<uint32_t>(&write - m_vfWritePipeline.data());
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.reg = reg;
+             write.laneMask = laneMask;
+@@ -706,7 +712,9 @@
+         {
+             write = {};
+             write.valid = true;
++            m_viValid |= 1u << static_cast<uint32_t>(&write - m_viWritePipeline.data());
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.reg = reg;
+             write.value = value;
+@@ -727,7 +735,9 @@
+         {
+             write = {};
+             write.valid = true;
++            m_accValid |= 1u << static_cast<uint32_t>(&write - m_accWritePipeline.data());
+             write.readyCycle = m_cycle + latency;
++            notePipelineReady(write.readyCycle);
+             write.sequence = ++m_nextWriteSequence;
+             write.laneMask = laneMask;
+             std::copy(value, value + 4, write.value.begin());
+@@ -742,12 +752,60 @@
+     reportReservedInstruction(true, 0xFFFFFFF5u);
+ }
+ 
++uint64_t VU1Interpreter::earliestPendingReadyCycle() const noexcept
++{
++    uint64_t earliest = UINT64_MAX;
++    auto consider = [&earliest](bool valid, uint64_t readyCycle)
++    {
++        if (valid && readyCycle < earliest)
++            earliest = readyCycle;
++    };
++    for (const FlagPipelineEntry &entry : m_flagPipeline)
++        consider(entry.valid, entry.readyCycle);
++    consider(m_fdiv.valid, m_fdiv.readyCycle);
++    for (const ScalarPipelineEntry &entry : m_efu)
++        consider(entry.valid, entry.readyCycle);
++    for (const PendingStore &store : m_storePipeline)
++        consider(store.valid, store.readyCycle);
++    for (const PendingVfWrite &write : m_vfWritePipeline)
++        consider(write.valid, write.readyCycle);
++    for (const PendingViWrite &write : m_viWritePipeline)
++        consider(write.valid, write.readyCycle);
++    for (const PendingAccWrite &write : m_accWritePipeline)
++        consider(write.valid, write.readyCycle);
++    return earliest;
++}
++
+ void VU1Interpreter::commitReadyPipelines()
+ {
+-    for (FlagPipelineEntry &entry : m_flagPipeline)
++    // Nothing can be ready before the earliest queued readyCycle: skip the
++    // pass. Otherwise only the valid slots are visited (the m_*Valid bit
++    // masks), in slot order, so entries commit in the same order and on the
++    // same cycle as with a full scan on every cycle. The pass also finds the
++    // earliest readyCycle of the entries it leaves queued.
++    if (m_cycle < m_nextCommitCycle)
++        return;
++
++    uint64_t earliest = UINT64_MAX;
++    auto keep = [&earliest](uint64_t readyCycle)
+     {
+-        if (!entry.valid || entry.readyCycle > m_cycle)
++        if (readyCycle < earliest)
++            earliest = readyCycle;
++    };
++    auto slot = [](uint32_t mask)
++    {
++        return static_cast<uint32_t>(std::countr_zero(mask));
++    };
++
++    for (uint32_t mask = m_flagValid; mask != 0u; mask &= mask - 1u)
++    {
++        const uint32_t index = slot(mask);
++        FlagPipelineEntry &entry = m_flagPipeline[index];
++        if (entry.readyCycle > m_cycle)
++        {
++            keep(entry.readyCycle);
+             continue;
++        }
+ 
+         if (entry.writesMac)
+             m_state.mac = entry.mac;
+@@ -763,29 +821,45 @@
+         if (entry.writesClip)
+             m_state.clip = entry.clip;
+         entry = {};
++        m_flagValid &= ~(1u << index);
+     }
+ 
+-    if (m_fdiv.valid && m_fdiv.readyCycle <= m_cycle)
++    if (m_fdiv.valid)
+     {
+-        m_state.q = m_fdiv.value;
+-        const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
+-        m_state.status = (m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
+-        m_fdiv = {};
++        if (m_fdiv.readyCycle <= m_cycle)
++        {
++            m_state.q = m_fdiv.value;
++            const uint32_t currentDi = m_fdiv.statusDi & 0x30u;
++            m_state.status = (m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
++            m_fdiv = {};
++        }
++        else
++            keep(m_fdiv.readyCycle);
+     }
+ 
+-    for (ScalarPipelineEntry &entry : m_efu)
++    for (uint32_t mask = m_efuValid; mask != 0u; mask &= mask - 1u)
+     {
+-        if (entry.valid && entry.readyCycle <= m_cycle)
++        const uint32_t index = slot(mask);
++        ScalarPipelineEntry &entry = m_efu[index];
++        if (entry.readyCycle <= m_cycle)
+         {
+             m_state.p = entry.value;
+             entry = {};
++            m_efuValid &= ~(1u << index);
+         }
++        else
++            keep(entry.readyCycle);
+     }
+ 
+-    for (PendingStore &store : m_storePipeline)
++    for (uint32_t mask = m_storeValid; mask != 0u; mask &= mask - 1u)
+     {
+-        if (!store.valid || store.readyCycle > m_cycle)
++        const uint32_t index = slot(mask);
++        PendingStore &store = m_storePipeline[index];
++        if (store.readyCycle > m_cycle)
++        {
++            keep(store.readyCycle);
+             continue;
++        }
+         if (m_activeVuData && store.address + 16u <= m_activeVuDataSize)
+         {
+             uint32_t oldWords[4]{};
+@@ -798,12 +872,18 @@
+             std::memcpy(m_activeVuData + store.address, oldWords, sizeof(oldWords));
+         }
+         store = {};
++        m_storeValid &= ~(1u << index);
+     }
+ 
+-    for (PendingVfWrite &write : m_vfWritePipeline)
++    for (uint32_t mask = m_vfValid; mask != 0u; mask &= mask - 1u)
+     {
+-        if (!write.valid || write.readyCycle > m_cycle)
++        const uint32_t index = slot(mask);
++        PendingVfWrite &write = m_vfWritePipeline[index];
++        if (write.readyCycle > m_cycle)
++        {
++            keep(write.readyCycle);
+             continue;
++        }
+         for (uint32_t component = 0; component < 4u; ++component)
+         {
+             if ((write.laneMask & laneForComponent(component)) != 0u &&
+@@ -813,21 +893,33 @@
+             }
+         }
+         write = {};
++        m_vfValid &= ~(1u << index);
+     }
+ 
+-    for (PendingViWrite &write : m_viWritePipeline)
++    for (uint32_t mask = m_viValid; mask != 0u; mask &= mask - 1u)
+     {
+-        if (!write.valid || write.readyCycle > m_cycle)
++        const uint32_t index = slot(mask);
++        PendingViWrite &write = m_viWritePipeline[index];
++        if (write.readyCycle > m_cycle)
++        {
++            keep(write.readyCycle);
+             continue;
++        }
+         if (m_viLatestWrite[write.reg] == write.sequence)
+             m_state.vi[write.reg] = static_cast<int16_t>(write.value);
+         write = {};
++        m_viValid &= ~(1u << index);
+     }
+ 
+-    for (PendingAccWrite &write : m_accWritePipeline)
++    for (uint32_t mask = m_accValid; mask != 0u; mask &= mask - 1u)
+     {
+-        if (!write.valid || write.readyCycle > m_cycle)
++        const uint32_t index = slot(mask);
++        PendingAccWrite &write = m_accWritePipeline[index];
++        if (write.readyCycle > m_cycle)
++        {
++            keep(write.readyCycle);
+             continue;
++        }
+         for (uint32_t component = 0; component < 4u; ++component)
+         {
+             if ((write.laneMask & laneForComponent(component)) != 0u &&
+@@ -837,7 +929,10 @@
+             }
+         }
+         write = {};
++        m_accValid &= ~(1u << index);
+     }
++
++    m_nextCommitCycle = earliest;
+ }
+ 
+ void VU1Interpreter::progressXgkick()
+@@ -857,10 +952,19 @@
+         }
+ 
+         const uint32_t qwordOffset = m_xgkick.copiedBytes;
+-        for (uint32_t i = 0; i < 16u; ++i)
++        const uint32_t firstSource = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
++        if (firstSource + 16u <= m_activeVuDataSize)
+         {
+-            const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
+-            m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
++            // The qword does not wrap around VU memory: one copy.
++            std::memcpy(m_xgkick.packet.data() + m_xgkick.copiedBytes, m_activeVuData + firstSource, 16u);
++        }
++        else
++        {
++            for (uint32_t i = 0; i < 16u; ++i)
++            {
++                const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
++                m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
++            }
+         }
+         m_xgkick.copiedBytes += 16u;
+ 
+@@ -983,7 +1087,22 @@
+ void VU1Interpreter::flushPipelines()
+ {
+     while (pipelinesPending())
++    {
++        if (m_xgkick.active && earliestPendingReadyCycle() == UINT64_MAX)
++        {
++            // Only PATH1 is still running: each cycle only counts and moves
++            // XGKICK on (commitReadyPipelines has nothing to do), so step
++            // just those two, without the per-cycle pipeline scans.
++            while (m_xgkick.active)
++            {
++                ++m_cycle;
++                m_state.cycles = m_cycle;
++                progressXgkick();
++            }
++            continue;
++        }
+         advanceOneCycle();
++    }
+ }
+ 
+ uint64_t VU1Interpreter::calculatePairReadyCycle(const DecodedInstructionPair &decoded) const
+@@ -996,25 +1115,19 @@
+     {
+         if (!usage)
+             continue;
++        // Lane bit b (x = bit 3 ... w = bit 0) is component 3 - b; only the
++        // lanes read are visited (max does not depend on the order).
+         for (uint32_t index = 0; index < usage->vfReadCount; ++index)
+         {
+             const VfAccess &access = usage->vfRead[index];
+-            for (uint32_t component = 0; component < 4u; ++component)
+-            {
+-                if ((access.lanes & laneForComponent(component)) != 0u)
+-                    ready = std::max(ready, m_vfReady[access.reg][component]);
+-            }
+-        }
+-        for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
+-        {
+-            if ((usage->viRead & (1u << reg)) != 0u)
+-                ready = std::max(ready, m_viReady[reg]);
+-        }
+-        for (uint32_t component = 0; component < 4u; ++component)
+-        {
+-            if ((usage->accRead & laneForComponent(component)) != 0u)
+-                ready = std::max(ready, m_accReady[component]);
++            for (uint32_t lanes = access.lanes & 0xFu; lanes != 0u; lanes &= lanes - 1u)
++                ready = std::max(ready, m_vfReady[access.reg][3u - static_cast<uint32_t>(std::countr_zero(lanes))]);
+         }
++        // Only the set bits (VI1-VI15): VI0 is never a hazard.
++        for (uint32_t mask = usage->viRead & 0xFFFEu; mask != 0u; mask &= mask - 1u)
++            ready = std::max(ready, m_viReady[static_cast<uint32_t>(std::countr_zero(mask))]);
++        for (uint32_t lanes = usage->accRead & 0xFu; lanes != 0u; lanes &= lanes - 1u)
++            ready = std::max(ready, m_accReady[3u - static_cast<uint32_t>(std::countr_zero(lanes))]);
+     }
+ 
+     if (decoded.lowerUsage.pipeline == PipelineFdiv && m_fdiv.valid)
+@@ -1063,11 +1176,9 @@
+         }
+     }
+ 
+-    for (uint32_t reg = 1; reg < m_viReady.size(); ++reg)
+-    {
+-        if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
+-            m_viReady[reg] = m_cycle + (decoded.lowerUsage.viLatency != 0u ? decoded.lowerUsage.viLatency : decoded.lowerUsage.latency);
+-    }
++    for (uint32_t mask = decoded.lowerUsage.viWrite & 0xFFFEu; mask != 0u; mask &= mask - 1u)
++        m_viReady[static_cast<uint32_t>(std::countr_zero(mask))] =
++            m_cycle + (decoded.lowerUsage.viLatency != 0u ? decoded.lowerUsage.viLatency : decoded.lowerUsage.latency);
+     for (uint32_t component = 0; component < 4u; ++component)
+     {
+         if ((decoded.upperUsage.accWrite & laneForComponent(component)) != 0u)
+@@ -1534,9 +1645,9 @@
+ void VU1Interpreter::rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize,
+                                              const PS2Memory *memory, uint64_t generation)
+ {
+-    const uint32_t pairCount = std::min<uint32_t>(codeSize / 8u, kMaxDecodedPairs);
+-    for (uint32_t i = 0; i < pairCount; ++i)
+-        m_decodedCodeCache[i] = decodeInstructionPair(vuCode, i * 8u);
++    // Decoding is lazy (getDecodedInstructionPairForPc): only forget the
++    // pairs decoded for the previous code.
++    m_decodedPairValid.fill(0u);
+ 
+     m_cachedVuCode = vuCode;
+     m_cachedMemory = memory;
+@@ -1545,17 +1656,23 @@
+     m_decodedCodeCacheValid = true;
+ }
+ 
+-VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPairForPc(
++const VU1Interpreter::DecodedInstructionPair &VU1Interpreter::getDecodedInstructionPairForPc(
+     const uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory, uint32_t pc)
+ {
+     if ((pc & 7u) != 0u)
+-        return decodeInstructionPair(vuCode, pc);
++    {
++        m_uncachedDecoded = decodeInstructionPair(vuCode, pc);
++        return m_uncachedDecoded;
++    }
+ 
+     const bool trackedVu1Code = memory != nullptr &&
+                                 ((m_unit == Unit::VU1 && vuCode == memory->getVU1Code()) ||
+                                  (m_unit == Unit::VU0 && vuCode == memory->getVU0Code()));
+     if (!trackedVu1Code)
+-        return decodeInstructionPair(vuCode, pc);
++    {
++        m_uncachedDecoded = decodeInstructionPair(vuCode, pc);
++        return m_uncachedDecoded;
++    }
+ 
+     const uint64_t generation = m_unit == Unit::VU1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration();
+     if (!m_decodedCodeCacheValid ||
+@@ -1568,7 +1685,15 @@
+     }
+     const uint32_t pairIndex = pc / 8u;
+     if (pairIndex >= kMaxDecodedPairs)
+-        return decodeInstructionPair(vuCode, pc);
++    {
++        m_uncachedDecoded = decodeInstructionPair(vuCode, pc);
++        return m_uncachedDecoded;
++    }
++    if (!m_decodedPairValid[pairIndex])
++    {
++        m_decodedCodeCache[pairIndex] = decodeInstructionPair(vuCode, pairIndex * 8u);
++        m_decodedPairValid[pairIndex] = 1u;
++    }
+     return m_decodedCodeCache[pairIndex];
+ }
+ 
+@@ -1639,7 +1764,7 @@
+         if (m_state.pc + 8u > codeSize)
+             break;
+ 
+-        const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
++        const DecodedInstructionPair &decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
+         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+         {
+             reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
+@@ -1660,16 +1785,13 @@
+         if (m_cycle >= budgetEnd)
+             break;
+ 
++        // The lowest VI register (1-15) the lower instruction writes, if any.
+         uint8_t writtenVi = 0u;
+         int32_t oldVi = 0;
+-        for (uint32_t reg = 1; reg < 16u; ++reg)
++        if (const uint32_t viWrites = decoded.lowerUsage.viWrite & 0xFFFEu; viWrites != 0u)
+         {
+-            if ((decoded.lowerUsage.viWrite & (1u << reg)) != 0u)
+-            {
+-                writtenVi = static_cast<uint8_t>(reg);
+-                oldVi = m_state.vi[reg];
+-                break;
+-            }
++            writtenVi = static_cast<uint8_t>(std::countr_zero(viWrites));
++            oldVi = m_state.vi[writtenVi];
+         }
+ 
+         const VfAccess upperWrite = decoded.upperUsage.vfWrite;

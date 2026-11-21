@@ -55,7 +55,7 @@ MILESTONES = [
     ("Main menu", "done",
      "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
     ("Playable level", "in progress",
-     "the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 2 fps there: the VU1 interpreter and the software GS renderer are the limit (findings/19 s.8)"),
+     "the first level renders, New Game reaches it and Ben walks from the keyboard (findings/18-19); about 4 fps there (findings/20 s.5): the VU1 interpreter and the software GS renderer are the limit"),
 ]
 
 # -----------------------------------------------------------------------------
@@ -77,7 +77,7 @@ PIECES = [
      "C++ translated at build time from the .DVP.ovlytab table (findings/11)",
      [("program A", "interpreted"), ("program B", "interpreted"),
       ("program C", "interpreted"), ("program D (VU1)", "interpreted"),
-      ("program E", "interpreted"), ("program F (VU1)", "interpreted"),
+      ("program E", "interpreted"), ("program F (VU1, the first level's 3D, findings/20)", "interpreted"),
       ("program G", "interpreted"), ("program H (VU1)", "interpreted"),
       ("program I (VU1)", "interpreted")]),
     ("Graphics (GS)",

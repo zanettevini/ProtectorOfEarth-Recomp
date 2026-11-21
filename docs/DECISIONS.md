@@ -90,10 +90,12 @@ Each decision: what, why, alternatives, and status
 
 - **Status**: accepted.
 - **Why**: the submodule stays at the pinned commit (D8); fixes live in
-  `patches/ps2recomp/NNNN-*.patch`, each with a header; configure applies,
-  in order, only the missing ones
-  ([findings/14](findings/14-repository-build-and-tests.md) s.2). Nobody
-  applies anything by hand.
+  `patches/ps2recomp/NNNN-*.patch`, each with a header; configure applies
+  them in order ([findings/14](findings/14-repository-build-and-tests.md)
+  s.2). Nobody applies anything by hand. Since findings/20, a stamp with
+  the patch set's hash decides: when the set changes, configure resets the
+  submodule's files and reapplies every patch (checking each patch alone
+  failed when a new patch touched the same lines as an older one).
 
 ## D11. Sony library functions are bound to runtime handlers by address
 
@@ -131,3 +133,36 @@ Each decision: what, why, alternatives, and status
   content is theirs, not the project's; `CREDITS.md` says the same.
 - **Instead of**: describing the screen in words only. Everything else in
   the "no game data" rule stays (AGENTS.md s.2).
+
+## D14. Native VU1: the .vutext programs translated to C++, the interpreter as the reference
+
+- **Status**: proposed (design; nothing translated yet).
+- **What**: the game's VU1 microprograms (closed list in `.vutext`,
+  [findings/11](findings/11-vu-microprograms.md); the first level runs
+  group F, entries #13-#20, [findings/20](findings/20-vu1-census-and-gs-thread.md)
+  s.1) are translated to C++ at build time by our own translator, like the
+  EE code, and run instead of PS2Recomp's VU1 interpreter (debt T2).
+- **How**:
+  - Identification: when VIF1 starts or resumes a program (MSCAL/MSCNT),
+    the runtime checks that the VU1 code memory holds a translated group
+    (by content hash of the uploaded chunks, which come from known `.vutext`
+    entries); otherwise the interpreter runs and the log says so (D3).
+  - The translated code works on the interpreter's own state (registers,
+    pipeline queues, cycle counter, XGKICK), so switching between native
+    and interpreted code at a pair boundary is always possible.
+  - Exactness first: the first translation keeps the interpreter's timing
+    model (FMAC/FDIV/EFU latencies, delayed flags, stalls) with every
+    decision the interpreter takes per pair made at translation time
+    (decode, hazard sets, latencies, branch delay slots). Then, block by
+    block, the translator computes the pipeline timing statically where
+    the state at block entry is known (it is empty at every MSCNT resume
+    seen, findings/20 s.2) and drops the queues where no result is
+    observed early.
+  - Reference: `tools/vu1_replay` replays workloads captured in the game;
+    a translation is accepted only when every workload gives bit-identical
+    results with the interpreter (registers, flags, cycle count, VU memory,
+    GS memory). The interpreter stays in the source as that reference.
+- **Instead of**: a run-time JIT (the master prompt forbids generating code
+  at run time), or a translation that ignores VU timing (programs read
+  flags and Q/P with fixed delays; results would differ from the
+  interpreter and from the hardware).

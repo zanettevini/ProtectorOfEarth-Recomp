@@ -12,6 +12,7 @@ Today:
 |---|---|
 | `src/iop/cdarb_native.cpp` | the EE's disc reads through CDARB, done natively from `GAME.WAD` (findings/17 s.7) |
 | `src/audio/spu2_memory.cpp` | the SPU2's 2 MB sound RAM, filled by the native CDARB |
+| `src/gs/gs_async_backend.cpp` | runs PS2Recomp's CPU rasteriser on its own thread, in order, behind a bounded queue; readers of GS memory wait for it (findings/20 s.4); `BEN10_GS_SYNC=1` turns it off |
 | `src/diagnostics/frame_rate.cpp` | with `BEN10_FPS_LOG` set, logs the game's finished frames per second to stderr (`[fps] ...`), to measure speed; off by default |
 
 Each subject goes in its own folder once it exists, as in Mind over Recomp,

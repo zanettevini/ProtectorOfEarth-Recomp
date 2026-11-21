@@ -57,32 +57,57 @@ set(PS2X_ENABLE_DEBUG_UI OFF CACHE BOOL "")
 set(PS2X_ENABLE_FFMPEG OFF CACHE BOOL "")
 
 # Our PS2Recomp fixes (patches/ps2recomp/, each with a header: what broke,
-# why, the fix, how it was found). Applied here, in order, only if not
-# applied yet: the submodule stays at the pinned commit and nobody has to
-# apply anything by hand. To undo: git -C thirdparty/PS2Recomp checkout .
-# (back to the original).
+# why, the fix, how it was found). Applied here, in order: the submodule
+# stays at the pinned commit and nobody has to apply anything by hand.
+#
+# A stamp file in the submodule records the SHA-256 of the patch set last
+# applied. When the set changes (a patch added, edited, merged or renamed),
+# the submodule's files are reset to the pinned commit and every patch is
+# applied again. (Checking each patch alone, as before, failed when a new
+# patch changed the same lines as an older one, or replaced it.)
+# Do not keep work in thirdparty/PS2Recomp itself: a reset removes it. Make
+# it a patch (AGENTS.md s.5). To undo all patches by hand:
+#   git -C thirdparty/PS2Recomp checkout . && git -C thirdparty/PS2Recomp clean -fd
 find_package(Git REQUIRED)
+set(BEN10_PS2RECOMP_DIR "${CMAKE_SOURCE_DIR}/thirdparty/PS2Recomp")
+set(BEN10_PATCH_STAMP "${BEN10_PS2RECOMP_DIR}/.ben10_patches_applied")
 file(GLOB BEN10_PS2RECOMP_PATCHES "${CMAKE_SOURCE_DIR}/patches/ps2recomp/*.patch")
 list(SORT BEN10_PS2RECOMP_PATCHES)
+set(BEN10_PATCH_SET "")
 foreach(BEN10_PATCH IN LISTS BEN10_PS2RECOMP_PATCHES)
     get_filename_component(BEN10_PATCH_NAME "${BEN10_PATCH}" NAME)
-    # If the patch reverse-applies cleanly, it is already applied.
-    execute_process(
-        COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${BEN10_PATCH}"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/thirdparty/PS2Recomp"
-        RESULT_VARIABLE BEN10_PATCH_APPLIED OUTPUT_QUIET ERROR_QUIET)
-    if(NOT BEN10_PATCH_APPLIED EQUAL 0)
+    file(SHA256 "${BEN10_PATCH}" BEN10_PATCH_HASH)
+    string(APPEND BEN10_PATCH_SET "${BEN10_PATCH_NAME} ${BEN10_PATCH_HASH}\n")
+endforeach()
+string(SHA256 BEN10_PATCH_SET_HASH "${BEN10_PATCH_SET}")
+set(BEN10_PATCH_STAMP_VALUE "")
+if(EXISTS "${BEN10_PATCH_STAMP}")
+    file(READ "${BEN10_PATCH_STAMP}" BEN10_PATCH_STAMP_VALUE)
+    string(STRIP "${BEN10_PATCH_STAMP_VALUE}" BEN10_PATCH_STAMP_VALUE)
+endif()
+if(NOT BEN10_PATCH_STAMP_VALUE STREQUAL BEN10_PATCH_SET_HASH)
+    message(STATUS "PS2Recomp: patch set changed, resetting the submodule's files and applying the patches")
+    execute_process(COMMAND "${GIT_EXECUTABLE}" checkout -- .
+        WORKING_DIRECTORY "${BEN10_PS2RECOMP_DIR}" RESULT_VARIABLE BEN10_RESET_RESULT)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" clean -fdq
+        WORKING_DIRECTORY "${BEN10_PS2RECOMP_DIR}")
+    if(NOT BEN10_RESET_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not reset thirdparty/PS2Recomp. Is the submodule there? (git submodule update --init)")
+    endif()
+    foreach(BEN10_PATCH IN LISTS BEN10_PS2RECOMP_PATCHES)
+        get_filename_component(BEN10_PATCH_NAME "${BEN10_PATCH}" NAME)
         execute_process(
             COMMAND "${GIT_EXECUTABLE}" apply "${BEN10_PATCH}"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/thirdparty/PS2Recomp"
+            WORKING_DIRECTORY "${BEN10_PS2RECOMP_DIR}"
             RESULT_VARIABLE BEN10_PATCH_RESULT ERROR_VARIABLE BEN10_PATCH_ERROR)
         if(NOT BEN10_PATCH_RESULT EQUAL 0)
             message(FATAL_ERROR "Patch ${BEN10_PATCH_NAME} did not apply: ${BEN10_PATCH_ERROR}\n"
                 "Is the submodule at the right commit? (git submodule update --init)")
         endif()
         message(STATUS "PS2Recomp: applied ${BEN10_PATCH_NAME}")
-    endif()
-endforeach()
+    endforeach()
+    file(WRITE "${BEN10_PATCH_STAMP}" "${BEN10_PATCH_SET_HASH}\n")
+endif()
 
 add_subdirectory(thirdparty/PS2Recomp)
 
@@ -102,6 +127,13 @@ if(NOT MSVC)
             target_compile_options(${BEN10_FAST_TARGET} PRIVATE -O2 -g)
         endif()
     endforeach()
+endif()
+
+# Offline replay of captured VU1 workloads (tools/vu1_replay, findings/20).
+# Not part of "build all": build it with --target ben10_vu1_replay.
+if(TARGET ps2_runtime)
+    add_executable(ben10_vu1_replay EXCLUDE_FROM_ALL tools/vu1_replay/vu1_replay.cpp)
+    target_link_libraries(ben10_vu1_replay PRIVATE ps2_runtime)
 endif()
 
 # PS2Recomp also defines the generic ps2EntryRunner executable (no game).

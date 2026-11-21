@@ -2,14 +2,15 @@
 
 ## For the agent
 
-1. **Next: speed (KNOWN_ISSUES B13), then play further.** In the first
-   level the VU1 interpreter is the largest cost (findings/19 s.8-9: 43 of
-   60 samples after patch 0013), then the software GS renderer. Options:
-   native VU1 microprograms (T2: translate the game's VU1 programs to C++
-   like the EE code; start by listing the programs the game uploads and
-   their sizes), or first a GS renderer on the GPU or on more threads.
-   Then play on in the first level (Cross to jump/attack, Z/C/V for the
-   other buttons, the Omnitrix) and fix the next thing that breaks.
+1. **Next: native VU1 (decision D14, KNOWN_ISSUES T2), then play
+   further.** The first level runs at about 4 fps (findings/20 s.5): the
+   VU1 interpreter costs about 1,300 host instructions per VU cycle. Start
+   with group F (findings/20 s.1, hot resume PCs in the table) and check
+   every translation with `ben10_vu1_replay --sum` against the
+   interpreter (tools/vu1_replay). Second option: more rasteriser threads
+   (findings/20 s.6). Then play on in the first level (Cross to
+   jump/attack, Z/C/V for the other buttons, the Omnitrix) and fix the next
+   thing that breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.

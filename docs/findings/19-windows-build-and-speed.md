@@ -192,7 +192,7 @@ simulated cycle; it walks about 50 pipeline entries each time) and the
 cycle loop that drains PATH1 after a microprogram ends (`flushPipelines`,
 2 cycles per qword of the XGKICK packet, with the same scans on each).
 
-## 9. VU1 pipeline scans (patch 0013)
+## 9. VU1 pipeline scans (patch 0013, first part)
 
 - `commitReadyPipelines` now returns at once while the current cycle is
   below the earliest `readyCycle` of the queued entries (kept up to date
@@ -210,8 +210,8 @@ cycle loop that drains PATH1 after a microprogram ends (`flushPipelines`,
 | with patch 0013 | 2.03 | 4.05 |
 
   A new sampling still has VU1 frames in 43 of 60 traces (34 outside the
-  GS): what is left is the interpretation itself (decoding, operand
-  normalisation, hazard checks), which only native VU1 code (T2) removes.
+  GS). Patch 0013 was then extended (the same file, findings/20 s.3) with
+  more of the same kind of change.
 
 ## 10. Open
 
