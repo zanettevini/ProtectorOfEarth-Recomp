@@ -234,7 +234,30 @@ Protector of Earth (High Voltage Software / D3 Publisher; Ben 10 is a
 trademark of Cartoon Network); it is not the work of this project. See
 [the screenshots README](../images/screenshots/README.md).*
 
-## 10. Open
+## 10. Playing further in the first level
+
+About ten minutes of play after patch 0015 (Linux, about 4 frames per
+second, keyboard), no stop and no `missing-target` in the log:
+
+- The Omnitrix works: Right Shift (R2) picks an alien on the dial, E (R1)
+  transforms; Ben became Heatblast, drawn correctly (skinned model, fire
+  effect).
+- Walking on triggers the game's tutorial pop-ups ("Omnitrix
+  Activation", "Combat"), closed with Cross.
+- The first enemies appear with their introduction card ("Vilgax Drone",
+  with toughness, strength, ranged, melee and speed bars); the fight
+  works: Square/Triangle combos ("Rising Heat"), the combo counter, the
+  drones attacking back. A "Loading" mark shows while the level streams
+  more data.
+
+![Heatblast fighting Vilgax drones in the first level](../images/screenshots/10-first-level-heatblast-fight.png)
+
+*Captured from this port (Linux). The picture shows the content of Ben 10:
+Protector of Earth (High Voltage Software / D3 Publisher; Ben 10 is a
+trademark of Cartoon Network); it is not the work of this project. See
+[the screenshots README](../images/screenshots/README.md).*
+
+## 11. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

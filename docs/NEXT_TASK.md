@@ -8,8 +8,9 @@
    with group F (findings/20 s.1, hot resume PCs in the table) and check
    every translation with `ben10_vu1_replay --sum` against the
    interpreter (tools/vu1_replay). Also: measure `BEN10_GS_THREADS` (row bands, findings/20 s.7) on a
-   machine with more than 2 cores and make the best value the default. Then play on in the first level (Cross jumps,
-   Z/V attack, the Omnitrix: L2/R2 = Shift keys, R1 = E) and fix the next
+   machine with more than 2 cores and make the best value the default. Then play on past the first fight
+   (findings/20 s.10: Cross jumps and closes tips, Z/V attack, Right Shift
+   picks an alien, E transforms) and fix the next
    thing that breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
