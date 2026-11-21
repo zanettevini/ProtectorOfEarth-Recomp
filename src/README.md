@@ -16,6 +16,7 @@ Today:
 | `src/overrides/draw_wait.cpp` | the game's frame wait loop (`FUN_0012e580`) natively, with a 1024-cycle time step per turn instead of 32 (findings/20 s.8); `BEN10_DRAW_WAIT_STEP` |
 | `src/saves/save_location.cpp` | memory cards in `game/saves/` (or `BEN10_SAVE_DIR`) instead of directly next to the ELF, copying old cards there on first run (findings/18 s.14) |
 | `src/diagnostics/frame_rate.cpp` | with `BEN10_FPS_LOG` set, logs the game's finished frames per second to stderr (`[fps] ...`), to measure speed; off by default |
+| `src/diagnostics/key_log.cpp` | with `BEN10_KEY_LOG` set, logs the mapped keys raylib sees as held and the window focus (`[keys] ...`), to diagnose keyboard input (findings/20 s.16); off by default |
 
 Each subject goes in its own folder once it exists, as in Mind over Recomp,
 for example:
