@@ -7,8 +7,8 @@
    VU1 interpreter costs about 1,300 host instructions per VU cycle. Start
    with group F (findings/20 s.1, hot resume PCs in the table) and check
    every translation with `ben10_vu1_replay --sum` against the
-   interpreter (tools/vu1_replay). Second option: more rasteriser threads
-   (findings/20 s.6). Then play on in the first level (Cross to
+   interpreter (tools/vu1_replay). Also: measure `BEN10_GS_THREADS` (row bands, findings/20 s.7) on a
+   machine with more than 2 cores and make the best value the default. Then play on in the first level (Cross to
    jump/attack, Z/C/V for the other buttons, the Omnitrix) and fix the next
    thing that breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
@@ -19,7 +19,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0013 upstream to PS2Recomp.
+5. Send patches 0002-0014 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

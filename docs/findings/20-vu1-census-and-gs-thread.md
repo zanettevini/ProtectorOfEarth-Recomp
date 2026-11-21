@@ -145,12 +145,50 @@ The scripted route needed longer key holds (2.5 s instead of 1.2 s) while
 the window thread still waited for the queue (s.4); with that fixed, the
 route works with both backends.
 
-## 6. Open
+## 6. Where the time goes with the GS thread
 
+40 gdb samples of all threads in the first level (GS thread on):
+
+| Thread | Busy samples | In |
+|---|---|---|
+| game thread | 36 of 40 | VU1 interpreter 28 (VIF1 kicks 18), VU0 skinning 7, IOP 6, the game's own code 16; waiting for room in the GS queue 4 |
+| GS thread | 39 of 40 | `GSCpuBackend` (drawing) |
+
+Both threads are nearly full; the GS thread slightly more. On this
+machine (2 cores) there is no third core to give drawing; on a desktop
+with more cores there is.
+
+## 7. Row bands: drawing one picture on several threads
+
+- Patch 0014 lets a `GSCpuBackend` draw only some rows of the picture
+  (`SetRowBand`: rows y with `((y >> 4) % N) == k`). Several backends on
+  the same GS memory that see the same commands in the same order write
+  the same bytes as one (each pixel is drawn by exactly one band). A
+  ps2xTest case draws blended, Z-tested triangles and a textured sprite
+  with two bands, one after the other (the worst order), and gets the
+  same frame and Z buffer as one backend.
+- `src/gs/gs_async_backend.cpp` uses it with `BEN10_GS_THREADS=N`: the GS
+  thread becomes a dispatcher that hands runs of draws, CLUT loads and
+  TEXFLUSHes ("segments") to N bands (band 0 on the dispatcher itself)
+  and waits for all of them before a transfer. A band must never read GS
+  memory another band is still writing: the dispatcher tracks the 8 KB
+  pages written in the current segment (frame and Z rows inside the
+  scissor, over-estimated) and ends the segment before a draw whose
+  texture pages, or a CLUT load whose CLUT page, are among them.
+- The one difference left with N > 1: each band has its own copy of the
+  GS texture page buffer, so stale texture data seen without a TEXFLUSH
+  can differ. Games must TEXFLUSH after rendering to a texture.
+- Default N = 1 (one GS thread, as in s.4): this machine has 2 cores, so
+  the bands could not be measured for speed. Checked here: with N = 2 the
+  game runs the same route into the first level, the picture looks the
+  same, and the level runs at the same rate as with one band (about 4
+  frames per second: no spare core).
+
+## 8. Open
+
+- Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
+  the best one the default.
 - Native VU1 (decision D14): translate group F and the VU0 skinning
   programs; `ben10_vu1_replay` is the reference.
-- More than one rasteriser thread (screen bands), now that the queue
-  exists: the GS memory written by queued draws would have to be tracked
-  so that a texture read never overtakes a write from another band.
 - The VU0 instance's cycle counter does not advance across `VCALLMS`
   calls (s.1): check why, and whether anything reads it.

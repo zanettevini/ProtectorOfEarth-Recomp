@@ -1,0 +1,251 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: optional row bands, to draw one picture on several threads
+
+What broke:
+  Nothing is wrong, but slow: the CPU rasteriser draws every pixel of the
+  frame on one thread. Ben 10: Protector of Earth's port runs it on a
+  thread of its own (src/gs/gs_async_backend.cpp, through the public
+  GS::setRasterBackend), where it is busy nearly all the time in the
+  first level (39 of 40 gdb samples, findings/20 s.6).
+
+The fix:
+  GSCpuBackend::SetRowBand(index, count): with count > 1 the backend draws
+  only the rows y with ((y >> 4) % count) == index (triangle and sprite
+  row loops skip the other rows; WritePixel checks too, for lines and
+  points). Default count = 1: unchanged behaviour. Several backends that
+  share GS memory and receive the same primitives, CLUT loads and
+  TEXFLUSHes in the same order then write exactly the bytes one backend
+  writes, each pixel being drawn by one band; the caller must not let a
+  band read a page (texture, CLUT) another band has not finished writing.
+  Tested: new ps2xTest case "GS CPU backends drawing row bands of one
+  picture write the same bytes as one backend" (blended Gouraud
+  triangles, Z test, a textured blended sprite; two bands drawn one after
+  the other, the worst order) compares the frame and Z buffers with one
+  backend: identical. 452/452 ps2xTest cases pass.
+
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -33,7 +33,24 @@
+     void SnapshotVram(std::vector<uint8_t> &out) const override;
+     GSTransferSnapshot GetTransferSnapshot() const override;
+ 
++    // Row bands, for drawing one picture with several backends at once:
++    // with count > 1 this backend draws only the pixels of rows y where
++    // ((y >> kRowBandShift) % count) == index, and skips the others. Each
++    // pixel belongs to exactly one band, so backends that share GS memory
++    // and see the same primitives in the same order write the same bytes as
++    // one backend. count <= 1 (the default) draws every row.
++    static constexpr uint32_t kRowBandShift = 4u;
++    void SetRowBand(uint32_t index, uint32_t count);
++
+ private:
++    bool rowInBand(int y) const noexcept
++    {
++        return m_rowBandCount <= 1u ||
++               ((static_cast<uint32_t>(y) >> kRowBandShift) % m_rowBandCount) == m_rowBandIndex;
++    }
++    uint32_t m_rowBandIndex = 0u;
++    uint32_t m_rowBandCount = 1u;
++
+     void ResetUnlocked();
+     void LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut);
+     uint32_t ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const;
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -846,11 +846,20 @@
+     }
+ }
+ 
++void GSCpuBackend::SetRowBand(uint32_t index, uint32_t count)
++{
++    std::lock_guard<std::mutex> lock(m_mutex);
++    m_rowBandCount = count == 0u ? 1u : count;
++    m_rowBandIndex = index % m_rowBandCount;
++}
++
+ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
+ {
+     const auto &ctx = state.context;
+     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+         return;
++    if (!rowInBand(y))
++        return;
+ 
+     if (state.prim.fge)
+     {
+@@ -1236,6 +1245,8 @@
+ 
+         for (int y = drawY0; y <= drawY1; ++y)
+         {
++            if (!rowInBand(y))
++                continue;
+             float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
+             float texVf = v0f + (v1f - v0f) * ty;
+ 
+@@ -1270,8 +1281,12 @@
+     else
+     {
+         for (int y = drawY0; y <= drawY1; ++y)
++        {
++            if (!rowInBand(y))
++                continue;
+             for (int x = drawX0; x <= drawX1; ++x)
+                 WritePixel(state, x, y, z1, r, g, b, a, v1.fog);
++        }
+     }
+ }
+ 
+@@ -1313,6 +1328,8 @@
+ 
+     for (int y = minY; y <= maxY; ++y)
+     {
++        if (!rowInBand(y))
++            continue;
+         float py = static_cast<float>(y) + 0.5f;
+         for (int x = minX; x <= maxX; ++x)
+         {
+--- a/ps2xTest/src/ps2_gs_tests.cpp
++++ b/ps2xTest/src/ps2_gs_tests.cpp
+@@ -5,6 +5,7 @@
+ #include "ps2_stubs.h"
+ #include "ps2_syscalls.h"
+ #include "runtime/gs/gs_frontend.h"
++#include "runtime/gs/gs_cpu_backend.h"
+ #include "runtime/ee_scheduler.h"
+ #include "runtime/gs/ps2_gs_memory.h"
+ #include "runtime/gs/ps2_gs_psmct32.h"
+@@ -2717,6 +2718,134 @@
+                      "T4 CSM1 lookup should keep the cached palette after its source VRAM is reused");
+         });
+ 
++        tc.Run("GS CPU backends drawing row bands of one picture write the same bytes as one backend", [](TestCase &t)
++        {
++            // Forwards every call to two GSCpuBackends that share GS memory,
++            // band 0 and band 1 of 2. Primitives are buffered and drawn
++            // band 0 first, then band 1: the worst ordering two threads
++            // could produce.
++            class TwoBands final : public GSRasterBackend
++            {
++            public:
++                TwoBands()
++                {
++                    m_bands[0].SetRowBand(0u, 2u);
++                    m_bands[1].SetRowBand(1u, 2u);
++                }
++                void Initialize(uint8_t *vram, uint32_t size) override
++                {
++                    m_main.Initialize(vram, size);
++                    for (GSCpuBackend &band : m_bands)
++                        band.Initialize(vram, size);
++                }
++                void Reset() override { flush(); m_main.Reset(); for (GSCpuBackend &b : m_bands) b.Reset(); }
++                void Submit(const GSPrimitiveBatch &batch) override { m_pending.push_back(batch); }
++                void LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &clut) override
++                {
++                    flush();
++                    for (GSCpuBackend &b : m_bands)
++                        b.LoadClut(tex0, clut);
++                }
++                void BeginTransfer(const GSTransferCommand &c) override { flush(); m_main.BeginTransfer(c); }
++                void UploadImage(const uint8_t *d, uint32_t n) override { flush(); m_main.UploadImage(d, n); }
++                void Flush() override { flush(); }
++                void TextureFlush() override { flush(); for (GSCpuBackend &b : m_bands) b.TextureFlush(); }
++                void Sync(GSSyncReason) override { flush(); }
++                PresentationFrame Present(const GSPresentationRequest &r) override { flush(); return m_main.Present(r); }
++                bool ClearFramebuffer(const GSContext &c, uint32_t rgba) override { flush(); return m_main.ClearFramebuffer(c, rgba); }
++                uint32_t ConsumeLocalToHostBytes(uint8_t *d, uint32_t n) override { flush(); return m_main.ConsumeLocalToHostBytes(d, n); }
++                uint32_t ReadVram(uint32_t psm, uint32_t b, uint32_t bw, uint32_t x, uint32_t y) const override { return m_main.ReadVram(psm, b, bw, x, y); }
++                void WriteVram(uint32_t psm, uint32_t b, uint32_t bw, uint32_t x, uint32_t y, uint32_t v) override { flush(); m_main.WriteVram(psm, b, bw, x, y, v); }
++                void SnapshotVram(std::vector<uint8_t> &out) const override { m_main.SnapshotVram(out); }
++                GSTransferSnapshot GetTransferSnapshot() const override { return m_main.GetTransferSnapshot(); }
++                void flush()
++                {
++                    for (GSCpuBackend &band : m_bands)
++                        for (const GSPrimitiveBatch &batch : m_pending)
++                            band.Submit(batch);
++                    m_pending.clear();
++                }
++
++            private:
++                GSCpuBackend m_main;
++                GSCpuBackend m_bands[2];
++                std::vector<GSPrimitiveBatch> m_pending;
++            };
++
++            const auto drawScene = [](GS &gs)
++            {
++                constexpr uint64_t kFrame = (0ull << 0) | (2ull << 16) | (static_cast<uint64_t>(GS_PSM_CT32) << 24);
++                constexpr uint64_t kZbuf = (40ull << 0) | (static_cast<uint64_t>(GS_PSM_Z32) << 24);
++                constexpr uint64_t kScissor = (127ull << 16) | (127ull << 48);
++                // Texture: 16x16 CT32 at block 1600 (page 50), written below.
++                constexpr uint64_t kTex0 = (1600ull << 0) | (1ull << 14) | (static_cast<uint64_t>(GS_PSM_CT32) << 20) |
++                                           (4ull << 26) | (4ull << 30) | (1ull << 34);
++                for (uint32_t y = 0; y < 16u; ++y)
++                    for (uint32_t x = 0; x < 16u; ++x)
++                        gs.WriteVram(GS_PSM_CT32, 1600u, 1u, x, y, 0x80000000u | (x * 16u) | ((y * 16u) << 8) | 0x400000u);
++                gs.writeRegister(GS_REG_FRAME_1, kFrame);
++                gs.writeRegister(GS_REG_ZBUF_1, kZbuf);
++                gs.writeRegister(GS_REG_SCISSOR_1, kScissor);
++                gs.writeRegister(GS_REG_XYOFFSET_1, 0ull);
++                // Z test GEQUAL, alpha test off; alpha blend (Cs - Cd) * As + Cd.
++                gs.writeRegister(GS_REG_TEST_1, (1ull << 16) | (2ull << 17));
++                gs.writeRegister(GS_REG_ALPHA_1, (0ull << 0) | (1ull << 2) | (0ull << 4) | (1ull << 6));
++                gs.writeRegister(GS_REG_TEX0_1, kTex0);
++
++                const auto xy = [](uint32_t x, uint32_t y, uint32_t z)
++                { return static_cast<uint64_t>(x * 16u) | (static_cast<uint64_t>(y * 16u) << 16) | (static_cast<uint64_t>(z) << 32); };
++
++                // Gouraud, blended triangles that overlap and cross many rows.
++                gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_TRIANGLE) | (1ull << 3) | (1ull << 6));
++                for (uint32_t i = 0; i < 6u; ++i)
++                {
++                    gs.writeRegister(GS_REG_RGBAQ, 0x40000000ull | (i * 40u));
++                    gs.writeRegister(GS_REG_XYZ2, xy(5u + i * 7u, 3u + i * 5u, 100u + i));
++                    gs.writeRegister(GS_REG_RGBAQ, 0x80008000ull | (i * 20u));
++                    gs.writeRegister(GS_REG_XYZ2, xy(120u - i * 9u, 10u + i * 3u, 200u - i));
++                    gs.writeRegister(GS_REG_RGBAQ, 0x7000F000ull);
++                    gs.writeRegister(GS_REG_XYZ2, xy(30u + i * 11u, 125u - i * 13u, 150u));
++                }
++                // Textured (FST) sprite over all of them, blended.
++                gs.writeRegister(GS_REG_PRIM, static_cast<uint64_t>(GS_PRIM_SPRITE) | (1ull << 4) | (1ull << 6) | (1ull << 8));
++                gs.writeRegister(GS_REG_RGBAQ, 0x80808080ull);
++                gs.writeRegister(GS_REG_UV, 0ull);
++                gs.writeRegister(GS_REG_XYZ2, xy(20u, 17u, 300u));
++                gs.writeRegister(GS_REG_UV, static_cast<uint64_t>(16u * 16u) | (static_cast<uint64_t>(16u * 16u) << 16));
++                gs.writeRegister(GS_REG_XYZ2, xy(100u, 90u, 300u));
++                gs.writeRegister(GS_REG_FINISH, 0ull);
++            };
++
++            std::vector<uint8_t> vramOne(PS2_GS_VRAM_SIZE, 0u);
++            GS one;
++            one.init(vramOne.data(), static_cast<uint32_t>(vramOne.size()), nullptr);
++            drawScene(one);
++
++            std::vector<uint8_t> vramTwo(PS2_GS_VRAM_SIZE, 0u);
++            GS two;
++            two.init(vramTwo.data(), static_cast<uint32_t>(vramTwo.size()), nullptr);
++            two.setRasterBackend(std::make_unique<TwoBands>());
++            drawScene(two);
++            two.writeRegister(GS_REG_TEXFLUSH, 0ull); // reaches TwoBands::TextureFlush, which draws the buffered primitives
++
++            uint32_t differing = 0u;
++            uint32_t drawn = 0u;
++            for (uint32_t y = 0; y < 128u; ++y)
++                for (uint32_t x = 0; x < 128u; ++x)
++                {
++                    const uint32_t a = one.ReadVram(GS_PSM_CT32, 0u, 2u, x, y);
++                    const uint32_t b = two.ReadVram(GS_PSM_CT32, 0u, 2u, x, y);
++                    differing += (a != b) ? 1u : 0u;
++                    drawn += (a != 0u) ? 1u : 0u;
++                }
++            t.IsTrue(drawn > 4000u, "the scene should cover a good part of the 128x128 frame");
++            t.Equals(differing, 0u, "two row bands must write the same frame buffer as one backend");
++            for (uint32_t y = 0; y < 128u; ++y)
++                for (uint32_t x = 0; x < 128u; ++x)
++                    differing += (one.ReadVram(GS_PSM_Z32, 40u * 32u, 2u, x, y) != two.ReadVram(GS_PSM_Z32, 40u * 32u, 2u, x, y)) ? 1u : 0u;
++            t.Equals(differing, 0u, "two row bands must write the same Z buffer as one backend");
++        });
++
+         tc.Run("GS texture page buffer hides local-memory writes until TEXFLUSH", [](TestCase &t)
+         {
+             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
