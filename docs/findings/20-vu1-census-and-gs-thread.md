@@ -14,7 +14,7 @@ difference to the next start on the same unit.
 - **VU0** (unit 0): about 17,000 calls, almost all at `0x38` and `0x140`,
   plus `0x0`: the skinning microprograms of [18](18-memory-card-and-menus.md)
   s.12, called by `VCALLMS`. The VU0 instance's cycle counter does not move
-  between calls in this build, so their cost is not in the table below; the
+  between calls (it is reset at every call, s.12), so their cost is not in the table below; the
   stack samples put about 7 of 60 in them.
 - **VU1** (unit 1): the work is in **resumed** programs (`MSCNT`). The
   `MSCAL` starts (`0x100`, `0x190`, `0x150`...) run 13 to 45 cycles each:
@@ -295,11 +295,34 @@ trademark of Cartoon Network); it is not the work of this project. See
   machine every thread's CPU time counts, including software OpenGL for
   the window, which a real GPU does instead.
 
-## 12. Open
+## 12. Why the VU0 cycle counter does not move (s.1)
+
+- Code: `PS2Runtime::executeVU0Microprogram` (`VCALLMS`/`VCALLMSR`) calls
+  `m_vu0.reset()` before every call, which sets the interpreter's cycle
+  counter to 0, then copies the EE's VU0 registers in, runs the program
+  with a budget of 4,096 cycles and copies the registers back. So each
+  call counts from 0: nothing is wrong with the counter, and nothing
+  carries timing from one `VCALLMS` to the next.
+- Is the 4,096-cycle budget ever reached? A gdb breakpoint after the run,
+  30 s in the first level: 2,576 calls, all ended by the program (E bit)
+  well inside the budget: 1,288 at `0x38` and 1,272 at `0x140`, 34 cycles
+  each, and 16 at `0x0`, 7 cycles. No call is cut short.
+- Left as it is: re-entering the VU0 program with no pipeline state is
+  what the hardware does after a program has ended (KNOWN_ISSUES R22 is
+  about VU0 running alongside the EE, not about this).
+
+## 13. Playing further: scripted input is not enough
+
+A 20-minute scripted session (Cross, W held 12 s, attacks, D, W again,
+repeated) after reaching the first level moved Ben about one screen: at
+3 frames per second a 12-second key hold is about one second of game time,
+and the fixed pattern ended against the wall by the park sign. No stop,
+no `missing-target`, no error in the log. Playing past the first fight
+needs either more speed or input chosen by looking at each picture.
+
+## 14. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.
 - Native VU1 (decision D14): translate group F and the VU0 skinning
   programs; `ben10_vu1_replay` is the reference.
-- The VU0 instance's cycle counter does not advance across `VCALLMS`
-  calls (s.1): check why, and whether anything reads it.
