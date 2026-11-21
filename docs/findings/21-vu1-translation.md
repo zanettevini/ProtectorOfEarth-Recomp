@@ -77,6 +77,7 @@ because the short helper names clash with ps2xRecomp macros).
 | translated, phase 1 | 677 M |
 | + `execUpper` inline | 610 M |
 | + hazard check and write bookkeeping inline | 540 M |
+| + FMAC helpers inline, shared upper functions, lighter commit (patch 0020) | 446 M |
 
 So -32% against the replay's interpreter, about -25% against an
 interpreter that keeps its decoded pairs (as in the game). Same checksums
@@ -90,10 +91,32 @@ In the first level (Linux, 90 s, `tools/perf/cpu_per_frame.sh`): game
 thread 169 ms of CPU per game frame, against 193 ms with phase 1 and
 197-221 ms before translation; same picture, no `missing-target`.
 
-What is left per pair: `commitReadyPipelines` and the queues (`queueVfWrite`
-and friends), the FMAC result and flag model (`calculateFmacExactResult`,
-`updateFmacFlags`...), `execLower` (out of line). The next steps below
-target them.
+Patch 0020 (phase 2b):
+
+- The FMAC result and flag helpers (`normalizeFmacResult`,
+  `calculateFmacExactResult`, which decoded the upper word again for each
+  lane, `updateFmacFlags`, ...) move unchanged to an inline header.
+- Inlining the whole upper executor and FMAC model into each of the 6,727
+  pairs gave 440 M but made the Linux build about 4 times longer (23
+  minutes on 2 cores). The translator now writes one function per
+  distinct upper word (1,582) with the upper executor inlined for that
+  word, and each pair calls its word's function
+  (`VU1NativeAccess::execPairUpper`): 446 M, and a build about as long as
+  before.
+- `commitReadyPipelines` clears only the valid flag of a committed entry
+  (every insert resets the entry or sets every field that is read); the
+  interpreter itself drops from 793 M to 748 M.
+
+First level, Linux: game thread 158 ms of CPU per game frame (169 ms
+after patch 0019); same picture, no `missing-target`.
+
+Windows, after patch 0019 (one short session of the maintainer, 6 GS
+bands): 7.4-9.0 game frames per second in the first level, against
+5.4-7.2 per second in one-minute averages before translation (findings/20
+s.18); not a difference the maintainer noticed while playing.
+
+What is left per pair: the pipeline queues and their commit, `execLower`
+(out of line). The next steps below target them.
 
 ## 4. Where the time still goes, and phase 2
 
