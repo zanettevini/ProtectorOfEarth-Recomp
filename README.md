@@ -118,7 +118,7 @@ ctest --preset linux-tests
 ```
 ben10_poe.toml           recompiler config: every fix and binding, commented (why + how we found it)
 CMakeLists.txt           builds the port (generated code + PS2Recomp runtime + src/)
-src/                     the port's own native code (empty for now)
+src/                     the port's own native code
 tests/                   automated tests (GoogleTest): EE instructions end to end
 tools/                   disc collection, executable analysis, Ghidra, progress board
 patches/ps2recomp/       our fixes to PS2Recomp (applied to the submodule by CMake)
@@ -128,7 +128,8 @@ thirdparty/PS2Recomp     the recompiler + runtime (git submodule, pinned)
 # made on your machine, never committed:
 *.iso, game/             your disc and the files taken from it
 generated/               the generated C++ and the Ghidra analysis (it is the game's code)
-out/, logs/, user/       builds, logs, YOUR saves and settings
+out/, logs/, user/       builds, logs, your local test files
+(saves: %APPDATA%\ProtectorOfEarth-Recomp on Windows, ~/.local/share/protectorofearth-recomp on Linux)
 ```
 
 </details>

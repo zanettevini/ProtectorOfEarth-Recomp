@@ -14,6 +14,7 @@ Today:
 | `src/audio/spu2_memory.cpp` | the SPU2's 2 MB sound RAM, filled by the native CDARB |
 | `src/gs/gs_async_backend.cpp` | runs PS2Recomp's CPU rasteriser off the game thread, in order, behind a bounded queue, optionally in N row bands (`BEN10_GS_THREADS=N`); readers of GS memory wait for it (findings/20 s.4, s.7); `BEN10_GS_SYNC=1` turns it off |
 | `src/overrides/draw_wait.cpp` | the game's frame wait loop (`FUN_0012e580`) natively, with a 1024-cycle time step per turn instead of 32 (findings/20 s.8); `BEN10_DRAW_WAIT_STEP` |
+| `src/saves/save_location.cpp` | memory cards in a per-user folder (`%APPDATA%\ProtectorOfEarth-Recomp`, `~/.local/share/protectorofearth-recomp`, or `BEN10_SAVE_DIR`), copying old cards from next to the ELF on first run (findings/18 s.14) |
 | `src/diagnostics/frame_rate.cpp` | with `BEN10_FPS_LOG` set, logs the game's finished frames per second to stderr (`[fps] ...`), to measure speed; off by default |
 
 Each subject goes in its own folder once it exists, as in Mind over Recomp,

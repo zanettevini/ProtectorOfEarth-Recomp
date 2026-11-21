@@ -43,3 +43,8 @@
    - `BEN10_GS_SYNC=1`: the original synchronous rasteriser, to compare;
    - `BEN10_DRAW_WAIT_STEP=32`: the original wait-loop step (s.8).
    Note the frames per second in the first level for each.
+6. Saves now live in `%APPDATA%\ProtectorOfEarth-Recomp\mc0` (findings/18
+   s.14); the first run copies `game\mc0` there and keeps the old folder.
+   Check that the save is found (the game goes from the autosave notice
+   straight to the title screen) and that the log shows the
+   `[saves] memory card 0: ...` line. This Windows path is untested.

@@ -339,10 +339,34 @@ holding W makes Ben walk towards the RV and the camera follows (screenshot
 `07-first-level-walking.png`). Pressure values, the right stick and a
 partial tilt from the keyboard are not handled.
 
-## 14. Open
+## 14. Where the memory cards live: a per-user folder (src/saves/save_location.cpp)
 
-- Where saves should live: next to the disc files is not a good place for
-  players' data; a per-user folder is the plan (KNOWN_ISSUES R21).
+- Before: the runtime puts card 0 in `mc0/` next to the game's ELF (s.4),
+  so in `game/mc0/`, and card 1 in `game/mc1/`.
+- Now a game override sets the runtime's memory card root
+  (`IoPaths::mcRoot`) before the game starts. `PS2Runtime::loadELF` sets
+  the I/O paths from the ELF and then applies the overrides; the memory
+  card stubs and the IOP's file system read the paths at every call, and
+  card 1's folder is derived from card 0's (`mc0` -> sibling `mc1`).
+- The folder: `BEN10_SAVE_DIR` if set; on Windows
+  `%APPDATA%\ProtectorOfEarth-Recomp`; elsewhere
+  `$XDG_DATA_HOME/protectorofearth-recomp` or
+  `~/.local/share/protectorofearth-recomp`. The cards are `mc0/` and
+  `mc1/` inside it.
+- First run: a card folder missing in the new place but present next to
+  the ELF is **copied** (AGENTS.md s.6: saves are copied, the old data is
+  kept). If the folder cannot be created or the copy fails, the cards stay
+  next to the ELF and the log says so (`[saves] ...`).
+- Tested on Linux: with `BEN10_SAVE_DIR` pointing to an empty test folder,
+  the first run copied both cards, the game found the save (`GetDir`
+  7 entries, the 24,536-byte save read) and went straight to the title
+  screen; the second run copied nothing and used the same folder. Without
+  `BEN10_SAVE_DIR`, the cards went to `~/.local/share/protectorofearth-recomp/`.
+  The old `game/mc0/` was left unchanged. **Untested on Windows** (the
+  `%APPDATA%` branch).
+
+## 15. Open
+
 - The first level renders (s.12) and Ben walks (s.13), but it runs at about
   2-3 frames per second (frames counted by the game over 30 s, -O0 build,
   software OpenGL under Xvfb); the rest of the level is not played yet.
