@@ -1,0 +1,109 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: the FMAC model is not forced inline on MSVC
+
+What broke:
+  With patch 0020 the FMAC result and flag model (normalizeFmacResult,
+  calculateFmacExactResult, updateFmacFlags, applyFmacDest, ...) is forced
+  inline, so translated code with a constant upper word folds through it.
+  GCC and Clang drop the opcode cases a constant word cannot reach before
+  inlining. MSVC inlines first: every one of the ~70 cases of execUpper
+  received the whole model, for each function of translated code. One
+  generated file of the Ben 10 port (about 50 upper functions and 210
+  pairs) made cl.exe pass 31 GB of committed memory alone and was stopped;
+  a parallel build failed with C1002 (out of heap space in pass 2) and
+  froze the machine.
+
+The change:
+  - PS2_VU_FMAC_INLINE: PS2_VU_FORCEINLINE on GCC and Clang (unchanged),
+    plain inline on MSVC, which then decides by its own limits.
+  - The seven model functions use it; the small helpers (broadcast,
+    normalizeResult, applyDest, applyDestAcc) stay forced inline.
+  Same code on GCC and Clang; on MSVC the same results, the model inlined
+  where the compiler chooses.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -20,6 +20,18 @@
+ #define PS2_VU_FORCEINLINE inline __attribute__((always_inline))
+ #endif
+ 
++// The FMAC result and flag model (runtime/ps2_vu1_fmac_inl.h): forced inline
++// on GCC and Clang, which drop the unused opcode cases of a constant upper
++// word before inlining. MSVC inlines first and prunes afterwards: forcing
++// the model into every case of the upper executor made one file of
++// translated code need more than 30 GB to compile, so there the compiler
++// decides.
++#if defined(_MSC_VER)
++#define PS2_VU_FMAC_INLINE inline
++#else
++#define PS2_VU_FMAC_INLINE PS2_VU_FORCEINLINE
++#endif
++
+ struct VU1State
+ {
+     float vf[32][4];
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -61,7 +61,7 @@
+     applyDest(m_state.acc, result, dest);
+ }
+ 
+-PS2_VU_FORCEINLINE void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
++PS2_VU_FMAC_INLINE void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
+                                          uint8_t laneFlags[4])
+ {
+     for (uint32_t component = 0; component < 4u; ++component)
+@@ -83,7 +83,7 @@
+     }
+ }
+ 
+-PS2_VU_FORCEINLINE bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
++PS2_VU_FMAC_INLINE bool VU1Interpreter::calculateFmacExactResult(uint32_t component,
+                                                long double &result) const
+ {
+     const uint32_t upper = m_currentUpperInstruction;
+@@ -266,7 +266,7 @@
+     return true;
+ }
+ 
+-PS2_VU_FORCEINLINE uint8_t VU1Interpreter::normalizeFmacExactResult(float &value,
++PS2_VU_FMAC_INLINE uint8_t VU1Interpreter::normalizeFmacExactResult(float &value,
+                                                   long double exactResult) const
+ {
+     const bool negative = std::signbit(exactResult);
+@@ -296,7 +296,7 @@
+     return flags;
+ }
+ 
+-PS2_VU_FORCEINLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
++PS2_VU_FMAC_INLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
+ {
+     uint32_t extraSticky = 0u;
+     const uint32_t upper = m_currentUpperInstruction;
+@@ -355,7 +355,7 @@
+     return extraSticky;
+ }
+ 
+-PS2_VU_FORCEINLINE void VU1Interpreter::updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest,
++PS2_VU_FMAC_INLINE void VU1Interpreter::updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest,
+                                      uint32_t extraSticky)
+ {
+     if (dest == 0u)
+@@ -409,7 +409,7 @@
+     entry->writesStatus = true;
+ }
+ 
+-PS2_VU_FORCEINLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
++PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
+ {
+     uint8_t laneFlags[4]{};
+     normalizeFmacResult(result, dest, laneFlags);
+@@ -417,7 +417,7 @@
+     applyDest(dst, result, dest);
+ }
+ 
+-PS2_VU_FORCEINLINE void VU1Interpreter::applyFmacDestAcc(float *result, uint8_t dest)
++PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDestAcc(float *result, uint8_t dest)
+ {
+     uint8_t laneFlags[4]{};
+     normalizeFmacResult(result, dest, laneFlags);

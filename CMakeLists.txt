@@ -159,6 +159,26 @@ if(TARGET ps2_runtime AND EXISTS "${BEN10_GAME_ELF}")
         "${CMAKE_SOURCE_DIR}/src/vu/vu1_native_resolver.cpp")
     target_include_directories(ben10_vu1_native PUBLIC "${CMAKE_SOURCE_DIR}/src")
     target_link_libraries(ben10_vu1_native PUBLIC ps2_runtime)
+    # Each translated file is heavy to optimise, and Ninja would otherwise
+    # compile one per hardware thread at once: cap how many run together by
+    # the machine's memory (BEN10_VU1_COMPILE_JOBS overrides; Ninja only).
+    # Budget per file: 3 GB with MSVC, 1 GB with GCC/Clang (measured 0.7 GB
+    # with GCC 13; findings/21 s.6).
+    cmake_host_system_information(RESULT BEN10_HOST_MEMORY_MB QUERY TOTAL_PHYSICAL_MEMORY)
+    if(MSVC)
+        set(BEN10_VU1_FILE_BUDGET_MB 3072)
+    else()
+        set(BEN10_VU1_FILE_BUDGET_MB 1024)
+    endif()
+    math(EXPR BEN10_VU1_JOBS_DEFAULT "${BEN10_HOST_MEMORY_MB} / 2 / ${BEN10_VU1_FILE_BUDGET_MB}")
+    if(BEN10_VU1_JOBS_DEFAULT LESS 1)
+        set(BEN10_VU1_JOBS_DEFAULT 1)
+    endif()
+    set(BEN10_VU1_COMPILE_JOBS "${BEN10_VU1_JOBS_DEFAULT}" CACHE STRING
+        "How many translated VU1 files may compile at once (default: half the RAM / budget per file)")
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS ben10_vu1_compile=${BEN10_VU1_COMPILE_JOBS})
+    set_property(TARGET ben10_vu1_native PROPERTY JOB_POOL_COMPILE ben10_vu1_compile)
+    message(STATUS "Translated VU1 code: at most ${BEN10_VU1_COMPILE_JOBS} files compile at once (${BEN10_HOST_MEMORY_MB} MB RAM)")
     if(MSVC)
         target_compile_options(ben10_vu1_native PRIVATE /bigobj)
     else()

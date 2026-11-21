@@ -180,3 +180,4 @@ Expected result: all pass and 1 shows as disabled
 | `Patch 00NN-... did not apply` | the submodule is at another commit | `git submodule update --init`, then configure again (configure resets the submodule's files and reapplies the patches when the patch set changes) |
 | `inlining failed ... target specific option mismatch` (GCC/Clang) | SSE4 flags missing | `CMakeLists.txt` already sets `-march=x86-64-v2`; check `BEN10_ARCH_FLAGS` was not cleared from the cache |
 | `ben10_poe: generated/default/ is empty` | codegen has not run | step 5, `ben10_codegen`, then configure again |
+| `C1002: compiler is out of heap space` on `generated/vu1/vu1_native_*.cpp` (MSVC), or the machine slows down while those compile | too many translated VU1 files compiling at once (findings/21 s.6) | configure prints `Translated VU1 code: at most N files compile at once`; lower it with `-DBEN10_VU1_COMPILE_JOBS=2` (Ninja generators only) |

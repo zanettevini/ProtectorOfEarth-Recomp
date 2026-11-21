@@ -176,5 +176,35 @@ Each step must keep `--sum` identical to the interpreter.
   phases 1-2 above replace it.
 - VU0 programs (VCALLMS) are not translated yet (the resolver is VU1
   only).
-- Not tested on Windows yet (MSVC compile time and size of the 8 generated
-  files).
+- MSVC compile memory with patch 0023: to be measured (s.6).
+
+## 6. Windows build: MSVC ran out of memory (patch 0023)
+
+- Symptom: the first Windows build after patches 0020-0022 (commit
+  `273f3c3`, MSVC 14.44, Release) failed on the translated files with
+  `C1002: compiler is out of heap space in pass 2`, and the machine froze
+  while it ran. The last Windows build that worked was at patch 0019.
+- Measured: one translated file (`vu1_native_10.cpp`: 210 pairs, 50 upper
+  and 43 lower functions) compiled alone with the build's own command:
+  `cl.exe` passed 4.2 GB of committed memory in the first 80 s and 31 GB
+  at 145 s, when it was stopped. GCC 13 compiles the same file with
+  0.7 GB at most (24 s). Ninja starts one compile per hardware thread.
+- Cause: patch 0020 forces the FMAC result and flag model
+  (`normalizeFmacResult`, `calculateFmacExactResult`, `updateFmacFlags`,
+  `applyFmacDest`, ...) inline. Each generated upper function is
+  `execUpper` with a constant word; GCC drops the opcode cases the word
+  cannot reach before inlining, MSVC inlines first, so each of the ~70
+  cases got the whole model, in every function, before being dropped.
+- Fix (patch 0023): `PS2_VU_FMAC_INLINE` is the forced inline on GCC and
+  Clang (no change there) and plain `inline` on MSVC, which then applies
+  its own limits. The model is still folded on Linux; on Windows it is
+  inlined where MSVC chooses, so the Windows gain of phase 2b can be
+  smaller than on Linux.
+- Guard in `CMakeLists.txt`: the translated files compile in a Ninja job
+  pool sized by the machine's memory (half the RAM divided by 3 GB per
+  file with MSVC, 1 GB with GCC/Clang; `BEN10_VU1_COMPILE_JOBS`
+  overrides), so a mistake of this kind cannot start one heavy compile per
+  hardware thread.
+- The proper fix for every compiler is to pick the opcode case at
+  translation time (one function per operation), which phase 2 of D14
+  already plans.
