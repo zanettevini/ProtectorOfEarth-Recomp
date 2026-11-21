@@ -5,9 +5,12 @@
 1. **Next: native VU1 phase 2 (decision D14, findings/21 s.3).** Phase 1
    is in: every VU pair is translated to a function running the
    interpreter's own step (`tools/vu1_translate`, `generated/vu1/`,
-   `src/vu/`). Next, in order: per-operation functions called directly by
-   the translated pairs; static timing per block (the pipelines are empty
-   at every resume); flags only where read. After each step,
+   `src/vu/`). Phase 2a-2d are in (patches 0019-0022: upper and lower
+   executors folded per word, VF/ACC results written at issue; translated
+   VU code 793 M -> 349 M instructions on the replay). Next, in order:
+   static timing per block for the remaining queues (VI, flags, Q/P,
+   stores; the pipelines are empty at every resume); flags only where
+   read. After each step,
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
    checksums as without `--native`; measure with `callgrind` on the replay
    and `tools/perf/cpu_per_frame.sh` in the game (the frame rate of the
@@ -24,7 +27,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0021 upstream to PS2Recomp.
+5. Send patches 0002-0022 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

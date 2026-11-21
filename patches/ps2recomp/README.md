@@ -29,8 +29,9 @@ fix and how it was found.
 | `0019-vu1-inline-upper-and-hazards.patch` | VU1 interpreter: `execUpper`, `calculatePairReadyCycle` and `markPairWrites` inline in headers, so translated pairs fold through them; same results | findings/21 s.3 |
 | `0020-vu1-inline-fmac-shared-upper.patch` | VU1 interpreter: FMAC result/flag helpers inline; `execPairWith` takes the upper executor (translated code shares one per upper word); the commit pass clears only the valid flag; same results | findings/21 s.3 |
 | `0021-vu1-inline-lower-executor.patch` | VU1 interpreter: lower executor in an inline header (`execLowerInline`, not included by `ps2_vu1.h`); `execPairWith` takes the lower executor too; same results | findings/21 s.3 |
+| `0022-vu1-immediate-vf-acc-writes.patch` | VU1 interpreter: translated pairs write VF/ACC results at issue (hazard tracking and the end-of-program flush unchanged); the interpreter keeps its queues; same results and cycle counts | findings/21 s.3 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0021 speed-ups with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 speed-ups with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

@@ -139,8 +139,10 @@ Each decision: what, why, alternatives, and status
 - **Status**: in progress. Phase 1 done (findings/21): every pair of
   every overlay chunk is translated to a function running the
   interpreter's own step with the pair decoded as a constant; same
-  checksums as the interpreter. Phases 2-3 (direct operations, static
-  timing, flags only where read) to do.
+  checksums as the interpreter. Phase 2a-2d done (patches 0019-0022:
+  executors folded per upper and lower word, VF/ACC results written at
+  issue, findings/21 s.3). Static timing for the remaining queues and
+  flags only where read to do.
 - **What**: the game's VU1 microprograms (closed list in `.vutext`,
   [findings/11](findings/11-vu-microprograms.md); the first level runs
   group F, entries #13-#20, [findings/20](findings/20-vu1-census-and-gs-thread.md)

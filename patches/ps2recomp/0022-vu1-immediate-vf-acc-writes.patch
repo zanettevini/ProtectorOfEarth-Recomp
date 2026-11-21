@@ -1,0 +1,190 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: immediate VF/ACC writes for translated pairs
+
+What it is for:
+  Every VF and ACC result went through the delayed-write queues: the pair
+  restored the old register value, queued the new one, and the commit step
+  wrote it back a few cycles later. Translated code (patches 0018-0021)
+  paid for that on almost every pair.
+
+The change:
+  - execPairWith takes an immediateWrites flag. VU1NativeAccess passes
+    true; the interpreter keeps false (unchanged behaviour).
+  - With the flag, VF and ACC results are written at issue (writeVfNow /
+    writeAccNow). The write still takes a new write sequence, so it is the
+    lane's latest: an older queued write to that lane is dropped at commit,
+    as it would be for a newer queued write.
+  - m_immediatePendingUntil keeps pipelinesPending() true (and
+    earliestPendingReadyCycle() reports it) until the write would have
+    committed, so the end-of-program flush takes the same cycles.
+  - Hazard tracking (markPairWrites / vfReady / accReady) is unchanged, so
+    every read of a VF or ACC lane still stalls until its latest write is
+    due: no instruction can see when the value landed. VI, Q, P, flag and
+    store queues are unchanged (their delays are visible to the program).
+  Same results and cycle counts. Tested: ps2xTest 454/454; the Ben 10
+  port's 40 captured VU1 workloads give the same checksums and cycle count
+  with and without its translated code; callgrind: translated code
+  418 M -> 349 M instructions.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -316,8 +316,23 @@
+     // execPair with the upper instruction run by `upper(*this)`: translated
+     // code passes a function specialised for the pair's upper word, shared by
+     // every pair with that word (fewer copies of the upper executor to build).
++    // immediateWrites: the pair's VF and ACC results are written at once
++    // instead of through the delayed-write queues (translated code; see
++    // writeVfNow).
+     template <class UpperExec, class LowerExec>
+-    StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower);
++    StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower,
++                            bool immediateWrites = false);
++    // VF / ACC results written at issue (translated code). Exact because
++    // every instruction that reads a VF or ACC lane waits (the hazard check)
++    // until the lane's latest write is due, so no read can tell when the
++    // value landed; the write still becomes the lane's latest (an older
++    // queued write to it is dropped at commit, as for a newer queued one),
++    // and m_immediatePendingUntil keeps "pipelines pending" true until the
++    // write would have committed, so the end-of-program flush takes the
++    // same number of cycles.
++    void writeVfNow(uint8_t reg, uint8_t laneMask, const float value[4], uint32_t latency);
++    void writeAccNow(uint8_t laneMask, const float value[4], uint32_t latency);
++    uint64_t m_immediatePendingUntil = 0;
+     void resolveNativeCode(uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory);
+     std::array<NativePairFn, 0x4000u / 8u> m_nativeTable{};
+     const uint8_t *m_nativeCode = nullptr;
+@@ -514,8 +529,43 @@
+         { vu.execLower(lowerWord, frame.vuData, frame.dataSize, *frame.gs, frame.memory, upperWord); });
+ }
+ 
++PS2_VU_FORCEINLINE void VU1Interpreter::writeVfNow(uint8_t reg, uint8_t laneMask, const float value[4], uint32_t latency)
++{
++    if (reg == 0u || laneMask == 0u)
++        return;
++    const uint64_t sequence = ++m_nextWriteSequence;
++    for (uint32_t component = 0; component < 4u; ++component)
++    {
++        if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++        {
++            m_state.vf[reg][component] = value[component];
++            m_vfLatestWrite[reg][component] = sequence;
++        }
++    }
++    if (m_cycle + latency > m_immediatePendingUntil)
++        m_immediatePendingUntil = m_cycle + latency;
++}
++
++PS2_VU_FORCEINLINE void VU1Interpreter::writeAccNow(uint8_t laneMask, const float value[4], uint32_t latency)
++{
++    if (laneMask == 0u)
++        return;
++    const uint64_t sequence = ++m_nextWriteSequence;
++    for (uint32_t component = 0; component < 4u; ++component)
++    {
++        if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++        {
++            m_state.acc[component] = value[component];
++            m_accLatestWrite[component] = sequence;
++        }
++    }
++    if (m_cycle + latency > m_immediatePendingUntil)
++        m_immediatePendingUntil = m_cycle + latency;
++}
++
+ template <class UpperExec, class LowerExec>
+-PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower)
++PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
++                                                                           bool immediateWrites)
+ {
+     if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+     {
+@@ -606,7 +656,10 @@
+             decoded.upperUsage.vfLatency != 0u
+                 ? decoded.upperUsage.vfLatency
+                 : decoded.upperUsage.latency;
+-        queueVfWrite(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
++        if (immediateWrites)
++            writeVfNow(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
++        else
++            queueVfWrite(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
+     }
+     if (hasDistinctLowerWrite)
+     {
+@@ -615,7 +668,10 @@
+         const uint32_t latency = decoded.lowerUsage.vfLatency != 0u
+                                      ? decoded.lowerUsage.vfLatency
+                                      : decoded.lowerUsage.latency;
+-        queueVfWrite(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
++        if (immediateWrites)
++            writeVfNow(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
++        else
++            queueVfWrite(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
+     }
+     if (decoded.upperUsage.accWrite != 0u)
+     {
+@@ -623,8 +679,11 @@
+         std::memcpy(m_state.acc, oldAcc, sizeof(oldAcc));
+         // ACC is forwarded to the next upper instruction. Its arithmetic
+         // flags still use the normal four-cycle FMAC timeline.
+-        queueAccWrite(decoded.upperUsage.accWrite, newAcc,
+-                      kAccForwardLatency);
++        if (immediateWrites)
++            writeAccNow(decoded.upperUsage.accWrite, newAcc, kAccForwardLatency);
++        else
++            queueAccWrite(decoded.upperUsage.accWrite, newAcc,
++                          kAccForwardLatency);
+     }
+     if (writtenVi != 0u)
+     {
+@@ -723,7 +782,8 @@
+             pair, frame, [](VU1Interpreter &v)
+             { Upper(v); },
+             [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
+-            { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); });
++            { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
++            true);
+     }
+     // The same with the lower instruction run by Lower (a function that runs
+     // one lower word, built once per distinct word).
+@@ -736,7 +796,8 @@
+             pair, frame, [](VU1Interpreter &v)
+             { Upper(v); },
+             [upperWord](VU1Interpreter &v, Frame &fr)
+-            { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); });
++            { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
++            true);
+     }
+     // One upper instruction, inline: called with a constant word, the
+     // compiler keeps only that instruction's code.
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -83,6 +83,7 @@
+     m_accLatestWrite = {};
+     m_nextWriteSequence = 0;
+     m_nextCommitCycle = 0;
++    m_immediatePendingUntil = 0;
+     m_flagValid = 0;
+     m_efuValid = 0;
+     m_storeValid = 0;
+@@ -362,6 +363,10 @@
+         consider(write.valid, write.readyCycle);
+     for (const PendingAccWrite &write : m_accWritePipeline)
+         consider(write.valid, write.readyCycle);
++    // Results written at issue (writeVfNow): only the latest due cycle is
++    // kept, which is enough for the one user (flushPipelines asks whether
++    // anything other than XGKICK is pending).
++    consider(m_cycle < m_immediatePendingUntil, m_immediatePendingUntil);
+     return earliest;
+ }
+ 
+@@ -652,6 +657,10 @@
+ {
+     if (m_fdiv.valid || m_xgkick.active)
+         return true;
++    // VF/ACC results written at issue by translated code count as pending
++    // until they would have committed (writeVfNow).
++    if (m_cycle < m_immediatePendingUntil)
++        return true;
+     for (const ScalarPipelineEntry &entry : m_efu)
+         if (entry.valid)
+             return true;

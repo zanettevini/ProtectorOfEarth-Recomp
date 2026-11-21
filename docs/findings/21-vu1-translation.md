@@ -79,8 +79,9 @@ because the short helper names clash with ps2xRecomp macros).
 | + hazard check and write bookkeeping inline | 540 M |
 | + FMAC helpers inline, shared upper functions, lighter commit (patch 0020) | 446 M |
 | + lower executor per distinct lower word (patch 0021) | 418 M |
+| + VF/ACC results written at issue (patch 0022) | 349 M |
 
-So -32% against the replay's interpreter, about -25% against an
+So -56% against the replay's interpreter, about -51% against an
 interpreter that keeps its decoded pairs (as in the game). Same checksums
 with and without `--native`; ps2xTest 454/454. Building `ben10_vu1_native`
 now takes about 3.5 minutes on the 2-core Linux machine. On Windows (MSVC
@@ -125,9 +126,27 @@ First level, Linux: game thread 145 ms of CPU per game frame (158 ms
 after patch 0020, 197-221 ms before translation); same picture, no
 `missing-target`.
 
-What is left per pair: the pipeline queues and their commit
-(`commitReadyPipelines` alone is now a fifth of the translated VU time).
-The next steps below target them.
+Patch 0022 (phase 2d): translated pairs write their VF and ACC results at
+issue instead of queueing them. This is exact because the hazard check
+still makes every read of a VF or ACC lane wait until that lane's latest
+write is due, so no instruction can see when the value landed. The write
+takes a new write sequence (an older queued write to the same lane is
+dropped at commit, as for a newer queued write), and the runtime keeps
+"pipelines pending" true until the write would have committed, so the
+end-of-program flush, and with it the cycle count, are unchanged. VI, Q,
+P, flag and store results keep their queues: their delays are visible to
+the program (a VI read in the next pair sees the old value; Q and P are
+read without a stall). Same checksums and cycle count (110,862) as the
+interpreter on the 40 captured workloads; ps2xTest 454/454. The
+interpreter path is unchanged (717 M after this patch, 748 M before).
+First level, Linux: game thread 126 ms of CPU per game frame (145 ms
+after patch 0021, 197-221 ms before translation); same picture, no
+`missing-target`.
+
+What is left per pair: the remaining queues (VI, flags, Q/P, stores) and
+their commit (`commitReadyPipelines` is still about 15% of the translated
+VU time), the hazard check and the FMAC flag model. The next steps below
+target them.
 
 ## 4. Where the time still goes, and phase 2
 
