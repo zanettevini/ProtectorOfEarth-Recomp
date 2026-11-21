@@ -427,9 +427,67 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
   second on the title screen, 5.6-8 per second in one-minute averages
   over the 14-minute session.
 
-## 17. Open
+## 17. The game stopped in a fight: virtual methods missing from the function list
 
-- Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
-  the best one the default.
+- Symptom (Windows, first level, a fight as Four Arms): the game stopped.
+  The log: `[guest-branch:missing-target] kind=IndirectCall op=JALR
+  source=0x1ee234 target=0x20f648`: a virtual call (the method pointer
+  read from a virtual table at `0x00238ADC`) into code that had no
+  generated function.
+- `0x0020F648` is a 12-instruction leaf method (stores `$a1` at +0x5C and
+  sets or clears bit 0x80 of the word at +0x18). Ghidra had not made it a
+  function and `CreatePointerTargetFunctions.java` rejected it: it starts
+  with a branch, and between the previous function's `jr $ra` and it sit
+  stray words the toolchain leaves between functions (`nop`,
+  `addiu $sp, $sp, 32`, `nop`), so rules b and c did not apply.
+- A scan of the ELF for data words that point into code no function
+  covers found 21 such targets. Besides `0x0020F648`: 10 more virtual
+  methods in the same range (`0x002061D0`-`0x0020E570`; several are
+  destructors that load their table address before the prologue,
+  `lui $v0` then `addiu $sp, $sp, -16`), a function at `0x001A5F50`, two
+  words at the start of `.text` that are not code, a tail-call thunk at
+  `0x00205578`, and switch cases after `jr $a0` at `0x001C0F7C`-`0x001C105C`
+  (a table in `.data`).
+- Two new rules in `CreatePointerTargetFunctions.java`:
+  - d: the second word is a stack-frame prologue and the first is not a
+    jump or branch;
+  - e: a leaf virtual method. The target is 8-byte aligned; a pointer next
+    to it in data (one or two words away) points at the start of an
+    existing function, which holds for virtual tables and not for switch
+    jump tables (their entries point inside a function); and it follows a
+    `jr $ra` or `j` and its delay slot with at most 7 words in between,
+    each word just before an 8-byte boundary being padding. Rule e runs in
+    a second pass, after the other entries of the table exist. Targets
+    with a prologue are now handled first, so a function created by rule
+    d cannot swallow the next one (`0x001A5F50` runs into `0x001A6068`).
+- Result: 13 new functions (`0x001A5F50`, `0x001CA840`, which was already a
+  synthetic entry, and the 11 methods): the script creates 394 functions
+  instead of 381, and the exported list (21,056 entries) is otherwise
+  unchanged. The thunk at `0x00205578`
+  and the `0x001C0F7C` switch cases are still rejected (recorded in Open).
+
+## 18. GS row bands on Windows: 6 by default
+
+Measured on the maintainer's Windows desktop (MSVC Release, game frames
+per second from `BEN10_FPS_LOG`, one-second samples):
+
+| `BEN10_GS_THREADS` | Menus | First level |
+|---|---|---|
+| 1 | about 11 | about 7.5 (short sample) |
+| 4 | about 24 | 4-8 |
+| 6 | about 48 | 5.5-8 |
+
+The menus are limited by drawing and scale with the bands; the first
+level is not: there the game thread (the VU1 interpreter, s.6, s.14) is
+the limit. The picture looked right with 4 and 6 bands. The default is
+now 6 bands when the machine has at least 8 hardware threads (hardware
+threads - 2 below that, 1 below 4); `BEN10_GS_THREADS` still overrides it.
+
+## 19. Open
+
+- `CreatePointerTargetFunctions.java` still rejects the thunk at
+  `0x00205578` (`lui`, `j`, `addiu`) and the switch cases at
+  `0x001C0F7C`-`0x001C105C` (jump table in `.data`): either can stop the
+  game the same way if it is ever reached (s.17).
 - Native VU1 (decision D14): translate group F and the VU0 skinning
   programs; `ben10_vu1_replay` is the reference.

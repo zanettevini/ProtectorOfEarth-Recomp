@@ -13,7 +13,8 @@
 //   GS::setRasterBackend() (a public PS2Recomp API) swaps the backend; a game
 //   override installs this one when the ELF loads.
 //   BEN10_GS_SYNC=1    keep the original synchronous backend (comparisons).
-//   BEN10_GS_THREADS=N draw with N row bands (default 1: one GS thread).
+//   BEN10_GS_THREADS=N draw with N row bands (default: 6, or fewer on a
+//   machine with fewer than 8 hardware threads; 1 below 4).
 //
 // WHY THE PICTURE IS THE SAME
 //   - Everything that writes or changes GS state is queued and run in
@@ -467,7 +468,13 @@ namespace ben10::gs_async
             std::fprintf(stderr, "[gs] BEN10_GS_SYNC set: the rasteriser stays on the submitting thread\n");
             return;
         }
-        uint32_t bands = 1u;
+        // Default: 6 bands when the machine has the threads for them, keeping
+        // two for the game thread and the window (findings/20 s.18: on an
+        // 8-core desktop 6 bands drew the menus about 4 times as fast as 1,
+        // and 4 or 6 gave the same frame rate in the first level); one band
+        // on machines with fewer than 4 hardware threads.
+        const unsigned hw = std::thread::hardware_concurrency();
+        uint32_t bands = hw >= 4u ? std::min(6u, hw - 2u) : 1u;
         if (const char *threads = std::getenv("BEN10_GS_THREADS"); threads && *threads)
             bands = static_cast<uint32_t>(std::clamp(std::atoi(threads), 1, 16));
         runtime.gs().setRasterBackend(std::make_unique<AsyncBackend>(bands));

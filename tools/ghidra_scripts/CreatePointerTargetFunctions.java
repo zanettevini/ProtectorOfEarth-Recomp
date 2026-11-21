@@ -28,6 +28,21 @@
 //         delay slot); rule b misses them when other code sits between them
 //         and the previous return (findings/18 s.7: 0x002069F0, placed
 //         after two stray "addiu $sp, $sp, 16").
+//      d. its second instruction is a stack-frame prologue and its first is
+//         not a jump or branch: C++ destructors and constructors that load
+//         their virtual table address first ("lui $v0, hi" then
+//         "addiu $sp, $sp, -16"), findings/20 s.17.
+//      e. a leaf virtual method: the target is 8-byte aligned, a pointer
+//         next to it in data (one or two words before or after) points at
+//         the start of an existing function (so the pointer sits in a
+//         virtual table, not in a switch's jump table, whose entries point
+//         inside a function), and it follows a "jr $ra" or a "j" and its
+//         delay slot with at most 7 words in between, where every word just
+//         before an 8-byte boundary is padding and the others are not
+//         jumps or branches. The toolchain leaves such stray words between
+//         functions ("addiu $sp, $sp, 32" + nop, "sw $a1, 56($a0)" + nop);
+//         rules b and c miss methods placed after them (findings/20 s.17:
+//         0x0020F648 stopped the game on Windows).
 //      Anything else is rejected: pointers that land in a switch's jump
 //      targets, in the data table at the start of .text (findings/12 s.6),
 //      or that are just numbers.
@@ -47,7 +62,9 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 
-import java.util.TreeSet;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.TreeMap;
 
 public class CreatePointerTargetFunctions extends GhidraScript {
 
@@ -55,8 +72,9 @@ public class CreatePointerTargetFunctions extends GhidraScript {
     protected void run() throws Exception {
         Memory mem = currentProgram.getMemory();
 
-        // Distinct candidate targets, sorted, so the log is stable run to run.
-        TreeSet<Long> targets = new TreeSet<>();
+        // Distinct candidate targets, sorted, so the log is stable run to run,
+        // each with the data addresses that point at it (rule e).
+        TreeMap<Long, List<Address>> targets = new TreeMap<>();
         for (MemoryBlock blk : mem.getBlocks()) {
             // Only data the game actually has in RAM: skip non-loaded blocks
             // (ELF headers, the .DVP overlay sections, debug sections).
@@ -82,12 +100,34 @@ public class CreatePointerTargetFunctions extends GhidraScript {
                 if (tb == null || !tb.isExecute() || !tb.isInitialized()) {
                     continue;
                 }
-                targets.add(v);
+                targets.computeIfAbsent(v, k -> new ArrayList<>()).add(base.add(off));
             }
         }
 
         int created = 0, already = 0, rejected = 0, failed = 0;
-        for (long v : targets) {
+        TreeMap<Long, List<Address>> deferred = new TreeMap<>();
+        // Targets with a stack-frame prologue (rule a) first: creating them
+        // first bounds the functions placed before them. Otherwise a function
+        // created by rule d whose body runs into the next one (0x001A5F50 ends
+        // in a call that does not return) swallows that next function's start
+        // (0x001A6068), which then never becomes a function.
+        List<java.util.Map.Entry<Long, List<Address>>> ordered = new ArrayList<>();
+        for (int round = 0; round < 2; ++round) {
+            for (var entry : targets.entrySet()) {
+                int w;
+                try {
+                    w = mem.getInt(toAddr(entry.getKey()));
+                } catch (Exception e) {
+                    w = 0;
+                }
+                boolean hasPrologue = (w >>> 16) == 0x27BD && (w & 0x8000) != 0;
+                if (hasPrologue == (round == 0)) {
+                    ordered.add(entry);
+                }
+            }
+        }
+        for (var entry : ordered) {
+            long v = entry.getKey();
             Address target = toAddr(v);
             if (getFunctionContaining(target) != null) {
                 already++;
@@ -103,9 +143,11 @@ public class CreatePointerTargetFunctions extends GhidraScript {
             // addiu $sp, $sp, imm: opcode 0x09, rs = rt = 29 -> 0x27BD in the
             // top half; a frame allocation has a negative immediate.
             boolean prologue = (first >>> 16) == 0x27BD && (first & 0x8000) != 0;
-            if (!prologue && !followsReturn(mem, v) && !isTinyLeaf(mem, v)) {
-                rejected++;
-                println(String.format("rejected (no function start): 0x%08X", v));
+            if (!prologue && !followsReturn(mem, v) && !isTinyLeaf(mem, v)
+                    && !hasSecondWordPrologue(mem, v)) {
+                // Rule e needs the other entries of the table to exist first:
+                // tried in a second pass, below.
+                deferred.put(v, entry.getValue());
                 continue;
             }
             if (getInstructionAt(target) == null) {
@@ -119,8 +161,98 @@ public class CreatePointerTargetFunctions extends GhidraScript {
             }
             created++;
         }
+        // Second pass, rule e: virtual-table entries whose neighbours are now
+        // functions (a table's methods are often laid out after the one
+        // being checked, so the first pass has not created them yet).
+        for (var entry : deferred.entrySet()) {
+            long v = entry.getKey();
+            Address target = toAddr(v);
+            if (getFunctionContaining(target) != null) {
+                already++;
+                continue;
+            }
+            if (!(isVirtualTableEntry(mem, entry.getValue(), v) && followsReturnWithFiller(mem, v))) {
+                rejected++;
+                println(String.format("rejected (no function start): 0x%08X", v));
+                continue;
+            }
+            if (getInstructionAt(target) == null) {
+                new DisassembleCommand(target, null, true).applyTo(currentProgram, monitor);
+            }
+            if (createFunction(target, null) == null) {
+                failed++;
+                printerr(String.format("failed to create a function at 0x%08X", v));
+                continue;
+            }
+            println(String.format("created (virtual-table leaf, rule e): 0x%08X", v));
+            created++;
+        }
         println(String.format("pointer targets=%d created=%d already_in_function=%d rejected=%d failed=%d",
                 targets.size(), created, already, rejected, failed));
+    }
+
+    // Rule d: "addiu $sp, $sp, -N" as the second word, after an instruction
+    // that is not a jump or branch.
+    private boolean hasSecondWordPrologue(Memory mem, long v) {
+        try {
+            int first = mem.getInt(toAddr(v));
+            int second = mem.getInt(toAddr(v + 4));
+            return (second >>> 16) == 0x27BD && (second & 0x8000) != 0 && !isJumpOrBranch(first);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // Rule e, first half: one of the pointers to v has a neighbour (1 or 2
+    // words away) that points at the start of an existing function.
+    private boolean isVirtualTableEntry(Memory mem, List<Address> refs, long v) {
+        for (Address ref : refs) {
+            for (long delta : new long[] {-8, -4, 4, 8}) {
+                try {
+                    long w = mem.getInt(ref.add(delta)) & 0xFFFFFFFFL;
+                    if (w == v || (w & 3) != 0) {
+                        continue;
+                    }
+                    MemoryBlock b = mem.getBlock(toAddr(w));
+                    if (b != null && b.isExecute() && getFunctionAt(toAddr(w)) != null) {
+                        return true;
+                    }
+                } catch (Exception e) {
+                    // the neighbour is outside the block: not a table entry
+                }
+            }
+        }
+        return false;
+    }
+
+    // Rule e, second half: v is 8-byte aligned and follows "jr $ra" or "j"
+    // plus its delay slot, with at most 7 words in between: each word just
+    // before an 8-byte boundary is padding, the others are not jumps or
+    // branches.
+    private boolean followsReturnWithFiller(Memory mem, long v) {
+        if ((v & 7) != 0) {
+            return false;
+        }
+        try {
+            for (long gap = 0; gap <= 28; gap += 4) {
+                long p = v - 8 - gap;
+                int w = mem.getInt(toAddr(p));
+                if (w != 0x03E00008 && (w >>> 26) != 0x02) {
+                    continue;
+                }
+                boolean filler = true;
+                for (long a = p + 8; a < v && filler; a += 4) {
+                    int x = mem.getInt(toAddr(a));
+                    filler = ((v - a) % 8 == 4) ? isPadding(x) : !isJumpOrBranch(x);
+                }
+                if (filler) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            return false;
+        }
+        return false;
     }
 
     // Rule c: "jr $ra" at v, or at v + 4 after an instruction that is not a

@@ -42,7 +42,8 @@
    itself (patch stamp, findings/20).
 5. Speed settings to try, from a prompt in the game folder (one run each,
    with `BEN10_FPS_LOG=1` to print frames per second):
-   - `BEN10_GS_THREADS=1`, `2`, `4`, `6`: GS row bands (findings/20 s.7);
+   - `BEN10_GS_THREADS=1`, `2`, `4`, `6`: GS row bands (findings/20 s.7;
+     measured in s.18, 6 is now the default on 8+ hardware threads);
    - `BEN10_GS_SYNC=1`: the original synchronous rasteriser, to compare;
    - `BEN10_DRAW_WAIT_STEP=32`: the original wait-loop step (s.8).
    Note the frames per second in the first level for each.
