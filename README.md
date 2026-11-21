@@ -60,12 +60,12 @@ The game's code is already translated to C++. What is still emulated is the **PS
 |---|---|---|
 | Executable analysis | ✅ | 4,420 functions; the script API table (findings/09-12) |
 | Translation to C++ | ✅ | 0 unsupported instructions (findings/13) |
-| Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested |
+| Full build | ✅ | the generated C++ + runtime compile and link on Linux (findings/14) and Windows, MSVC Release (findings/19 s.1) |
 | Per-instruction tests | 🔧 | 38 end-to-end tests; translator bugs found and fixed: 4 (findings/14), then VF0 writes, 5 MMI permutes and the VU0 macro memory ops (findings/18 s.11-12) |
 | Boot | ✅ | loads the 8 IOP modules and its data, runs past 3,000 frames once the runtime's own data left the game's heap (findings/15 s.15) |
 | First frame | ✅ | the memory card warning, drawn by the game under Xvfb, Linux (findings/15 s.16); not compared with PCSX2 yet |
 | Main menu | ✅ | memory card found (libmc bound), save created, title screen and main menu (findings/18) |
-| Playable level | 🔧 | the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 2-3 fps |
+| Playable level | 🔧 | the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 5-6 fps, the software GS renderer is the limit (findings/19) |
 
 **PS2 pieces replaced by the port's own code: 2 of 27 (7%)** `▰▱▱▱▱▱▱▱▱▱`
 

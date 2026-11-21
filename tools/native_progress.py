@@ -45,7 +45,7 @@ MILESTONES = [
     ("Translation to C++", "done",
      "0 unsupported instructions (findings/13)"),
     ("Full build", "done",
-     "the generated C++ + runtime compile and link on Linux (findings/14); Windows: untested"),
+     "the generated C++ + runtime compile and link on Linux (findings/14) and Windows, MSVC Release (findings/19 s.1)"),
     ("Per-instruction tests", "in progress",
      "38 end-to-end tests; translator bugs found and fixed: 4 (findings/14), then VF0 writes, 5 MMI permutes and the VU0 macro memory ops (findings/18 s.11-12)"),
     ("Boot", "done",
@@ -55,7 +55,7 @@ MILESTONES = [
     ("Main menu", "done",
      "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
     ("Playable level", "in progress",
-     "the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 2-3 fps"),
+     "the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 5-6 fps, the software GS renderer is the limit (findings/19)"),
 ]
 
 # -----------------------------------------------------------------------------

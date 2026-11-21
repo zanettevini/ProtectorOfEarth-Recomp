@@ -12,6 +12,7 @@ They are listed here in the order they were taken.
 | `05-first-level-hud-only.png` | The first level: the HUD is drawn, the 3D world is still black ([findings/18](../../findings/18-memory-card-and-menus.md) s.8) | same |
 | `06-first-level.png` | The first level rendered: Ben, the RV, the fence and the rocks, after the VF0, MMI and VU0 memory fixes ([findings/18](../../findings/18-memory-card-and-menus.md) s.12) | same |
 | `07-first-level-walking.png` | Ben walking towards the RV, moved with the keyboard (W, the left stick) ([findings/18](../../findings/18-memory-card-and-menus.md) s.13) | same |
+| `08-windows-tutorial.png` | The first level's Omnitrix tutorial, in the first Windows (MSVC Release) build ([findings/19](../../findings/19-windows-build-and-speed.md) s.1) | Windows, the game's 638x448 area cut out of a desktop screenshot |
 
 ## Whose work this is
 

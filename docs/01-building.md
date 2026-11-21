@@ -8,7 +8,7 @@ and compile.
 |---|---|---|
 | Take the files off the disc | `bsdtar`/`7z` (s.3) | `tools\collect_disc.ps1` |
 | Headless Ghidra | `tools/ghidra_analyze.sh` (**tested**) | `tools\ghidra_analyze.ps1` (untested) |
-| Configure, translate, compile | `linux-*` presets (**tested**, GCC 13) | `windows-*` presets (untested) |
+| Configure, translate, compile | `linux-*` presets (**tested**, GCC 13) | `windows-release` (**tested**, MSVC 17.14); `windows-debug` untested |
 | Tests | `ctest --preset linux-tests` (**tested**: 33/33) | `ctest --preset windows-tests` (untested) |
 
 ## 1. What to install
@@ -112,11 +112,17 @@ functions`.
 prompt `cl` does not exist. At the repository root:
 
 ```bat
-cmake --preset windows-debug
-cmake --build --preset windows-debug --target ben10_codegen
-cmake --preset windows-debug
-cmake --build --preset windows-debug --target ben10_poe
+cmake --preset windows-release
+cmake --build --preset windows-release --target ben10_codegen
+cmake --preset windows-release
+cmake --build --preset windows-release --target ben10_poe
 ```
+
+`windows-release` is the tested one (optimised; about 8.5 minutes the first
+time on a desktop, findings/19 s.1). `windows-debug` builds without
+optimisation and runs much slower. If `vcvars64.bat` is called from a
+script with its output redirected and seems to hang, set
+`VSCMD_SKIP_SENDTELEMETRY=1` first and give it `< nul`.
 
 **Linux**:
 
@@ -138,7 +144,7 @@ What to expect:
 - `ben10_codegen`: the report ends with `Unhandled instructions: 0` and
   `errors: 0`;
 - `ben10_poe`: on Linux, ~5 minutes on 2 cores; the executable is
-  `out/build/<preset>/ben10_poe`.
+  `out/build/<preset>/ben10_poe` (`ben10_poe.exe` on Windows).
 
 ## 6. Run
 
@@ -146,8 +152,11 @@ What to expect:
 out/build/linux-debug/ben10_poe game/SLUS_216.61
 ```
 
-The game is not playable yet: the boot is being brought up one blocker at a
-time (docs/findings/15).
+Windows: `out\build\windows-release\ben10_poe.exe game\SLUS_216.61`.
+
+The game reaches its first level, but runs at about 5-6 frames per second
+(KNOWN_ISSUES B13). Set `BEN10_FPS_LOG=1` to print the frame rate about once
+a second (findings/19 s.2).
 
 ## 7. Tests
 

@@ -8,8 +8,9 @@
 | B9 | ~~The game reports no memory card in slot 1~~ resolved: libmc bound to the runtime's memory card | | [findings/18](findings/18-memory-card-and-menus.md) |
 | B10 | ~~The first level shows a solid blue picture~~ resolved: the main thread had stopped on a switch case and an empty virtual method missing from the function list | | [findings/18](findings/18-memory-card-and-menus.md) s.6-7 |
 | B11 | ~~The first level draws the HUD over a black picture~~ resolved: the giant triangles came from the game's software skinning (wrong PROT3W, VU0 macro memory ops writing EE RAM) and VF0 could be overwritten; the level now renders | | [findings/18](findings/18-memory-card-and-menus.md) s.8-12 |
-| B12 | ~~Ben did not move in the first level~~ resolved: the keyboard now drives the left stick (patch 0011). Still open: about 2-3 frames per second | speed | [findings/18](findings/18-memory-card-and-menus.md) s.13 |
-| B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
+| B12 | ~~Ben did not move in the first level~~ resolved: the keyboard now drives the left stick (patch 0011); the speed is B13 | | [findings/18](findings/18-memory-card-and-menus.md) s.13 |
+| B13 | The game runs at about 5-6 frames per second (from 3-4 before patch 0012): PS2Recomp's software GS renderer draws every pixel on the game thread | playing at full speed | [findings/19](findings/19-windows-build-and-speed.md) s.5 |
+| B7 | ~~Windows (MSVC) build untested~~ resolved: the MSVC Release build (`windows-release`) compiles, links and reaches the first level; the Windows tests preset is still untested | | [findings/19](findings/19-windows-build-and-speed.md) s.1 |
 | B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 
 ## Temporary debts (they break the master prompt on purpose, for now)
@@ -46,3 +47,4 @@
 | R21 | The runtime stores memory card 0 in `mc0/` next to the game's ELF (`game/mc0/`), not in a per-user folder | players' saves mixed with the disc files; lost if `game/` is replaced | move to a per-user folder, copying any existing save ([findings/18](findings/18-memory-card-and-menus.md) s.4) |
 | R22 | `VCALLMS` runs the VU0 microprogram to the end at once; on the console VU0 runs alongside the EE, and code that reads results with `qmfc2.ni` while a program runs, or writes inputs it still reads, can see other values | wrong results in other VU0 micro-mode code | right for Ben 10's skinning (findings/18 s.12); model VU0 timing if a case shows up |
 | R23 | MMI PREVH reverses all 8 halfwords; it is believed to reverse within each 64-bit half | wrong results in a game that uses it (Ben 10 does not: no PREVH in the generated code) | check against a reference, then fix like PROT3W (patch 0009) |
+| R24 | With a real disc image configured, the EE's `sceCdSearchFile` still gives pseudo LSNs while the IOP reads the image's own sectors | the same failed IOP reads as before patch 0012, if the port is run from an `.iso` | read the image's ISO 9660 directory on the EE side ([findings/19](findings/19-windows-build-and-speed.md) s.6) |
