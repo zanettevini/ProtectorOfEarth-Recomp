@@ -415,6 +415,17 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
   stick on their axis. The first read logs `[pad] gamepad 0: <name>` or
   `[pad] no gamepad: keyboard only`. Linux, no gamepad: Start still opens
   the main menu; ps2xTest 454/454.
+- On Windows with patch 0017 the keyboard works (the maintainer played
+  from the title screen into the menus and on). The first read logged
+  `[pad] no gamepad: keyboard only`, so the cause is not confirmed: raylib
+  may report a gamepad only later in the run, which the old code would
+  have answered by ignoring the keyboard, but no log shows it.
+  `BEN10_KEY_LOG=1` (src/diagnostics/key_log.cpp) logs the keys raylib
+  sees and the window focus, for the next time keys go missing. Keys sent
+  by the remote-control tool still did not reach the game window.
+- Windows speed in that session (MSVC Release): about 7.6 game frames per
+  second on the title screen, 5.6-8 per second in one-minute averages
+  over the 14-minute session.
 
 ## 17. Open
 
