@@ -466,6 +466,9 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
   unchanged. The thunk at `0x00205578`
   and the `0x001C0F7C` switch cases are still rejected (recorded in Open).
 
+- Tested on Windows with the new list: the maintainer played past that
+  fight to the first Sumo Slammer card; no `missing-target` in the log.
+
 ## 18. GS row bands on Windows: 6 by default
 
 Measured on the maintainer's Windows desktop (MSVC Release, game frames
@@ -482,6 +485,8 @@ level is not: there the game thread (the VU1 interpreter, s.6, s.14) is
 the limit. The picture looked right with 4 and 6 bands. The default is
 now 6 bands when the machine has at least 8 hardware threads (hardware
 threads - 2 below that, 1 below 4); `BEN10_GS_THREADS` still overrides it.
+In the session of s.17, with the default of 6 bands: 5.4-7.2 game frames
+per second in one-minute averages in the first level.
 
 ## 19. Open
 
