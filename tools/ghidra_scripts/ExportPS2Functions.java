@@ -32,6 +32,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 public class ExportPS2Functions extends GhidraScript {
@@ -903,10 +904,22 @@ public class ExportPS2Functions extends GhidraScript {
     // above split the switch), the remaining targets become entries too.
     // Switches kept whole (most cases are labels inside one function, like
     // the script interpreter at 0x00193B00) are left alone.
+    //
+    // Second rule (findings/19 s.7): a switch can also be reached through a
+    // narrower entry. When the "jr" lies after a synthetic entry (a loop
+    // head, say), the recompiler also emits that entry as its own function,
+    // which ends at the next entry. Generated code returns to the
+    // dispatcher at a loop head when an EE checkpoint is due, and the
+    // dispatcher then resumes in that narrow function, whose "jr" can only
+    // reach cases inside it or cases that are entries. So the targets
+    // outside the chunk [nearest entry <= jr, next entry) that are not
+    // entries become entries too. Found with the switch at 0x00185BFC
+    // (table 0x0023DAC0), whose 3-pass delay loop at 0x00185BC8 is such a
+    // loop head.
     private void collectSplitSwitchEntries(List<FunctionRecord> records, Set<Long> existingStarts) {
         final int maxLookahead = 13;
         final int maxCases = 2048;
-        int tables = 0, split = 0, added = 0;
+        int tables = 0, split = 0, added = 0, chunked = 0;
 
         for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
             if (block == null || !block.isExecute() || !block.isInitialized()) {
@@ -964,6 +977,39 @@ public class ExportPS2Functions extends GhidraScript {
                 }
                 ++tables;
                 if (alreadyEntries * 2 <= cases) {
+                    // Second rule: the chunk the "jr" can be resumed in.
+                    TreeSet<Long> sortedStarts = new TreeSet<>(existingStarts);
+                    long jrAddress = block.getStart().add(offset).getOffset();
+                    for (int k = 1; k <= maxLookahead; ++k) {
+                        Long raw = readWord(block.getStart().add(offset + k * (long) MIPS_INSTRUCTION_SIZE));
+                        if (raw != null && opcode(raw) == OPCODE_SPECIAL && function(raw) == SPECIAL_JR && rs(raw) != GPR_RA) {
+                            jrAddress += k * (long) MIPS_INSTRUCTION_SIZE;
+                            break;
+                        }
+                    }
+                    Long chunkStart = sortedStarts.floor(jrAddress);
+                    Long chunkEnd = sortedStarts.higher(jrAddress);
+                    if (chunkStart == null) {
+                        continue;
+                    }
+                    boolean chunkCounted = false;
+                    for (long target : targets) {
+                        boolean inChunk = target >= chunkStart && (chunkEnd == null || target < chunkEnd);
+                        // No "instruction at target" check here: Ghidra leaves some
+                        // case blocks undisassembled (case 18 of this table, 0x00185CDC,
+                        // after an unconditional branch), and the recompiler decodes
+                        // the words itself. The target is already known executable.
+                        if (!inChunk && !existingStarts.contains(target)) {
+                            addSyntheticEntry(records, existingStarts, target);
+                            ++added;
+                            if (!chunkCounted) {
+                                ++chunked;
+                                chunkCounted = true;
+                            }
+                            println(String.format("switch at 0x%08X reached from entry 0x%08X: case entry 0x%08X",
+                                                  jrAddress, chunkStart, target));
+                        }
+                    }
                     continue;
                 }
                 ++split;
@@ -977,7 +1023,7 @@ public class ExportPS2Functions extends GhidraScript {
                 }
             }
         }
-        println(String.format("switch tables=%d split=%d case entries added=%d", tables, split, added));
+        println(String.format("switch tables=%d split=%d chunked=%d case entries added=%d", tables, split, chunked, added));
     }
 
     private List<FunctionRecord> collectExecutableLabelRecords(List<FunctionRecord> functionRecords) {

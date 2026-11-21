@@ -102,8 +102,9 @@ powershell -ExecutionPolicy Bypass -File tools\ghidra_analyze.ps1 -GhidraDir "C:
 ```
 
 It takes a few minutes and writes `generated/ghidra/functions.csv`. The log
-should show `created=845 renamed=1586 ... failed=0` and `Exported 4420
-functions`.
+should show `created=845 renamed=1586 ... failed=0`, `switch tables=91
+split=84 chunked=4 case entries added=348` and `Exported 4801 functions and
+16232 executable labels`.
 
 ## 5. Translate and compile
 

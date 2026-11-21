@@ -155,15 +155,30 @@ likely because the code that reaches it now runs (to be confirmed).
   targets), the script interpreter's `0x00193BF8` (212), `0x001D27D4` (1)
   and `0x001EA13C` (1). The same stop can happen in any of them, whenever
   a checkpoint falls in the loop.
-- Planned fix, not done yet: a second rule in `ExportPS2Functions.java`'s
-  `collectSplitSwitchEntries`: case targets outside the `jr`'s chunk that
-  are not entries become entries; then re-run Ghidra, the codegen and the
-  build, and check New Game again (KNOWN_ISSUES B14).
+- Fix: a second rule in `ExportPS2Functions.java`'s
+  `collectSplitSwitchEntries`: case targets outside the `jr`'s chunk (from
+  the nearest entry at or before the `jr` to the next one) that are not
+  entries become entries. The rule does not require Ghidra to have
+  disassembled the target: case 18 of the table (`0x00185CDC`, after an
+  unconditional branch) and case 255 of the interpreter's table
+  (`0x00195580`) were left as undefined bytes by Ghidra, and the
+  recompiler decodes the words itself.
+- Result: the export log reports `switch tables=91 split=84 chunked=4 case
+  entries added=348` (4,801 functions, 16,232 executable labels; 21,033
+  generated functions, 0 unhandled instructions). The scan above finds no
+  unreachable case left. In the game (Linux): Start, New Game, the
+  difficulty screen, the save slot screen, the loading tip, then the first
+  level, with no `missing-target` report. The level runs at about 2 game
+  frames per second (the game draws one frame every 2 VBlanks there, about
+  3-4 VBlanks per second): the renderer of s.5.
+- Untested: whether the same stop could come from other indirect jumps
+  that are not switches (none seen so far).
 
 ## 8. Open
 
-- B14 (s.7).
 - A GPU GS renderer (B13).
+- The Windows build with the new function list (copy the new
+  `functions.csv`, or run `tools/ghidra_analyze.ps1`).
 - With a real disc image (`.iso`), the EE's `sceCdSearchFile` still gives
   pseudo LSNs while the IOP reads the image's own: the same mismatch would
   come back. The EE should then read the image's ISO 9660 directory.
