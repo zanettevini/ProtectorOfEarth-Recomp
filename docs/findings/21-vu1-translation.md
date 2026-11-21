@@ -78,6 +78,7 @@ because the short helper names clash with ps2xRecomp macros).
 | + `execUpper` inline | 610 M |
 | + hazard check and write bookkeeping inline | 540 M |
 | + FMAC helpers inline, shared upper functions, lighter commit (patch 0020) | 446 M |
+| + lower executor per distinct lower word (patch 0021) | 418 M |
 
 So -32% against the replay's interpreter, about -25% against an
 interpreter that keeps its decoded pairs (as in the game). Same checksums
@@ -115,8 +116,18 @@ bands): 7.4-9.0 game frames per second in the first level, against
 5.4-7.2 per second in one-minute averages before translation (findings/20
 s.18); not a difference the maintainer noticed while playing.
 
-What is left per pair: the pipeline queues and their commit, `execLower`
-(out of line). The next steps below target them.
+Patch 0021 (phase 2c) does the same for the lower half: the lower
+executor moves to an inline header (`execLowerInline`) and the translator
+writes one function per distinct lower word (1,371), called by the pairs
+through `VU1NativeAccess::execPairUpperLower`. Pairs with the I bit hold an
+immediate in the lower word and keep no lower function.
+First level, Linux: game thread 145 ms of CPU per game frame (158 ms
+after patch 0020, 197-221 ms before translation); same picture, no
+`missing-target`.
+
+What is left per pair: the pipeline queues and their commit
+(`commitReadyPipelines` alone is now a fifth of the translated VU time).
+The next steps below target them.
 
 ## 4. Where the time still goes, and phase 2
 
