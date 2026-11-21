@@ -320,7 +320,55 @@ and the fixed pattern ended against the wall by the park sign. No stop,
 no `missing-target`, no error in the log. Playing past the first fight
 needs either more speed or input chosen by looking at each picture.
 
-## 14. Open
+## 14. Where the VU interpreter's time goes, and what group F reads (input for D14)
+
+**Profile.** `callgrind` of `ben10_vu1_replay --reps 10` (40 workloads,
+1.11 million VU cycles), instructions in the VU code only:
+
+| Part | Functions | Instructions |
+|---|---|---|
+| Pipeline bookkeeping | `commitReadyPipelines` 181M, `calculatePairReadyCycle` 128M, `markPairWrites` 104M, `queueVfWrite` 51M | 464M |
+| FMAC result and flag model | `calculateFmacExactResult` 108M, `updateFmacFlags` 62M, `normalizeFmacResult` 50M, `normalizeFmacExactResult` 37M, `calculateFmacProductSticky` 34M | 291M |
+| The operations | `execUpper` 144M, `execLower` 61M | 205M |
+| The pair loop | `run` 167M, `getDecodedInstructionPairForPc` 48M | 215M |
+| Decoding | `decodeInstructionPair`, `decodeLowerUsage`, `decodeUpperUsage` | 141M |
+
+About 1,200 host instructions per VU cycle. The decoding line is mostly an
+artefact of the replay: it passes no `PS2Memory`, so the interpreter
+decodes every pair at every step; in the game the decoded pairs are kept
+until the next code upload.
+
+**What group F reads.** The VU1 code memory captured in the level (group
+F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
+
+- 769 of the 2,048 upper instructions and 509 lower ones are NOPs;
+  the lower side is mostly loads and stores (384 `LQ`, 139 `SQ`, 28 `LQI`,
+  27 `SQI`, 61 `ILW`, 58 `ISW`) and integer work for addresses and loops.
+- Flag reads: 21 `FMAND` and 3 `FMEQ` (MAC flags), 20 `FCGET` and 12
+  `FCAND` (clipping flags, written by 20 `CLIPw`). No status-flag read
+  (`FSAND`, `FSEQ`, `FSOR`) and no `FSSET`.
+- FDIV: 43 `DIV`, 4 `RSQRT`, 14 `WAITQ`. No EFU instruction (no `E...`,
+  `MFP` or `WAITP`). 12 `XGKICK`.
+
+**What this means for the native VU1 (D14).**
+
+- A translation that keeps the interpreter's model (phase 1) saves the
+  pair loop, the decoding and the dispatch inside `execUpper`/`execLower`:
+  at most about a third of the time above.
+- The bookkeeping (about 38%) goes away only where the translator works
+  out the timing at translation time (phase 2): the pipelines are empty at
+  every resume (s.2), so each block's timing can be computed from its
+  entry.
+- The flag model (about 24%) is needed only for results whose MAC flags
+  can reach one of the 24 MAC-flag reads before the next FMAC instruction
+  replaces them; the status flags are never read inside group F. Whether
+  the EE reads VU1's status register was not checked; the replay's checksum
+  includes it, so a translation that stops computing it needs that
+  checksum changed on purpose, with the reason written down. The
+  exact-result part also decides overflow and underflow values, so only
+  the flag half can go.
+
+## 15. Open
 
 - Measure `BEN10_GS_THREADS` = 2, 4, 6 on a desktop with more cores; make
   the best one the default.

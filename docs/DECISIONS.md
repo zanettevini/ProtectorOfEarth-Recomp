@@ -162,6 +162,9 @@ Each decision: what, why, alternatives, and status
     a translation is accepted only when every workload gives bit-identical
     results with the interpreter (registers, flags, cycle count, VU memory,
     GS memory). The interpreter stays in the source as that reference.
+  - Where the time goes and what group F reads (MAC and clipping flags in
+    a few places, no status flags, no EFU): [findings/20](findings/20-vu1-census-and-gs-thread.md)
+    s.14; it sets the order of the work (bookkeeping first, then flags).
 - **Instead of**: a run-time JIT (the master prompt forbids generating code
   at run time), or a translation that ignores VU timing (programs read
   flags and Q/P with fixed delays; results would differ from the
