@@ -2,10 +2,6 @@
 
 # Protector of Earth Recomp
 
-<img width="1920" height="620" alt="image" src="https://github.com/user-attachments/assets/cdbb1857-d102-478c-afb1-c35df26b8d5c" />
-<sub>Sebatime</sub>
-
-
 **An unofficial native PC port of *Ben 10: Protector of Earth***<br>
 <sub>PlayStation 2 · 2007 · High Voltage Software: statically recompiled, then rebuilt piece by piece with native code</sub>
 
@@ -17,6 +13,9 @@
 ![Built with PS2Recomp](https://img.shields.io/badge/built%20with-PS2Recomp-8A2BE2)
 
 **[About](#-about)** · **[Screenshots](#-screenshots)** · **[Going native](#-going-native)** · **[Building](#%EF%B8%8F-building)** · **[Documentation](#-documentation)** · **[Contributing](#-contributing)**
+
+<img width="1920" height="620" alt="image" src="https://github.com/user-attachments/assets/cdbb1857-d102-478c-afb1-c35df26b8d5c" />
+<sub>Sebatime</sub>
 
 </div>
 
