@@ -462,7 +462,7 @@ F, 2,048 instruction pairs) counted with `tools/analyzer/vu_disasm.py`:
     d cannot swallow the next one (`0x001A5F50` runs into `0x001A6068`).
 - Result: 13 new functions (`0x001A5F50`, `0x001CA840`, which was already a
   synthetic entry, and the 11 methods): the script creates 394 functions
-  instead of 381, and the exported list (21,056 entries) is otherwise
+  instead of 381, and the exported list (21,057 entries) is otherwise
   unchanged. The thunk at `0x00205578`
   and the `0x001C0F7C` switch cases are still rejected (recorded in Open).
 
