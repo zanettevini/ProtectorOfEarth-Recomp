@@ -321,6 +321,15 @@ and the fixed pattern ended against the wall by the park sign. No stop,
 no `missing-target`, no error in the log. Playing past the first fight
 needs either more speed or input chosen by looking at each picture.
 
+A second session, with each move chosen from a screenshot (about 15
+minutes): the "Omnitrix Activation" and "Combat" tips, the drone
+introduction, a first drone destroyed by Ben (combo of 6), then the next
+clearing with three drones. R1 (E) transformed Ben into **Four Arms**,
+drawn correctly, with its own combos ("Slapdown", "4 x Four", "All
+Fours"); the drones hit back and the health bar went down to almost
+empty when the session was stopped. No stop and no `missing-target` in
+the log.
+
 ## 14. Where the VU interpreter's time goes, and what group F reads (input for D14)
 
 **Profile.** `callgrind` of `ben10_vu1_replay --reps 10` (40 workloads,
