@@ -1,0 +1,55 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] Pad backend: WASD drives the left analog stick
+
+What broke:
+  In Ben 10: Protector of Earth's first level the player character did not
+  move from the keyboard. The pad backend (PSPadBackend::readState) always
+  reports DualShock (analog) mode, but mapped W/A/S/D to the D-pad, the
+  same as the arrow keys, and left both sticks centred. A gdb read of the
+  data the game gets from scePadRead showed mode 0x73, the D-pad bit set
+  for both W and Up, and the sticks at 0x80: the game moves the player only
+  with the left stick.
+
+Why:
+  The keyboard map in Kernel/Stubs/Pad.cpp already documents "Analog left:
+  WASD", but that path is only used when the backend has no data; the
+  backend has its own map, where WASD doubled the arrows.
+
+The fix:
+  Arrows stay the D-pad; W/A/S/D set the left stick (data[6] = X, data[7]
+  = Y) to full tilt (0x00 or 0xFF, 0x80 when neither or both keys of an
+  axis are held), the same convention as the stub's map.
+  Tested in the game: holding W makes the player walk forward (findings/18
+  s.13). No automated test: the backend reads the keys through the host
+  window library, which the test executable does not drive.
+
+--- a/ps2xRuntime/src/lib/ps2_pad.cpp
++++ b/ps2xRuntime/src/lib/ps2_pad.cpp
+@@ -89,14 +89,23 @@
+     }
+     else
+     {
+-        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
++        // Arrows: the D-pad. WASD: the left analog stick (full tilt), as the keyboard map in
++        // Kernel/Stubs/Pad.cpp documents. This backend always reports analog (DualShock) mode,
++        // and games that move the player only with the left stick (Ben 10: Protector of Earth)
++        // could not be played from the keyboard while WASD only doubled the D-pad.
++        if (IsKeyDown(KEY_UP))
+             clearBit(PAD_UP);
+-        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S))
++        if (IsKeyDown(KEY_DOWN))
+             clearBit(PAD_DOWN);
+-        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A))
++        if (IsKeyDown(KEY_LEFT))
+             clearBit(PAD_LEFT);
+-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D))
++        if (IsKeyDown(KEY_RIGHT))
+             clearBit(PAD_RIGHT);
++        // data[6] = left stick X (0x00 left .. 0xFF right), data[7] = left stick Y (0x00 up).
++        const int stickX = (IsKeyDown(KEY_D) ? 1 : 0) - (IsKeyDown(KEY_A) ? 1 : 0);
++        const int stickY = (IsKeyDown(KEY_S) ? 1 : 0) - (IsKeyDown(KEY_W) ? 1 : 0);
++        data[6] = stickX < 0 ? 0x00 : (stickX > 0 ? 0xFF : kPadStickCenter);
++        data[7] = stickY < 0 ? 0x00 : (stickY > 0 ? 0xFF : kPadStickCenter);
+         if (IsKeyDown(KEY_X) || IsKeyDown(KEY_SPACE))
+             clearBit(PAD_CROSS);
+         if (IsKeyDown(KEY_C) || IsKeyDown(KEY_ESCAPE))

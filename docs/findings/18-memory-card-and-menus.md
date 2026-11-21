@@ -326,14 +326,26 @@ classification was right, the problem was elsewhere.
   so running it at once gives the hardware's results. Other code may not be
   so lucky (KNOWN_ISSUES R22).
 
-## 13. Open
+## 13. Moving in the level: WASD and the left stick (patch 0011)
+
+Holding the arrow keys or W did not move Ben. A gdb read of the 8 first
+bytes the game gets from `scePadRead` (bound to the runtime, findings/15)
+while the keys were held: `00 73 EF FF 80 80 80 80` for both W and Up. Mode
+`0x73` (DualShock), the D-pad up bit set, and both sticks centred
+(`0x80`): the game moves the player only with the left stick. The runtime's
+pad backend reported analog mode but mapped W/A/S/D to the D-pad, like the
+arrows. Patch 0011 maps W/A/S/D to the left stick at full tilt; with it,
+holding W makes Ben walk towards the RV and the camera follows (screenshot
+`07-first-level-walking.png`). Pressure values, the right stick and a
+partial tilt from the keyboard are not handled.
+
+## 14. Open
 
 - Where saves should live: next to the disc files is not a good place for
   players' data; a per-user folder is the plan (KNOWN_ISSUES R21).
-- The first level renders (s.12) but runs at about 2-3 frames per second (measured in frames counted by
-  the game over 30 s), and
-  Ben did not move when the arrow keys or W were held (input in the level
-  not checked yet).
+- The first level renders (s.12) and Ben walks (s.13), but it runs at about
+  2-3 frames per second (frames counted by the game over 30 s, -O0 build,
+  software OpenGL under Xvfb); the rest of the level is not played yet.
 - The heap: 36 KB left under `0x01FE0000` in the first level (R19).
 - The memory card is still the runtime's generic handler (status
   "emulated" on the README board); the native goal is the port's own save

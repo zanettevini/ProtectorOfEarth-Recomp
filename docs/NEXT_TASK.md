@@ -2,12 +2,11 @@
 
 ## For the agent
 
-1. **Next blocker: Ben does not move in the first level** (KNOWN_ISSUES
-   B12). Check what the game reads from the pad there (`padRead` buffer:
-   digital buttons and the analog sticks; the keyboard fills the left stick
-   only in analog mode) and whether the level is waiting for something
-   first (intro, a prompt). Native over emulated: find the game's own
-   decision, don't fake presses.
+1. **Next: play further into the first level, and speed.** Ben walks
+   (findings/18 s.13). Play on (Cross to jump/attack, Z/C/V for the other
+   buttons, the Omnitrix) and fix the next thing that breaks; measure the
+   frame rate of an optimised build (`linux-release` or RelWithDebInfo)
+   before profiling the -O0 one.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
    (findings/17 s.7-8); then ALASD (the sound engine) natively, which also
    frees CDARB from the interpreter.
@@ -16,10 +15,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0010 upstream to PS2Recomp.
-6. Speed: the first level runs at about 2-3 fps under Xvfb with software
-   OpenGL and a -O0 build of the generated code; measure an optimised build
-   before profiling.
+5. Send patches 0002-0011 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

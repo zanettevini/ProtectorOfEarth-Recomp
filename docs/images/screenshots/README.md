@@ -11,6 +11,7 @@ They are listed here in the order they were taken.
 | `04-level-loading.png` | The loading screen of the first level, with a tip | same |
 | `05-first-level-hud-only.png` | The first level: the HUD is drawn, the 3D world is still black ([findings/18](../../findings/18-memory-card-and-menus.md) s.8) | same |
 | `06-first-level.png` | The first level rendered: Ben, the RV, the fence and the rocks, after the VF0, MMI and VU0 memory fixes ([findings/18](../../findings/18-memory-card-and-menus.md) s.12) | same |
+| `07-first-level-walking.png` | Ben walking towards the RV, moved with the keyboard (W, the left stick) ([findings/18](../../findings/18-memory-card-and-menus.md) s.13) | same |
 
 ## Whose work this is
 

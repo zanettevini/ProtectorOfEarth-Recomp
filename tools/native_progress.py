@@ -55,7 +55,7 @@ MILESTONES = [
     ("Main menu", "done",
      "memory card found (libmc bound), save created, title screen and main menu (findings/18)"),
     ("Playable level", "in progress",
-     "the first level renders (findings/18 s.12); movement not working yet, about 2-3 fps"),
+     "the first level renders and Ben walks from the keyboard (findings/18 s.12-13); about 2-3 fps"),
 ]
 
 # -----------------------------------------------------------------------------

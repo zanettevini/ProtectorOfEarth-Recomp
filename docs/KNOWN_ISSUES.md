@@ -8,7 +8,7 @@
 | B9 | ~~The game reports no memory card in slot 1~~ resolved: libmc bound to the runtime's memory card | | [findings/18](findings/18-memory-card-and-menus.md) |
 | B10 | ~~The first level shows a solid blue picture~~ resolved: the main thread had stopped on a switch case and an empty virtual method missing from the function list | | [findings/18](findings/18-memory-card-and-menus.md) s.6-7 |
 | B11 | ~~The first level draws the HUD over a black picture~~ resolved: the giant triangles came from the game's software skinning (wrong PROT3W, VU0 macro memory ops writing EE RAM) and VF0 could be overwritten; the level now renders | | [findings/18](findings/18-memory-card-and-menus.md) s.8-12 |
-| B12 | In the first level Ben did not move when the arrow keys or W were held (input there not checked yet), and the game runs at about 2-3 frames per second | gameplay | [findings/18](findings/18-memory-card-and-menus.md) s.13 |
+| B12 | ~~Ben did not move in the first level~~ resolved: the keyboard now drives the left stick (patch 0011). Still open: about 2-3 frames per second | speed | [findings/18](findings/18-memory-card-and-menus.md) s.13 |
 | B7 | Windows (MSVC) build untested | playing on Windows | [findings/14](findings/14-repository-build-and-tests.md) s.3 |
 | B8 | ~~The test machine lacked the disc data files~~ resolved: `GAME.DIR`, `IOPRP300.IMG` and `GAME.WAD` (SHA-1 checked) are now in `game/` on the test machine | | [findings/15](findings/15-first-boot.md) s.8 |
 
