@@ -736,3 +736,48 @@ the timing model and is left for a decision of its own.
   - So with the option on the worker (VU1 code) is the limit when
     enemies are on screen, then the busiest GS band; the game thread is
     not any more.
+
+## 23. FMAC common path and pair step trimmed further (patch 0035)
+
+- After s.22 the worker thread runs the VU1 code, and on Windows it is
+  the limit when enemies are on screen, so the cost per VU cycle matters
+  directly. Measured per instruction with `callgrind --dump-instr=yes`
+  on the replay (a small script maps the per-address costs to `objdump`):
+  - a four-lane MADD upper word still cost about 280 host instructions:
+    about 90 of them re-read the product operands lane by lane through a
+    branchy normalisation, although the executor had normalised them
+    four lanes at a time already; the rare exact model, inlined into
+    every translated upper word, made every such function save six
+    registers;
+  - the exact model was taken on every call by the cross-product pair
+    OPMULA/OPMSUB (6,325 calls on the 40 workloads, 444 host
+    instructions each): their lanes multiply zero components, so the
+    results are exact signed zeros, outside the fast path's range;
+  - the pair step saved and restored the VF/ACC register around every
+    write, although with immediate writes the executors had already
+    written exactly the dest lanes.
+- Patch 0035: `fmacProductOperands4` (operands of the product-sum and
+  plain-product words, four lanes at a time); `applyFmacSlow`, the exact
+  path, out of line; `fmacFlagsFast` also takes a lane whose result is a
+  signed zero when a product operand is zero (the exact product is then a
+  signed zero, so the exact result is that same zero: Z plus its sign);
+  in-place immediate writes keep only the write sequence and pending
+  mark; `recordViWriteForBranch` inline.
+- Checked: same checksums and cycle counts on the 40 VU1 and 60 VU0
+  workloads, interpreted and translated; ps2xTest 454/454; the randomised
+  comparison of s.20 extended to plain products, signed-zero operands
+  and accumulators, the per-lane operand reader and `applyFmacDest`/
+  `applyFmacDestAcc` end to end (2 million operations, 1.11 million on
+  the fast path): no difference, plain and with FMA contraction.
+- Gain (replay, translated VU work without the replay's code
+  resolution): 26.4 M -> 24.4 M host instructions; with patch 0033,
+  28.4 M -> 24.4 M (-14%), about 220 per VU cycle. Now per VU cycle: pair
+  step 74, upper word 56, run loop 26, lower word 22, per-cycle commit 17,
+  PATH1 11, exact model 4.
+- What is left in the pair step (about 75-85 host instructions): the
+  hazard check, the budget check, the calls to the upper and lower word
+  functions, the VI write, the PC and branch-delay update, the halt
+  checks and the cycle advance with its commit and PATH1 checks. These
+  are the timing model itself; going much lower needs the block-level
+  translation of s.11-12 (whole straight-line runs with the pipeline
+  timing worked out at build time).

@@ -1,0 +1,510 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU interpreter: cheaper FMAC common path, zero results on the fast path, in-place immediate writes
+
+What it is for:
+  After patch 0033 a translated four-lane MADD still cost about 280 host
+  instructions, and the cross-product pair OPMULA/OPMSUB took the exact
+  model on every call (their zero components give exact zero results).
+
+The change (same results):
+  - fmacProductOperands4: the product operands of MADD/MSUB/OPMSUB (and
+    of the plain products MUL/MULA/OPMULA) for all lanes, from operands
+    normalised four lanes at a time, instead of a per-lane reader with a
+    branchy normalisation per operand.
+  - applyFmacSlow: normalizeFmacResult + calculateFmacProductSticky +
+    updateFmacFlags out of line (PS2_VU_NOINLINE), compiled once instead
+    of into every translated upper word; the common path keeps few saved
+    registers.
+  - fmacFlagsFast also accepts a lane whose result is a signed zero when
+    a product operand is zero (product-sum and plain-product words): the
+    exact product is then a signed zero, so the exact result is that same
+    signed zero and the exact model gives Z plus its sign. Plain products
+    read their operands only when a lane is outside the plain range.
+  - execPairWith with immediate writes (translated code): a VF/ACC write
+    the executors already made in place is not saved and restored (the
+    executors write only the dest lanes); only the write sequence and the
+    pending mark are kept (noteVfWriteNow/noteAccWriteNow). Not when the
+    lower instruction writes the upper's register.
+  - recordViWriteForBranch inline.
+
+How it was checked:
+  The port's replay: same checksums and cycle counts on the 40 VU1 and 60
+  VU0 workloads, interpreted and translated; translated VU work 26.4 M ->
+  24.4 M host instructions (excluding the replay's code resolution).
+  ps2xTest 454/454. A throwaway randomised comparison against the
+  per-lane model (2 million FMAC operations over every opcode and dest
+  mask, with signed-zero operands and accumulators; operand readers per
+  lane; applyFmacDest/applyFmacDestAcc end to end) found no difference,
+  plain and with -march=x86-64-v3 -ffp-contract=fast.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -39,6 +39,16 @@
+ // unused ones, and one file needed more than 30 GB: findings/21 s.6.)
+ #define PS2_VU_FMAC_INLINE PS2_VU_FORCEINLINE
+ 
++// Kept out of line: the rare paths of the FMAC model (the exact model),
++// compiled once instead of into every translated upper word, so the common
++// path of those words stays short and needs few saved registers
++// (findings/21 s.23).
++#if defined(_MSC_VER)
++#define PS2_VU_NOINLINE __declspec(noinline) inline
++#else
++#define PS2_VU_NOINLINE inline __attribute__((noinline))
++#endif
++
+ struct VU1State
+ {
+     float vf[32][4];
+@@ -395,6 +405,8 @@
+     // same number of cycles.
+     void writeVfNow(uint8_t reg, uint8_t laneMask, const float value[4], uint32_t latency);
+     void writeAccNow(uint8_t laneMask, const float value[4], uint32_t latency);
++    void noteVfWriteNow(uint8_t reg, uint8_t laneMask, uint32_t latency);
++    void noteAccWriteNow(uint8_t laneMask, uint32_t latency);
+     uint64_t m_immediatePendingUntil = 0;
+     void resolveNativeCode(uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory);
+     std::array<NativePairFn, 0x4000u / 8u> m_nativeTable{};
+@@ -430,7 +442,7 @@
+ 
+     void applyDest(float *dst, const float *result, uint8_t dest);
+     void applyDestAcc(const float *result, uint8_t dest);
+-    bool fmacFlagsFast(const float *result, uint8_t dest, bool productSum,
++    bool fmacFlagsFast(const float *result, uint8_t dest, bool productSum, bool operands,
+                        const float *productLeft, const float *productRight);
+     void applyFmacDest(float *dst, float *result, uint8_t dest);
+     void applyFmacDestAcc(float *result, uint8_t dest);
+@@ -443,6 +455,12 @@
+     uint32_t calculateFmacProductSticky(uint8_t dest, const float *productLeft = nullptr,
+                                         const float *productRight = nullptr) const;
+     void fmacProductOperands(uint32_t component, float &left, float &right) const;
++    // The same for all four lanes at once (every lane filled; only the
++    // written lanes are used).
++    void fmacProductOperands4(float *left, float *right) const;
++    // normalizeFmacResult + calculateFmacProductSticky + updateFmacFlags,
++    // out of line, for when fmacFlagsFast does not apply.
++    void applyFmacSlow(float *result, uint8_t dest, bool productSum, const float *left, const float *right);
+     void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
+     void queueFsset(uint16_t immediate);
+     void queueClip(uint32_t clip);
+@@ -784,6 +802,50 @@
+         m_immediatePendingUntil = m_cycle + latency;
+ }
+ 
++// writeVfNow / writeAccNow for a value already written in place: only the
++// write sequence (when an older write may be queued) and the pending mark.
++PS2_VU_FORCEINLINE void VU1Interpreter::noteVfWriteNow(uint8_t reg, uint8_t laneMask, uint32_t latency)
++{
++    if (reg == 0u || laneMask == 0u)
++        return;
++    if (m_vfValid != 0u)
++    {
++        const uint64_t sequence = ++m_nextWriteSequence;
++        PS2_VU_UNROLL_LANES
++        for (uint32_t component = 0; component < 4u; ++component)
++            if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++                m_vfLatestWrite[reg][component] = sequence;
++    }
++    if (m_cycle + latency > m_immediatePendingUntil)
++        m_immediatePendingUntil = m_cycle + latency;
++}
++
++PS2_VU_FORCEINLINE void VU1Interpreter::noteAccWriteNow(uint8_t laneMask, uint32_t latency)
++{
++    if (laneMask == 0u)
++        return;
++    if (m_accValid != 0u)
++    {
++        const uint64_t sequence = ++m_nextWriteSequence;
++        PS2_VU_UNROLL_LANES
++        for (uint32_t component = 0; component < 4u; ++component)
++            if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++                m_accLatestWrite[component] = sequence;
++    }
++    if (m_cycle + latency > m_immediatePendingUntil)
++        m_immediatePendingUntil = m_cycle + latency;
++}
++
++// Inline (was out of line): the VI write a following branch reads before it.
++inline void VU1Interpreter::recordViWriteForBranch(uint8_t reg, int32_t oldValue)
++{
++    if (reg == 0u)
++        return;
++    m_viBranchBackupValue = oldValue;
++    m_viBranchBackupReg = reg;
++    m_viBranchBackupValid = true;
++}
++
+ template <class UpperExec, class LowerExec, class Timing>
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
+                                                                            Timing timing, bool immediateWrites)
+@@ -822,17 +884,27 @@
+     const bool hasUpperWrite = upperWrite.reg != 0u;
+     const bool hasLowerWrite = lowerWrite.reg != 0u && decoded.suppressedLowerVf != lowerWrite.reg;
+     const bool hasDistinctLowerWrite = hasLowerWrite && (!hasUpperWrite || lowerWrite.reg != upperWrite.reg);
++    // With immediate writes (translated code), a write the executors already
++    // made in place needs no save and restore: the executors write only the
++    // instruction's dest lanes, so restoring the old value and writing the
++    // new lanes again changes nothing. Not when the lower instruction also
++    // writes the upper's register (that write is dropped by the restore).
++    // Then only the bookkeeping of writeVfNow/writeAccNow is left
++    // (findings/21 s.23).
++    const bool upperInPlace = immediateWrites && hasUpperWrite && lowerWrite.reg != upperWrite.reg;
++    const bool lowerInPlace = immediateWrites && hasDistinctLowerWrite;
++    const bool accInPlace = immediateWrites;
+     float oldUpperVf[4]{};
+     float newUpperVf[4]{};
+     float oldLowerVf[4]{};
+     float newLowerVf[4]{};
+     float oldAcc[4]{};
+     float newAcc[4]{};
+-    if (hasUpperWrite)
++    if (hasUpperWrite && !upperInPlace)
+         std::memcpy(oldUpperVf, m_state.vf[upperWrite.reg], sizeof(oldUpperVf));
+-    if (hasDistinctLowerWrite)
++    if (hasDistinctLowerWrite && !lowerInPlace)
+         std::memcpy(oldLowerVf, m_state.vf[lowerWrite.reg], sizeof(oldLowerVf));
+-    if (decoded.upperUsage.accWrite != 0u)
++    if (decoded.upperUsage.accWrite != 0u && !accInPlace)
+         std::memcpy(oldAcc, m_state.acc, sizeof(oldAcc));
+ 
+     if (decoded.iBit)
+@@ -869,7 +941,12 @@
+ 
+     m_viBranchBackupValid = false;
+ 
+-    if (hasUpperWrite)
++    if (hasUpperWrite && upperInPlace)
++    {
++        noteVfWriteNow(upperWrite.reg, upperWrite.lanes,
++                       decoded.upperUsage.vfLatency != 0u ? decoded.upperUsage.vfLatency : decoded.upperUsage.latency);
++    }
++    else if (hasUpperWrite)
+     {
+         std::memcpy(newUpperVf, m_state.vf[upperWrite.reg], sizeof(newUpperVf));
+         std::memcpy(m_state.vf[upperWrite.reg], oldUpperVf, sizeof(oldUpperVf));
+@@ -882,7 +959,12 @@
+         else
+             queueVfWrite(upperWrite.reg, upperWrite.lanes, newUpperVf, latency);
+     }
+-    if (hasDistinctLowerWrite)
++    if (lowerInPlace)
++    {
++        noteVfWriteNow(lowerWrite.reg, lowerWrite.lanes,
++                       decoded.lowerUsage.vfLatency != 0u ? decoded.lowerUsage.vfLatency : decoded.lowerUsage.latency);
++    }
++    else if (hasDistinctLowerWrite)
+     {
+         std::memcpy(newLowerVf, m_state.vf[lowerWrite.reg], sizeof(newLowerVf));
+         std::memcpy(m_state.vf[lowerWrite.reg], oldLowerVf, sizeof(oldLowerVf));
+@@ -894,7 +976,11 @@
+         else
+             queueVfWrite(lowerWrite.reg, lowerWrite.lanes, newLowerVf, latency);
+     }
+-    if (decoded.upperUsage.accWrite != 0u)
++    if (decoded.upperUsage.accWrite != 0u && accInPlace)
++    {
++        noteAccWriteNow(decoded.upperUsage.accWrite, kAccForwardLatency);
++    }
++    else if (decoded.upperUsage.accWrite != 0u)
+     {
+         std::memcpy(newAcc, m_state.acc, sizeof(newAcc));
+         std::memcpy(m_state.acc, oldAcc, sizeof(oldAcc));
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -44,6 +44,17 @@
+                special == 0x27u || special == 0x29u || special == 0x2Du;
+     }
+ 
++    // Whether the upper word is a plain product (MUL, MULA and their bc/q/i
++    // forms, OPMULA): its exact result is zero exactly when an operand is.
++    inline bool isPlainProduct(uint32_t upper)
++    {
++        const uint32_t op = upper & 0x3Fu;
++        const uint32_t special = op >= 0x3Cu ? ((upper & 3u) | ((upper >> 4) & 0x7Cu)) : 0xFFu;
++        const auto product = [](uint32_t o)
++        { return (o >= 0x18u && o <= 0x1Cu) || o == 0x1Eu || o == 0x2Au; };
++        return product(op) || (special != 0xFFu && (product(special) || special == 0x2Eu));
++    }
++
+     // A dest mask (x = bit 3 ... w = bit 0) with its bits reversed: lane
+     // order (x = bit 0), as _mm_movemask_ps returns it, and back.
+     // VU1Interpreter::normalizeOperand on four lanes: exponent 0 becomes a
+@@ -520,15 +531,20 @@
+ }
+ 
+ // The common case of normalizeFmacResult + calculateFmacProductSticky +
+-// updateFmacFlags for all four lanes at once (findings/21 s.20): when every
+-// written lane takes the per-lane fast paths there (result exponent 3..252;
+-// for a product-sum also a product exponent of at most 253, at most
+-// exponent + 20, and either 2 or more or a zero operand), the result is left
+-// as it is, each lane's flags are just its sign, and the sticky flags of the
+-// products are their zero-operand and sign bits. Then this appends the same
+-// flag entry those three would and returns true; otherwise it changes
+-// nothing and returns false, and the per-lane code runs as before.
+-PS2_VU_FMAC_INLINE bool VU1Interpreter::fmacFlagsFast(const float *result, uint8_t dest, bool productSum,
++// updateFmacFlags for all four lanes at once (findings/21 s.20, s.23). A
++// written lane qualifies when it takes the per-lane fast paths there
++// (result exponent 3..252; for a product-sum also a product exponent of at
++// most 253, at most exponent + 20, and either 2 or more or a zero operand):
++// its flags are its sign. With `operands` (the product operands are in
++// productLeft/productRight; product-sum and plain-product words only), a
++// lane whose result is a signed zero and which has a zero product operand
++// qualifies too: the exact product is then a signed zero, so the exact
++// result (the product, or ACC minus/plus it) is that same signed zero, and
++// the exact model gives Z plus its sign. If every written lane qualifies,
++// this appends the same flag entry (MAC Z and S, status Z and S, sticky Z/S
++// of the products) and returns true; otherwise it changes nothing and
++// returns false, and the per-lane code runs.
++PS2_VU_FMAC_INLINE bool VU1Interpreter::fmacFlagsFast(const float *result, uint8_t dest, bool productSum, bool operands,
+                                                       const float *productLeft, const float *productRight)
+ {
+ #if PS2_VU_FMAC_SIMD
+@@ -537,42 +553,59 @@
+     const uint32_t destLanes = ps2_vu1_fmac_detail::kReverse4[dest & 0xFu];
+     const __m128i exponentLow = _mm_set1_epi32(0xFF);
+     const __m128 r = _mm_loadu_ps(result);
+-    const __m128i e = _mm_and_si128(_mm_srli_epi32(_mm_castps_si128(r), 23), exponentLow);
++    const __m128i rBits = _mm_castps_si128(r);
++    const __m128i e = _mm_and_si128(_mm_srli_epi32(rBits, 23), exponentLow);
+     // 3 <= e <= 252
+     __m128i fast = _mm_and_si128(_mm_cmpgt_epi32(e, _mm_set1_epi32(2)), _mm_cmplt_epi32(e, _mm_set1_epi32(253)));
+     uint32_t extraSticky = 0u;
+-    if (productSum)
++    uint32_t zeroLanes = 0u;
++    if (operands)
+     {
+         const __m128 left = _mm_loadu_ps(productLeft);
+         const __m128 right = _mm_loadu_ps(productRight);
+-        const __m128 product = _mm_mul_ps(left, right);
+-        const __m128i pe = _mm_and_si128(_mm_srli_epi32(_mm_castps_si128(product), 23), exponentLow);
+-        // pe <= 253 and pe <= e + 20
+-        const __m128i safe = _mm_and_si128(_mm_cmplt_epi32(pe, _mm_set1_epi32(254)),
+-                                           _mm_cmplt_epi32(pe, _mm_add_epi32(e, _mm_set1_epi32(21))));
+         const __m128 zero = _mm_setzero_ps();
+         const __m128 zeroOperand = _mm_or_ps(_mm_cmpeq_ps(left, zero), _mm_cmpeq_ps(right, zero));
+-        // the product's own flags without the exact model: a zero operand,
+-        // or an exponent of 2 or more (253 at most is checked above)
+-        const __m128i productFast = _mm_or_si128(_mm_castps_si128(zeroOperand), _mm_cmpgt_epi32(pe, _mm_set1_epi32(1)));
+-        fast = _mm_and_si128(fast, _mm_and_si128(safe, productFast));
+-        if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
+-            return false;
+-        if ((static_cast<uint32_t>(_mm_movemask_ps(zeroOperand)) & destLanes) != 0u)
+-            extraSticky |= 0x1u;
+-        if ((static_cast<uint32_t>(_mm_movemask_ps(product)) & destLanes) != 0u)
+-            extraSticky |= 0x2u;
++        // the result is +0 or -0
++        const __m128i resultZero = _mm_cmpeq_epi32(_mm_and_si128(rBits, _mm_set1_epi32(0x7FFFFFFF)), _mm_setzero_si128());
++        const __m128i zeroResult = _mm_and_si128(resultZero, _mm_castps_si128(zeroOperand));
++        if (productSum)
++        {
++            const __m128 product = _mm_mul_ps(left, right);
++            const __m128i pe = _mm_and_si128(_mm_srli_epi32(_mm_castps_si128(product), 23), exponentLow);
++            // pe <= 253 and pe <= e + 20
++            const __m128i safe = _mm_and_si128(_mm_cmplt_epi32(pe, _mm_set1_epi32(254)),
++                                               _mm_cmplt_epi32(pe, _mm_add_epi32(e, _mm_set1_epi32(21))));
++            // the product's own flags without the exact model: a zero
++            // operand, or an exponent of 2 or more (253 at most: above)
++            const __m128i productFast = _mm_or_si128(_mm_castps_si128(zeroOperand), _mm_cmpgt_epi32(pe, _mm_set1_epi32(1)));
++            fast = _mm_or_si128(_mm_and_si128(fast, _mm_and_si128(safe, productFast)), zeroResult);
++            if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
++                return false;
++            if ((static_cast<uint32_t>(_mm_movemask_ps(zeroOperand)) & destLanes) != 0u)
++                extraSticky |= 0x1u;
++            if ((static_cast<uint32_t>(_mm_movemask_ps(product)) & destLanes) != 0u)
++                extraSticky |= 0x2u;
++        }
++        else
++        {
++            fast = _mm_or_si128(fast, zeroResult);
++            if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
++                return false;
++        }
++        zeroLanes = static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(zeroResult))) & destLanes;
+     }
+     else if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
+         return false;
+ 
+-    // Each lane's flags are its sign (S); MAC holds S in bits 7:4, x = bit 7.
++    // Each lane's flags: its sign (S), and Z for the zero lanes. MAC holds
++    // Z in bits 3:0 and S in bits 7:4, x the highest of each.
+     const uint32_t signLanes = static_cast<uint32_t>(_mm_movemask_ps(r)) & destLanes;
+     FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFFu, true);
+     if (entry)
+     {
+-        entry->mac = static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[signLanes]) << 4;
+-        entry->status = signLanes != 0u ? 0x2u : 0u;
++        entry->mac = static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[zeroLanes]) |
++                     (static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[signLanes]) << 4);
++        entry->status = (zeroLanes != 0u ? 0x1u : 0u) | (signLanes != 0u ? 0x2u : 0u);
+         entry->extraSticky = extraSticky;
+         entry->writesMac = true;
+         entry->writesStatus = true;
+@@ -582,58 +615,122 @@
+     (void)result;
+     (void)dest;
+     (void)productSum;
++    (void)operands;
+     (void)productLeft;
+     (void)productRight;
+     return false;
+ #endif
+ }
+ 
+-PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
++// The product operands of a product-sum or plain-product instruction for all
++// lanes, read four lanes at a time (for product-sum words what
++// fmacProductOperands gives per lane).
++PS2_VU_FMAC_INLINE void VU1Interpreter::fmacProductOperands4(float *left, float *right) const
++{
++    const uint32_t upper = m_currentUpperInstruction;
++    const uint8_t op = static_cast<uint8_t>(upper & 0x3Fu);
++    const uint8_t special = op >= 0x3Cu ? static_cast<uint8_t>((upper & 3u) | ((upper >> 4) & 0x7Cu)) : 0xFFu;
++    const uint8_t fs = static_cast<uint8_t>((upper >> 11) & 0x1Fu);
++    const uint8_t ft = static_cast<uint8_t>((upper >> 16) & 0x1Fu);
++    float vs[4];
++    ps2_vu1_fmac_detail::normalizeOperands4(m_state.vf[fs], vs);
++    if (op == 0x2Eu || special == 0x2Eu)
++    {
++        // OPMSUB / OPMULA: left = vs.yzxw, right = vt.zxyw
++        float vt[4];
++        ps2_vu1_fmac_detail::normalizeOperands4(m_state.vf[ft], vt);
++        left[0] = vs[1];
++        left[1] = vs[2];
++        left[2] = vs[0];
++        left[3] = vs[3];
++        right[0] = vt[2];
++        right[1] = vt[0];
++        right[2] = vt[1];
++        right[3] = vt[3];
++        return;
++    }
++    std::memcpy(left, vs, sizeof(vs));
++    float broadcastValue = 0.0f;
++    bool broadcastRight = true;
++    const auto bcForm = [](uint32_t o)
++    { return (o >= 0x08u && o <= 0x0Fu) || (o >= 0x18u && o <= 0x1Bu); };
++    const auto qForm = [](uint32_t o)
++    { return o == 0x1Cu || o == 0x21u || o == 0x25u; };
++    const auto iForm = [](uint32_t o)
++    { return o == 0x1Eu || o == 0x23u || o == 0x27u; };
++    if (bcForm(op) || (special != 0xFFu && bcForm(special)))
++        broadcastValue = normalizeOperand(m_state.vf[ft][(bcForm(op) ? op : special) & 3u]);
++    else if (qForm(op) || (special != 0xFFu && qForm(special)))
++        broadcastValue = normalizeOperand(m_state.q);
++    else if (iForm(op) || (special != 0xFFu && iForm(special)))
++        broadcastValue = normalizeOperand(m_state.i);
++    else
++        broadcastRight = false;
++    if (broadcastRight)
++    {
++        right[0] = broadcastValue;
++        right[1] = broadcastValue;
++        right[2] = broadcastValue;
++        right[3] = broadcastValue;
++    }
++    else
++        ps2_vu1_fmac_detail::normalizeOperands4(m_state.vf[ft], right);
++}
++
++PS2_VU_NOINLINE void VU1Interpreter::applyFmacSlow(float *result, uint8_t dest, bool productSum,
++                                                   const float *left, const float *right)
+ {
+     uint8_t laneFlags[4]{};
++    normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
++    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
++}
++
++PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
++{
+     // The product operands of a product-sum instruction, read once for the
+     // fast-path check and the sticky flags (the registers do not change in
+-    // between; findings/21 s.17).
++    // between; findings/21 s.17). For a plain product they are read only if
++    // a lane is outside the plain range, for the zero-result case
++    // (findings/21 s.23).
+     float left[4]{};
+     float right[4]{};
+-    const bool productSum = ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction);
++    const uint32_t word = m_currentUpperInstruction;
++    const bool productSum = ps2_vu1_fmac_detail::isProductSum(word);
+     if (productSum)
++        fmacProductOperands4(left, right);
++    if (!fmacFlagsFast(result, dest, productSum, productSum, left, right)) [[unlikely]]
+     {
+-        PS2_VU_UNROLL_LANES
+-        for (uint32_t component = 0; component < 4u; ++component)
+-            if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+-                fmacProductOperands(component, left[component], right[component]);
+-    }
+-    if (fmacFlagsFast(result, dest, productSum, left, right))
+-    {
+-        applyDest(dst, result, dest);
+-        return;
++        bool done = false;
++        if (ps2_vu1_fmac_detail::isPlainProduct(word))
++        {
++            fmacProductOperands4(left, right);
++            done = fmacFlagsFast(result, dest, false, true, left, right);
++        }
++        if (!done)
++            applyFmacSlow(result, dest, productSum, left, right);
+     }
+-    normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
+-    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDest(dst, result, dest);
+ }
+ 
+ PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDestAcc(float *result, uint8_t dest)
+ {
+-    uint8_t laneFlags[4]{};
+     float left[4]{};
+     float right[4]{};
+-    const bool productSum = ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction);
++    const uint32_t word = m_currentUpperInstruction;
++    const bool productSum = ps2_vu1_fmac_detail::isProductSum(word);
+     if (productSum)
++        fmacProductOperands4(left, right);
++    if (!fmacFlagsFast(result, dest, productSum, productSum, left, right)) [[unlikely]]
+     {
+-        PS2_VU_UNROLL_LANES
+-        for (uint32_t component = 0; component < 4u; ++component)
+-            if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+-                fmacProductOperands(component, left[component], right[component]);
+-    }
+-    if (fmacFlagsFast(result, dest, productSum, left, right))
+-    {
+-        applyDestAcc(result, dest);
+-        return;
++        bool done = false;
++        if (ps2_vu1_fmac_detail::isPlainProduct(word))
++        {
++            fmacProductOperands4(left, right);
++            done = fmacFlagsFast(result, dest, false, true, left, right);
++        }
++        if (!done)
++            applyFmacSlow(result, dest, productSum, left, right);
+     }
+-    normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
+-    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDestAcc(result, dest);
+ }
+ 
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -127,14 +127,7 @@
+     return m_state.vi[reg];
+ }
+ 
+-void VU1Interpreter::recordViWriteForBranch(uint8_t reg, int32_t oldValue)
+-{
+-    if (reg == 0u)
+-        return;
+-    m_viBranchBackupValue = oldValue;
+-    m_viBranchBackupReg = reg;
+-    m_viBranchBackupValid = true;
+-}
++// recordViWriteForBranch: inline in runtime/ps2_vu1.h.
+ 
+ void VU1Interpreter::queueFsset(uint16_t immediate)
+ {

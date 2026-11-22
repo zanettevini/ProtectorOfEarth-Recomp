@@ -397,10 +397,10 @@ namespace ben10::gs_async
                     if (auto *submit = std::get_if<SubmitCommand>(&command))
                     {
                         const GSDrawState &state = submit->batch.state;
-                        if (banded && state.prim.tme && (texturePages(state) & m_segmentWrites).any())
+                        if (banded && state.prim.tme && (cachedTexturePages(state) & m_segmentWrites).any())
                             runSegment(segment); // the texture may be in an unfinished band
                         if (banded)
-                            m_segmentWrites |= writtenPages(state);
+                            m_segmentWrites |= cachedWrittenPages(state);
                         segment.push_back(&command);
                     }
                     else if (auto *clut = std::get_if<LoadClutCommand>(&command))
@@ -431,6 +431,55 @@ namespace ben10::gs_async
                 batch.clear();
             }
         }
+
+        // writtenPages/texturePages for the last inputs seen: nearly every
+        // primitive of a frame has the same frame/Z buffer and scissor, and
+        // runs of them the same texture, while building a set costs a few
+        // hundred bit operations (findings/20 s.20). Only the dispatcher
+        // thread uses these.
+        struct WriteKey
+        {
+            uint32_t fbp, fbw, zbp, zmask, y0, y1;
+            bool operator==(const WriteKey &) const = default;
+        };
+        struct TextureKey
+        {
+            uint32_t tbp0, tbw, height, wrapV;
+            bool operator==(const TextureKey &) const = default;
+        };
+        const PageSet &cachedWrittenPages(const GSDrawState &state)
+        {
+            const GSContext &ctx = state.context;
+            const WriteKey key{static_cast<uint32_t>(ctx.frame.fbp), static_cast<uint32_t>(ctx.frame.fbw),
+                               static_cast<uint32_t>(ctx.zbuf.zbp), static_cast<uint32_t>(ctx.zbuf.zmask ? 1u : 0u),
+                               static_cast<uint32_t>(ctx.scissor.y0), static_cast<uint32_t>(ctx.scissor.y1)};
+            if (!m_writeCacheValid || !(key == m_writeKey))
+            {
+                m_writePages = writtenPages(state);
+                m_writeKey = key;
+                m_writeCacheValid = true;
+            }
+            return m_writePages;
+        }
+        const PageSet &cachedTexturePages(const GSDrawState &state)
+        {
+            const GSContext &ctx = state.context;
+            const TextureKey key{static_cast<uint32_t>(ctx.tex0.tbp0), static_cast<uint32_t>(ctx.tex0.tbw),
+                                 static_cast<uint32_t>(state.textureHeight), static_cast<uint32_t>((ctx.clamp >> 2) & 3u)};
+            if (!m_textureCacheValid || !(key == m_textureKey))
+            {
+                m_texturePages = texturePages(state);
+                m_textureKey = key;
+                m_textureCacheValid = true;
+            }
+            return m_texturePages;
+        }
+        WriteKey m_writeKey{};
+        TextureKey m_textureKey{};
+        PageSet m_writePages;
+        PageSet m_texturePages;
+        bool m_writeCacheValid = false;
+        bool m_textureCacheValid = false;
 
         // About half a frame's worth of the first level's primitives.
         static constexpr uint64_t kMaxPending = 8192;

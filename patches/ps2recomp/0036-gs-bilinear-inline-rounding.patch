@@ -1,0 +1,47 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: round filtered texture channels inline instead of calling lround
+
+What it is for:
+  GSCpuBackend's bilinear filter (lerpChannel) rounds each channel of each
+  filtered sample with std::lround, a libm call through the PLT. In Ben 10:
+  Protector of Earth's first level that was about 7% of every GS band
+  thread (perf, Linux).
+
+The change:
+  roundHalfAwayFromZero: truncate with the int conversion, then compare the
+  remainder x - trunc(x) (exact for |x| < 2^24) with +-0.5. Same result as
+  lround (half away from zero) in any rounding mode.
+
+How it was checked:
+  Every float in [-300, 300] (the channel values are in [0, 255]) gives the
+  same result as std::lround under all four rounding modes (9.07 billion
+  values, throwaway test). ps2xTest 454/454 (including the GS backend
+  cases).
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -292,11 +292,23 @@
+         return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
+     }
+ 
++    // std::lround for the small values of a filtered channel, inline: the
++    // conversion truncates toward zero, and for |x| < 2^24 the remainder
++    // x - trunc(x) is exact, so rounding half away from zero needs one
++    // compare. Same result as lround in any rounding mode, without a libm
++    // call per channel (it was about 7% of every GS band thread).
++    inline int roundHalfAwayFromZero(float x)
++    {
++        const int truncated = static_cast<int>(x);
++        const float remainder = x - static_cast<float>(truncated);
++        return truncated + (remainder >= 0.5f ? 1 : (remainder <= -0.5f ? -1 : 0));
++    }
++
+     uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
+     {
+         const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
+         const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
+-        return clampU8(static_cast<int>(std::lround(top + (bottom - top) * fy)));
++        return clampU8(roundHalfAwayFromZero(top + (bottom - top) * fy));
+     }
+ }
+ 

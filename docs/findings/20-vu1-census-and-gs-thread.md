@@ -496,3 +496,28 @@ per second in one-minute averages in the first level.
   game the same way if it is ever reached (s.17).
 - Native VU1 (decision D14): translate group F and the VU0 skinning
   programs; `ben10_vu1_replay` is the reference.
+
+## 20. The busiest GS band: page sets, and lround in the bilinear filter (patch 0036)
+
+- Seen on Windows with the async VIF1 option (findings/21 s.22): one of
+  the six band threads always used 20-30% more CPU per game frame than the
+  others, and with the VU1 worker it is the next limit.
+- That thread is band 0, which runs on the dispatcher thread. Linux,
+  `perf record -t` on both GS threads with `BEN10_GS_THREADS=2` (with one
+  band the page sets are not used), first level, 30 s each: 17% of the
+  dispatcher thread went to building page sets (`writtenPages`,
+  `texturePages`: `std::bitset<512>` filled page by page, about 280 bits
+  per primitive for the frame and Z rows of a full-screen scissor), for
+  every primitive. Both threads also spent about 7% in `lroundf` (through
+  the PLT), called per channel of every bilinear texture sample by
+  GSCpuBackend's `lerpChannel`.
+- `src/gs/gs_async_backend.cpp`: the dispatcher keeps the last page set
+  of each kind with its inputs (frame FBP/FBW, Z ZBP/ZMSK, scissor rows;
+  texture TBP0/TBW/height/vertical wrap) and reuses it while they are the
+  same: the same sets, built only when the inputs change. Page-set work
+  on the dispatcher thread: 17% -> 0.5%.
+- Patch 0036 (runtime): `lerpChannel` rounds with an inline
+  `roundHalfAwayFromZero` (truncating conversion, then the exact
+  remainder compared with 0.5). Checked equal to `std::lround` for every
+  float in [-300, 300] in all four rounding modes (9.07 billion values,
+  throwaway test); ps2xTest 454/454.
