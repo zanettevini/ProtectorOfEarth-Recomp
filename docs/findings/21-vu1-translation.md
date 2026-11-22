@@ -525,3 +525,20 @@ the timing model and is left for a decision of its own.
 - Same checksums and cycle count on the 40 workloads with and without
   `--native`; ps2xTest 454/454; the randomised FMAC comparison of s.10
   still finds no difference.
+
+## 18. Write sequences only when needed (patch 0031)
+
+- Immediate VF/ACC/VI writes still took a new write sequence and stored it
+  per lane, which only matters if an older write to the same lane is still
+  queued (possible only after an interpreted pair in the same run, or an
+  ILW for VI). Now only when the matching queue is not empty; with it
+  empty, any write queued later is newer and its own sequence is the
+  latest anyway. 169 M -> 159 M.
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454.
+- Where a translated VU cycle's ~290 instructions go now (replay, GCC):
+  upper function (FMAC arithmetic, operand normalisation, flag
+  classification and packing, flag entry) about 85, pair step (hazard
+  check, writes, branch and end bits, cycle advance) about 75, run loop
+  (budget and stop checks, dispatch through the native table) about 27,
+  lower function about 19, commit pass about 17.

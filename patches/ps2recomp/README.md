@@ -38,8 +38,9 @@ fix and how it was found.
 | `0028-vu1-inline-cycle-checks-const-hazards.patch` | VU1 interpreter: per-cycle commit/XGKICK checks inline; translated pairs get the hazard check and write marking unrolled at compile time (pair as a template argument); same results | findings/21 s.15 |
 | `0029-vu1-unroll-lanes-loophead-check.patch` | VU1 interpreter: 4-lane loops of the executors and FMAC model unrolled on GCC/Clang; loopHead checks the commit's due cycle inline; same results | findings/21 s.16 |
 | `0030-vu1-fmac-operands-once-normalize-fast.patch` | VU1 interpreter: product operands read once per FMAC instruction; normalizeOperand returns at once for exponents 1..254; same results | findings/21 s.17 |
+| `0031-vu1-immediate-write-sequence-only-when-queued.patch` | VU1 interpreter: immediate VF/ACC/VI writes take a write sequence only when an older write is queued; same results | findings/21 s.18 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0030 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

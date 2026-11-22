@@ -1,0 +1,73 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: immediate writes take a write sequence only when an older write is queued
+
+What it is for:
+  Every VF, ACC and latency-1 VI write of translated code (written at
+  issue, patches 0022 and 0027) took a new write sequence and stored it per
+  lane, so that an older queued write to the same lane would be dropped at
+  commit. In translated code there is almost never such a queued write.
+
+The change:
+  - writeVfNow, writeAccNow and the latency-1 VI write take and store a
+    sequence only when the matching queue holds an entry (m_vfValid,
+    m_accValid, m_viValid). With the queue empty, every write queued later
+    is newer than this one and its own sequence is the latest anyway, so
+    nothing that commits later can see a difference.
+  - writeVfNow/writeAccNow lane loops unrolled (PS2_VU_UNROLL_LANES).
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code; translated code 169 M -> 159 M instructions.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -738,13 +738,19 @@
+ {
+     if (reg == 0u || laneMask == 0u)
+         return;
+-    const uint64_t sequence = ++m_nextWriteSequence;
++    // The write's sequence only matters if an older VF write may still be
++    // queued (an interpreted pair earlier in this run): with none queued,
++    // every later queued write is newer anyway (findings/21 s.18).
++    const bool olderQueued = m_vfValid != 0u;
++    const uint64_t sequence = olderQueued ? ++m_nextWriteSequence : 0u;
++    PS2_VU_UNROLL_LANES
+     for (uint32_t component = 0; component < 4u; ++component)
+     {
+         if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+         {
+             m_state.vf[reg][component] = value[component];
+-            m_vfLatestWrite[reg][component] = sequence;
++            if (olderQueued)
++                m_vfLatestWrite[reg][component] = sequence;
+         }
+     }
+     if (m_cycle + latency > m_immediatePendingUntil)
+@@ -755,13 +761,16 @@
+ {
+     if (laneMask == 0u)
+         return;
+-    const uint64_t sequence = ++m_nextWriteSequence;
++    const bool olderQueued = m_accValid != 0u; // as in writeVfNow
++    const uint64_t sequence = olderQueued ? ++m_nextWriteSequence : 0u;
++    PS2_VU_UNROLL_LANES
+     for (uint32_t component = 0; component < 4u; ++component)
+     {
+         if ((laneMask & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+         {
+             m_state.acc[component] = value[component];
+-            m_accLatestWrite[component] = sequence;
++            if (olderQueued)
++                m_accLatestWrite[component] = sequence;
+         }
+     }
+     if (m_cycle + latency > m_immediatePendingUntil)
+@@ -903,7 +912,8 @@
+             // now, as the commit would (16-bit), and made the register's
+             // latest write so an older queued one (ILW, 4 cycles) is dropped.
+             m_state.vi[writtenVi] = static_cast<int16_t>(newVi);
+-            m_viLatestWrite[writtenVi] = ++m_nextWriteSequence;
++            if (m_viValid != 0u) // an older VI write (ILW) may be queued
++                m_viLatestWrite[writtenVi] = ++m_nextWriteSequence;
+         }
+         else
+         {
