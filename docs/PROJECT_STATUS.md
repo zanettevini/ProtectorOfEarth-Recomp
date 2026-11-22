@@ -51,12 +51,12 @@ game) and the [README](../README.md#-going-native) board.
 | What | Where | Result |
 |---|---|---|
 | `ctest` (41 cases: 38 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **40/40 pass** |
-| PS2Recomp's own `ps2x_tests` with patches 0001-0033 (built separately, Release) | Linux, GCC 13 | **454/454 pass** (run from `ps2xTest/` or the submodule root) |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0034 (built separately, Release) | Linux, GCC 13 | **454/454 pass** (run from `ps2xTest/` or the submodule root) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 0001-0033 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); CMake resets the submodule and reapplies them all when the patch set changes (stamp file) |
+| Patches applied by CMake | Linux | 0001-0034 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); CMake resets the submodule and reapplies them all when the patch set changes (stamp file) |
 | VU1 replay (`ben10_vu1_replay --sum`), 40 workloads from the first level | Linux | identical checksums before and after patch 0013 (findings/20 s.3) |
 | First level, under Xvfb | Linux | renders (screenshot 06); Ben walks with W (screenshot 07); reached from New Game too (findings/19 s.7); attacks and jumps (screenshot 09, findings/20 s.9); Omnitrix and the first fight (screenshot 10, s.10) |
 | Frame rate (`BEN10_FPS_LOG`) | Linux, game code `-O0` | menus: 3 fps before patch 0012, 8-9 now; first level: 1.4 before patch 0013, 4.4 now (findings/19-20) |

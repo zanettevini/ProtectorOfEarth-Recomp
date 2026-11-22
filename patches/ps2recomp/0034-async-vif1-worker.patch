@@ -1,0 +1,764 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] Optional VIF1/VU1 worker thread with completion at fixed EE points
+
+What it is for:
+  A VIF1 DMA kick runs the whole transfer inside the kick: VIF1, every
+  VU1 program it starts and their PATH1/PATH2 output to the GIF, before the
+  EE's next instruction. On the console VU1 works while the EE goes on.
+  In Ben 10: Protector of Earth each frame's two VIF1 transfers take about
+  24 ms of game-thread CPU each, and the EE then works about 17 ms before
+  it next needs the result; run in parallel that time would overlap.
+
+The change (off unless a port calls setAsyncVif1(true, cycles)):
+  - PS2Memory::setAsyncVif1: a VIF1 kick hands the transfer (chains are
+    already copied at kick time; direct RAM/scratchpad sources are copied
+    now) to a worker thread, which runs processVIF1Data and drains the GIF
+    arbiter. The EE goes on.
+  - The transfer completes for the EE (D_STAT CIS1, CHCR STR, QWC, the
+    DMAC cause; what processPendingTransfers did at once) in syncVif1, on
+    the EE thread, after waiting for the worker. It is called at fixed
+    points of the EE's execution: an access to DMA channels 1-2, GIF or
+    VIF1 registers and FIFOs, a D_STAT read, D_CTRL write, D_ENABLER/W, VU1
+    memory, the GS CSR/IMR/SIGLBLID registers; a new VIF1 kick; and in the
+    EE scheduler before a VBlank start (so the DMAC handler is queued
+    ahead of the VBlank handlers, as with the instant model), when it has
+    nothing to run, or after an optional number of EE cycles since the kick
+    (EeScheduler::pollAsyncVif1, which then dispatches the DMAC handlers).
+    So results depend only on the EE's own progress, not on thread timing. D_STAT and D_PCR writes, timers, INTC,
+    VIF0, SIF and scratchpad DMA do not wait.
+  - The VU1 MSCAL/MSCNT callbacks read FBRST and report the D/T stop
+    through PS2Memory (setVu1StatusHooks): on the worker they use FBRST as
+    it was at the kick and the stop reaches VPU_STAT at completion.
+  - processPendingTransfers does not drain the GIF arbiter while a
+    transfer is in flight (the worker owns it then).
+  - PS2Runtime stops the worker after joining the game thread and at the
+    start of its destructor, before m_vu1 and m_gs are destroyed.
+  With the option off, behaviour is unchanged.
+
+How it was checked:
+  See the port's docs/findings/21 s.22: the game runs and renders the
+  first level with the option on and off; with it on, the game thread's
+  CPU per frame on Linux went from about 76 to 31 ms (the worker 40 ms
+  beside it). The replay checksums (VU1 and VU0) and ps2xTest 454/454 are
+  unchanged (they do not use the option). The changed files compile with
+  MinGW; not yet built with MSVC.
+
+--- a/ps2xRuntime/include/runtime/ee_scheduler.h
++++ b/ps2xRuntime/include/runtime/ee_scheduler.h
+@@ -390,6 +390,12 @@
+     static int waitObjectId(const EeWaitState &wait);
+     void writeGuestU32(uint32_t address, uint32_t value);
+     void waitForEvent();
++    // Async VIF1 (PS2Memory::setAsyncVif1): completes a transfer in flight
++    // once the EE has run the configured number of cycles since its kick,
++    // or at once when `idle` (nothing else to run), then dispatches the
++    // DMAC handlers; also dispatches them after a completion done by an EE
++    // register access. Returns true if it completed a transfer.
++    bool pollAsyncVif1(bool idle);
+     void scheduleEvent(uint64_t deadlineCycle, std::chrono::steady_clock::time_point hostDeadline, EeEvent event);
+     void updateNextDeadline();
+     [[nodiscard]] bool hasReadyAtOrAbovePriority(int priority) const;
+@@ -426,6 +432,8 @@
+     bool m_insideInterrupt = false;
+     uint32_t m_pendingEeTimerInterrupts = 0;
+     uint64_t m_eeCycle = 0;
++    uint64_t m_vif1SeenKickSerial = 0; // async VIF1: the kick m_vif1KickCycle is for
++    uint64_t m_vif1KickCycle = 0;      // EE cycle at the first scheduler pass after that kick
+     uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
+     std::thread::id m_executorThread{};
+     std::atomic<bool> m_running{false};
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -10,6 +10,8 @@
+ #include <atomic>
+ #include <iostream>
+ #include <mutex>
++#include <condition_variable>
++#include <thread>
+ 
+ #include "gs/ps2_gif_arbiter.h"
+ #if defined(_MSC_VER)
+@@ -346,6 +348,67 @@
+     void processPendingTransfers();
+     std::vector<uint32_t> consumeCompletedDmacCauses();
+ 
++    // ---- VIF1 on a worker thread (opt-in, off by default) ----------------
++    // With it on, a VIF1 DMA kick hands the transfer (copied at kick time)
++    // to a worker thread, which runs VIF1, the VU1 programs it starts and
++    // their PATH1/PATH2 output to the GIF, while the EE goes on. The
++    // transfer completes for the EE (D_STAT CIS1, CHCR STR, QWC, the DMAC
++    // cause) only at a fixed point of the EE's execution, where the EE first
++    // waits for the worker: an EE access to state the transfer works on or
++    // that would show its end (DMA channels 1 and 2, D_STAT reads, GIF and
++    // VIF1 registers and FIFOs, VU1 memory, the GS CSR/IMR/SIGLBLID
++    // registers), a new kick, the EE going idle, the next VBlank start, or
++    // optionally a number of EE cycles after the kick (EeScheduler; 0 = no
++    // such limit). So the results depend on the EE's own
++    // progress only, never on which thread is faster; the end of a transfer
++    // is seen later in EE time than with the default (instant) model, as on
++    // the console. Everything here is called from the EE thread unless
++    // noted.
++    void setAsyncVif1(bool enabled, uint64_t deliveryCycles);
++    bool asyncVif1Enabled() const { return m_asyncVif1; }
++    bool vif1InFlight() const { return m_vif1InFlight; }
++    uint64_t vif1KickSerial() const { return m_vif1KickSerial; }
++    uint64_t asyncVif1DeliveryCycles() const { return m_vif1DeliveryCycles; }
++    enum class Vif1SyncReason : uint32_t
++    {
++        Register,  // DMA/GIF/VIF1 register or FIFO access, D_STAT read
++        GsRegister,
++        Vu1Memory,
++        Idle,      // the EE scheduler has nothing to run
++        Cycles,    // the EE-cycle limit after the kick
++        VBlank,    // the next VBlank start (EeScheduler)
++        Other,     // shutdown, reset, direct callers
++        Count
++    };
++    // Waits for the worker, then completes the transfer as the default
++    // model does at kick time. Does nothing when no transfer is in flight.
++    void syncVif1(Vif1SyncReason reason);
++    // True once after syncVif1 completed a transfer: the caller dispatches
++    // the DMAC handlers (PS2Runtime::drainCompletedDmacHandlers).
++    bool takeVif1Delivered()
++    {
++        const bool delivered = m_vif1Delivered;
++        m_vif1Delivered = false;
++        return delivered;
++    }
++    // The VU1 run callbacks (MSCAL/MSCNT) read FBRST's D/T enable bits and
++    // report the D/T stop through these, so that on the worker they use the
++    // FBRST value of the kick and the stop is applied at completion. The
++    // providers are set by the runtime and run on the EE thread only.
++    using Vu1FbrstProvider = std::function<uint32_t()>;
++    using Vu1StopSink = std::function<void(bool stoppedByD, bool stoppedByT)>;
++    void setVu1StatusHooks(Vu1FbrstProvider fbrst, Vu1StopSink stop)
++    {
++        m_vu1FbrstProvider = std::move(fbrst);
++        m_vu1StopSink = std::move(stop);
++    }
++    uint32_t vu1RunFbrst();                                  // EE thread or worker
++    // Waits for a transfer in flight and ends the worker thread. Called by
++    // ~PS2Runtime before the VU1 instance and the GS it uses are destroyed
++    // (and by ~PS2Memory).
++    void stopVif1Worker();
++    void reportVu1Stop(bool stoppedByD, bool stoppedByT);    // EE thread or worker
++
+     int pollDmaRegisters();
+ 
+     // Track code modifications for self-modifying code
+@@ -421,6 +484,50 @@
+     std::vector<PendingTransfer> m_pendingGifTransfers;
+     std::vector<PendingTransfer> m_pendingVif0Transfers;
+     std::vector<PendingTransfer> m_pendingVif1Transfers;
++
++    // VIF1 worker (see setAsyncVif1). m_vif1InFlight, m_vif1KickSerial and
++    // m_vif1Delivered belong to the EE thread; the job fields are handed
++    // over under m_vif1Mutex.
++    bool m_asyncVif1 = false;
++    uint64_t m_vif1DeliveryCycles = 0;
++    bool m_vif1InFlight = false;
++    bool m_vif1Delivered = false;
++    uint64_t m_vif1KickSerial = 0;
++    std::thread m_vif1Thread;
++    std::mutex m_vif1Mutex;
++    std::condition_variable m_vif1Cv;
++    std::vector<PendingTransfer> m_vif1Job;
++    bool m_vif1JobReady = false;
++    bool m_vif1JobDone = true;
++    bool m_vif1Quit = false;
++    uint32_t m_vif1JobFbrst = 0;
++    bool m_vif1JobStopValid = false;
++    bool m_vif1JobStopD = false;
++    bool m_vif1JobStopT = false;
++    std::array<uint64_t, static_cast<size_t>(Vif1SyncReason::Count)> m_vif1SyncCounts{};
++    uint64_t m_vif1Deliveries = 0;
++    uint64_t m_vif1Waits = 0;          // since the last report
++    double m_vif1WaitSeconds = 0.0;
++    Vu1FbrstProvider m_vu1FbrstProvider;
++    Vu1StopSink m_vu1StopSink;
++    void startVif1Job();
++    void vif1WorkerLoop();
++    void completeDmaChannel(uint32_t channelBit, uint32_t channelBase);
++    void syncVif1ForIoRegister(uint32_t address, bool write);
++    void syncVif1ForAccess(uint32_t address)
++    {
++        if (!m_vif1InFlight)
++            return;
++        // VU1 micro/data memory, and the GS registers GIF packets write
++        // (CSR SIGNAL/FINISH, SIGLBLID) or that govern them (IMR).
++        const uint32_t physical = address & 0x1FFFFFFFu;
++        if ((address >> 28) == 0x7u) // scratchpad
++            return;
++        if (physical >= 0x11008000u && physical < 0x11010000u)
++            syncVif1(Vif1SyncReason::Vu1Memory);
++        else if (physical >= 0x12001000u && physical < 0x12002000u)
++            syncVif1(Vif1SyncReason::GsRegister);
++    }
+     std::mutex m_completedDmacMutex;
+     std::vector<uint32_t> m_completedDmacCauses;
+ 
+--- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
++++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+@@ -164,12 +164,19 @@
+         {
+             break;
+         }
++        pollAsyncVif1(false);
+ 
+         if (m_currentThreadId == 0)
+         {
+             GuestThread *next = selectReady();
+             if (!next && m_pendingInvocations.empty())
+             {
++                // Nothing to run: a VIF1 transfer in flight completes now
++                // (its DMAC handler may be what the EE waits for).
++                if (pollAsyncVif1(true))
++                {
++                    continue;
++                }
+                 copyMainContextToRuntime();
+                 publishIdleDebugContext();
+                 publishSnapshot();
+@@ -354,6 +361,37 @@
+     m_eventCv.notify_one();
+ }
+ 
++bool EeScheduler::pollAsyncVif1(bool idle)
++{
++    PS2Memory &memory = m_runtime.memory();
++    bool completed = false;
++    if (memory.vif1InFlight())
++    {
++        if (memory.vif1KickSerial() != m_vif1SeenKickSerial)
++        {
++            m_vif1SeenKickSerial = memory.vif1KickSerial();
++            m_vif1KickCycle = m_eeCycle;
++        }
++        const uint64_t limit = memory.asyncVif1DeliveryCycles();
++        if (idle)
++        {
++            memory.syncVif1(PS2Memory::Vif1SyncReason::Idle);
++            completed = true;
++        }
++        else if (limit != 0u && m_eeCycle - m_vif1KickCycle >= limit)
++        {
++            memory.syncVif1(PS2Memory::Vif1SyncReason::Cycles);
++            completed = true;
++        }
++    }
++    if (memory.takeVif1Delivered())
++    {
++        m_runtime.drainCompletedDmacHandlers(memory.getRDRAM());
++        completed = true;
++    }
++    return completed;
++}
++
+ bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
+ {
+     accountCycles(cycles);
+@@ -1867,6 +1905,14 @@
+         requestStop();
+         break;
+     case EeEventType::VBlankStart:
++        // Async VIF1 (PS2Memory::setAsyncVif1): a transfer still in flight
++        // ends before the VBlank, so its DMAC handler is queued ahead of the
++        // VBlank handlers, the order the instant model and the console give.
++        if (m_runtime.memory().vif1InFlight())
++        {
++            m_runtime.memory().syncVif1(PS2Memory::Vif1SyncReason::VBlank);
++            m_runtime.drainCompletedDmacHandlers(m_runtime.memory().getRDRAM());
++        }
+         ++m_vsyncTick;
+         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
+         if ((m_vsyncTick & 1u) != 0u)
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -9,6 +9,8 @@
+ #include <algorithm>
+ #include <string>
+ #include <vector>
++#include <cstdio>
++#include <chrono>
+ 
+ namespace
+ {
+@@ -246,6 +248,7 @@
+ 
+ PS2Memory::~PS2Memory()
+ {
++    stopVif1Worker();
+     if (m_rdram)
+     {
+         delete[] m_rdram;
+@@ -671,6 +674,7 @@
+ 
+ uint8_t PS2Memory::read8(uint32_t address)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     const bool scratch = isScratchpad(address);
+     uint32_t physAddr = translateAddress(address);
+ 
+@@ -702,6 +706,7 @@
+ 
+ uint16_t PS2Memory::read16(uint32_t address)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 1)
+     {
+         throw std::runtime_error("Unaligned 16-bit read at address: 0x" + std::to_string(address));
+@@ -737,6 +742,7 @@
+ 
+ uint32_t PS2Memory::read32(uint32_t address)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 3)
+     {
+         throw std::runtime_error("Unaligned 32-bit read at address: 0x" + std::to_string(address));
+@@ -785,6 +791,7 @@
+ 
+ uint64_t PS2Memory::read64(uint32_t address)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 7)
+     {
+         throw std::runtime_error("Unaligned 64-bit read at address: 0x" + std::to_string(address));
+@@ -832,6 +839,7 @@
+ 
+ __m128i PS2Memory::read128(uint32_t address)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 15)
+     {
+         throw std::runtime_error("Unaligned 128-bit read at address: 0x" + std::to_string(address));
+@@ -865,6 +873,7 @@
+ 
+ void PS2Memory::write8(uint32_t address, uint8_t value)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     const bool scratch = isScratchpad(address);
+     uint32_t physAddr = translateAddress(address);
+ 
+@@ -904,6 +913,7 @@
+ 
+ void PS2Memory::write16(uint32_t address, uint16_t value)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 1)
+     {
+         throw std::runtime_error("Unaligned 16-bit write at address: 0x" + std::to_string(address));
+@@ -946,6 +956,7 @@
+ 
+ void PS2Memory::write32(uint32_t address, uint32_t value)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 3)
+     {
+         throw std::runtime_error("Unaligned 32-bit write at address: 0x" + std::to_string(address));
+@@ -1006,6 +1017,7 @@
+ 
+ void PS2Memory::write64(uint32_t address, uint64_t value)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 7)
+     {
+         throw std::runtime_error("Unaligned 64-bit write at address: 0x" + std::to_string(address));
+@@ -1062,6 +1074,7 @@
+ 
+ void PS2Memory::write128(uint32_t address, __m128i value)
+ {
++    syncVif1ForAccess(address); // async VIF1: VU1 memory, GS CSR..., see ps2_memory.h
+     if (address & 15)
+     {
+         throw std::runtime_error("Unaligned 128-bit write at address: 0x" + std::to_string(address));
+@@ -1124,6 +1137,8 @@
+ 
+ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+ {
++    if (m_vif1InFlight)
++        syncVif1ForIoRegister(address, true);
+     size_t timerIndex = 0u;
+     uint32_t timerOffset = 0u;
+     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
+@@ -1802,6 +1817,11 @@
+     m_pendingVif0Transfers.clear();
+ 
+     const bool hadVif1 = !m_pendingVif1Transfers.empty();
++    // Async VIF1 (setAsyncVif1): the transfer goes to the worker and is
++    // completed for the EE later, by syncVif1.
++    const bool vif1Deferred = hadVif1 && m_asyncVif1;
++    if (vif1Deferred)
++        startVif1Job();
+     for (auto &p : m_pendingVif1Transfers)
+     {
+         if (!p.chainData.empty())
+@@ -1859,7 +1879,9 @@
+     }
+     m_pendingVif1Transfers.clear();
+ 
+-    if (m_gifArbiter)
++    // While a VIF1 transfer is in flight the GIF arbiter belongs to the
++    // worker (it drains it at the end of the job); a GIF kick syncs first.
++    if (m_gifArbiter && !m_vif1InFlight)
+         m_gifArbiter->drain();
+ 
+     static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
+@@ -1896,7 +1918,7 @@
+         m_ioRegisters[VIF0_CHANNEL + 0x00] &= ~0x100u;
+         m_ioRegisters[VIF0_CHANNEL + 0x20] = 0;
+     }
+-    if (hadVif1)
++    if (hadVif1 && !vif1Deferred)
+     {
+         raiseDStatChannel(1u); // VIF1 channel
+         queueCompletedDmacCause(1u);
+@@ -1905,6 +1927,243 @@
+     }
+ }
+ 
++// ---------------------------------------------------------------------------
++// VIF1 on a worker thread (opt-in; see ps2_memory.h, and the port's
++// docs/findings/21 s.22).
++// ---------------------------------------------------------------------------
++namespace
++{
++    // True on the VIF1 worker thread.
++    thread_local bool tl_onVif1Worker = false;
++}
++
++void PS2Memory::setAsyncVif1(bool enabled, uint64_t deliveryCycles)
++{
++    if (!enabled)
++        syncVif1(Vif1SyncReason::Other);
++    m_asyncVif1 = enabled;
++    m_vif1DeliveryCycles = deliveryCycles;
++}
++
++// What processPendingTransfers does at the end for a VIF1 transfer, as a
++// member: D_STAT CIS (and the summary bit), the DMAC cause, CHCR STR and
++// QWC cleared.
++void PS2Memory::completeDmaChannel(uint32_t channelBit, uint32_t channelBase)
++{
++    constexpr uint32_t D_STAT = 0x1000E010u;
++    uint32_t dstat = m_ioRegisters.count(D_STAT) ? m_ioRegisters[D_STAT] : 0u;
++    dstat |= (1u << channelBit);
++    const uint32_t status = dstat & 0x3FFu;
++    const uint32_t mask = (dstat >> 16) & 0x3FFu;
++    if ((status & mask) != 0u)
++        dstat |= (1u << 31);
++    else
++        dstat &= ~(1u << 31);
++    m_ioRegisters[D_STAT] = dstat;
++    queueCompletedDmacCause(channelBit);
++    m_ioRegisters[channelBase + 0x00] &= ~0x100u;
++    m_ioRegisters[channelBase + 0x20] = 0;
++}
++
++// Hands m_pendingVif1Transfers to the worker. Transfers that read RAM or
++// the scratchpad directly (not a chain, which was copied at kick time) are
++// copied here, so that later EE writes cannot change what VIF1 reads.
++void PS2Memory::startVif1Job()
++{
++    syncVif1(Vif1SyncReason::Other); // a transfer still in flight ends first
++    std::vector<PendingTransfer> job;
++    job.reserve(m_pendingVif1Transfers.size());
++    for (auto &p : m_pendingVif1Transfers)
++    {
++        if (p.chainData.empty() && p.qwc > 0)
++        {
++            uint32_t srcPhys = 0;
++            try
++            {
++                srcPhys = translateAddress(p.srcAddr);
++            }
++            catch (const std::exception &)
++            {
++                continue; // skipped as the synchronous path skips it
++            }
++            const uint64_t bytes64 = static_cast<uint64_t>(p.qwc) * 16ull;
++            uint32_t bytesLeft = (bytes64 > 0xFFFFFFFFull) ? 0xFFFFFFFFu : static_cast<uint32_t>(bytes64);
++            const uint32_t limit = p.fromScratchpad ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
++            const uint8_t *base = p.fromScratchpad ? m_scratchpad : m_rdram;
++            PendingTransfer copy;
++            while (bytesLeft > 0)
++            {
++                if (srcPhys >= limit)
++                    srcPhys = 0;
++                uint32_t chunk = bytesLeft;
++                if (srcPhys + chunk > limit)
++                    chunk = limit - srcPhys;
++                if (chunk == 0)
++                    break;
++                copy.chainData.insert(copy.chainData.end(), base + srcPhys, base + srcPhys + chunk);
++                bytesLeft -= chunk;
++                srcPhys += chunk;
++            }
++            job.push_back(std::move(copy));
++        }
++        else if (!p.chainData.empty())
++        {
++            job.push_back(std::move(p));
++        }
++    }
++    m_pendingVif1Transfers.clear();
++
++    const uint32_t fbrst = m_vu1FbrstProvider ? m_vu1FbrstProvider() : 0u;
++    {
++        std::lock_guard<std::mutex> lock(m_vif1Mutex);
++        m_vif1Job = std::move(job);
++        m_vif1JobFbrst = fbrst;
++        m_vif1JobStopValid = false;
++        m_vif1JobReady = true;
++        m_vif1JobDone = false;
++        if (!m_vif1Thread.joinable())
++        {
++            m_vif1Quit = false;
++            m_vif1Thread = std::thread([this]()
++                                       { vif1WorkerLoop(); });
++        }
++    }
++    m_vif1Cv.notify_all();
++    m_vif1InFlight = true;
++    ++m_vif1KickSerial;
++}
++
++void PS2Memory::vif1WorkerLoop()
++{
++    tl_onVif1Worker = true;
++    for (;;)
++    {
++        std::vector<PendingTransfer> job;
++        {
++            std::unique_lock<std::mutex> lock(m_vif1Mutex);
++            m_vif1Cv.wait(lock, [this]()
++                          { return m_vif1JobReady || m_vif1Quit; });
++            if (m_vif1Quit)
++                return;
++            job = std::move(m_vif1Job);
++            m_vif1Job.clear();
++            m_vif1JobReady = false;
++        }
++        try
++        {
++            for (const auto &p : job)
++                processVIF1Data(p.chainData.data(), static_cast<uint32_t>(p.chainData.size()));
++            if (m_gifArbiter)
++                m_gifArbiter->drain();
++        }
++        catch (const std::exception &e)
++        {
++            std::fprintf(stderr, "[vif1-async] VIF1 worker: %s\n", e.what());
++        }
++        {
++            std::lock_guard<std::mutex> lock(m_vif1Mutex);
++            m_vif1JobDone = true;
++        }
++        m_vif1Cv.notify_all();
++    }
++}
++
++void PS2Memory::stopVif1Worker()
++{
++    if (!m_vif1Thread.joinable())
++        return;
++    {
++        std::unique_lock<std::mutex> lock(m_vif1Mutex);
++        m_vif1Cv.wait(lock, [this]()
++                      { return m_vif1JobDone; });
++        m_vif1Quit = true;
++    }
++    m_vif1Cv.notify_all();
++    m_vif1Thread.join();
++    m_vif1InFlight = false;
++}
++
++void PS2Memory::syncVif1(Vif1SyncReason reason)
++{
++    if (!m_vif1InFlight)
++        return;
++    {
++        std::unique_lock<std::mutex> lock(m_vif1Mutex);
++        if (!m_vif1JobDone)
++        {
++            // The EE reached the completion point before the worker
++            // finished: the time it waits is reported below.
++            const auto waitStart = std::chrono::steady_clock::now();
++            m_vif1Cv.wait(lock, [this]()
++                          { return m_vif1JobDone; });
++            m_vif1WaitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - waitStart).count();
++            ++m_vif1Waits;
++        }
++    }
++    m_vif1InFlight = false;
++    if (m_vif1JobStopValid && m_vu1StopSink)
++        m_vu1StopSink(m_vif1JobStopD, m_vif1JobStopT);
++    completeDmaChannel(1u, 0x10009000u);
++    m_vif1Delivered = true;
++
++    ++m_vif1SyncCounts[static_cast<size_t>(reason)];
++    if (++m_vif1Deliveries % 600u == 0u)
++    {
++        const auto &c = m_vif1SyncCounts;
++        std::fprintf(stderr, "[vif1-async] %llu transfers completed at: register %llu, GS register %llu, "
++                             "VU1 memory %llu, EE idle %llu, cycle limit %llu, VBlank %llu, other %llu; the EE "
++                             "waited for the worker %llu times, %.1f ms on average\n",
++                     static_cast<unsigned long long>(m_vif1Deliveries),
++                     static_cast<unsigned long long>(c[0]), static_cast<unsigned long long>(c[1]),
++                     static_cast<unsigned long long>(c[2]), static_cast<unsigned long long>(c[3]),
++                     static_cast<unsigned long long>(c[4]), static_cast<unsigned long long>(c[5]),
++                     static_cast<unsigned long long>(c[6]),
++                     static_cast<unsigned long long>(m_vif1Waits),
++                     m_vif1Waits != 0u ? m_vif1WaitSeconds * 1000.0 / static_cast<double>(m_vif1Waits) : 0.0);
++        m_vif1Waits = 0;
++        m_vif1WaitSeconds = 0.0;
++    }
++}
++
++// The EE registers whose access waits for (and completes) a transfer in
++// flight: everything VIF1 or its output works on, or that shows the end of
++// the transfer. Not: timers, INTC, VIF0 and its DMA channel, the SIF and
++// scratchpad DMA channels, D_PCR and D_STAT writes (a write applies to the
++// status before the completion, as it would on the console).
++void PS2Memory::syncVif1ForIoRegister(uint32_t address, bool write)
++{
++    const bool gifOrVif1 = (address >= 0x10003000u && address < 0x10003800u) ||  // GIF
++                           (address >= 0x10003C00u && address < 0x10004000u) ||  // VIF1
++                           (address >= 0x10005000u && address < 0x10007000u) ||  // VIF1, GIF FIFOs
++                           (address >= 0x10009000u && address < 0x10009100u) ||  // DMA channel 1
++                           (address >= 0x1000A000u && address < 0x1000A100u);    // DMA channel 2
++    const bool dmac = (address == 0x1000E010u && !write) || // D_STAT read
++                      (address == 0x1000E000u && write) ||  // D_CTRL write
++                      address == 0x1000F520u || address == 0x1000F590u; // D_ENABLER/W
++    if (gifOrVif1 || dmac)
++        syncVif1(Vif1SyncReason::Register);
++}
++
++uint32_t PS2Memory::vu1RunFbrst()
++{
++    if (tl_onVif1Worker)
++        return m_vif1JobFbrst;
++    return m_vu1FbrstProvider ? m_vu1FbrstProvider() : 0u;
++}
++
++void PS2Memory::reportVu1Stop(bool stoppedByD, bool stoppedByT)
++{
++    if (tl_onVif1Worker)
++    {
++        m_vif1JobStopValid = true;
++        m_vif1JobStopD = stoppedByD;
++        m_vif1JobStopT = stoppedByT;
++        return;
++    }
++    if (m_vu1StopSink)
++        m_vu1StopSink(stoppedByD, stoppedByT);
++}
++
+ void PS2Memory::queueCompletedDmacCause(uint32_t cause)
+ {
+     std::lock_guard<std::mutex> lock(m_completedDmacMutex);
+@@ -2280,6 +2539,8 @@
+ 
+ uint32_t PS2Memory::readIORegister(uint32_t address)
+ {
++    if (m_vif1InFlight)
++        syncVif1ForIoRegister(address, false);
+     size_t timerIndex = 0u;
+     uint32_t timerOffset = 0u;
+     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -532,6 +532,10 @@
+     try
+     {
+         requestStop();
++        // The async VIF1 worker (PS2Memory::setAsyncVif1) runs m_vu1 and
++        // feeds m_gs: stop it while both still exist (members are destroyed
++        // after this body, m_memory last).
++        m_memory.stopVif1Worker();
+         m_iopSubsystem.reset();
+         m_iopHost.reset();
+ #if defined(PLATFORM_VITA)
+@@ -678,42 +682,47 @@
+     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
+                                     { m_gs.processGIFPacket(data, size); });
+     m_memory.setGifArbiter(&m_gifArbiter);
++    // FBRST's D/T enable bits and the VPU_STAT D/T stop bits of VU1 go
++    // through PS2Memory, so that a VU1 program run on the async VIF1 worker
++    // uses the FBRST value of the kick and its stop reaches the EE when the
++    // transfer completes (ps2_memory.h, setAsyncVif1). These two run on the
++    // EE thread.
++    m_memory.setVu1StatusHooks(
++        [this]() -> uint32_t
++        {
++            R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
++            if (!cpuContext)
++                cpuContext = &m_cpuContext;
++            return cpuContext->vu0_fbrst;
++        },
++        [this](bool stoppedByD, bool stoppedByT)
++        {
++            R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
++            if (!cpuContext)
++                cpuContext = &m_cpuContext;
++            cpuContext->vu0_vpu_stat =
++                (cpuContext->vu0_vpu_stat & ~0x0600u) |
++                (stoppedByD ? 0x0200u : 0u) |
++                (stoppedByT ? 0x0400u : 0u);
++        });
+     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
+                                  {
+-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+-                                     if (!cpuContext)
+-                                     {
+-                                         cpuContext = &m_cpuContext;
+-                                     }
+-                                     m_vu1.state().dBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
+-                                     m_vu1.state().tBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
++                                     const uint32_t fbrst = m_memory.vu1RunFbrst();
++                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
++                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
+                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
+                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                                                    m_gs, &m_memory, startPC, top, itop, 65536);
+-                                     cpuContext->vu0_vpu_stat =
+-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
+-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
++                                     m_memory.reportVu1Stop(m_vu1.state().stoppedByD, m_vu1.state().stoppedByT); });
+     m_memory.setVu1MscntCallback([this](uint32_t top, uint32_t itop)
+                                  {
+-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+-                                     if (!cpuContext)
+-                                     {
+-                                         cpuContext = &m_cpuContext;
+-                                     }
+-                                     m_vu1.state().dBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
+-                                     m_vu1.state().tBitEnabled =
+-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
++                                     const uint32_t fbrst = m_memory.vu1RunFbrst();
++                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
++                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
+                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
+                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                                                   m_gs, &m_memory, top, itop, 65536);
+-                                     cpuContext->vu0_vpu_stat =
+-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
+-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
+-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
++                                     m_memory.reportVu1Stop(m_vu1.state().stoppedByD, m_vu1.state().stoppedByT); });
+     resetIop();
+     m_vu0.reset();
+     m_vu1.reset();
+@@ -2487,6 +2496,9 @@
+     {
+         gameThread.join();
+     }
++    // No more kicks once the game thread is gone: end the async VIF1 worker
++    // too (PS2Memory::setAsyncVif1) before the window and GS go away.
++    m_memory.stopVif1Worker();
+ 
+     if (m_debugUiInitialized && m_debugUiShutdownCallback)
+     {

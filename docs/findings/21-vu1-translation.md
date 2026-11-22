@@ -655,3 +655,69 @@ the timing model and is left for a decision of its own.
   cycles after the kick, whichever comes first, the EE waiting for the
   worker there). That is a change of the timing model, left to a
   decision (NEXT_TASK).
+
+## 22. VIF1 and VU1 on a worker thread, opt-in (patch 0034, `BEN10_ASYNC_VU1=1`)
+
+- Decision (maintainer): implement the s.21 route as an option, off by
+  default; whether it becomes the default is decided after testing.
+- Where the kicks come from (gdb, stacks at the D1_CHCR reads and at the
+  VIF1 kick): both VIF1 kicks of a frame are made by the game's VBlank
+  handler FUN_0012E5F8 (via FUN_0014EB10 and FUN_001C0DD0, which first
+  reads D1_CHCR to check that the previous transfer ended). Between a kick
+  and that next read the EE runs the frame's game work. A temporary probe
+  of every EE access outside RAM, scratchpad and BIOS in that interval
+  (300 kicks; not committed) found only: EE timers, VIF0 kicks and its
+  channel registers, scratchpad DMA kicks (toSPR) with their D_STAT
+  acknowledgements and D_PCR, VU0 memory, and once per frame the GS
+  display registers (PMODE, SMODE2, DISPFB/DISPLAY 1 and 2). None of
+  these touch what a VIF1 transfer works on.
+- Patch 0034 (runtime, off unless a port calls
+  `PS2Memory::setAsyncVif1`): a VIF1 kick hands the transfer (chains are
+  copied at kick time already; direct sources are copied then) to a
+  worker thread, which runs VIF1, the VU1 programs and their PATH1/PATH2
+  output to the GIF arbiter and the GS front end (which takes its own
+  lock; the window thread reads it too). The transfer completes for the
+  EE (D_STAT CIS1, CHCR STR, QWC, the DMAC cause; then the game's handler
+  FUN_0012E670) in `syncVif1` on the EE thread, after waiting for the
+  worker, at fixed points of the EE's execution: an access to DMA
+  channels 1-2, GIF/VIF1 registers and FIFOs, a D_STAT read, D_CTRL,
+  D_ENABLER/W, VU1 memory, GS CSR/IMR/SIGLBLID; a new VIF1 kick; and in
+  the EE scheduler, before dispatching a VBlank start, when it has
+  nothing to run, or after an optional number of EE cycles since the kick
+  (`EeScheduler::pollAsyncVif1`, which also dispatches the DMAC
+  handlers). Results depend only on the EE's own progress. The VU1 run
+  callbacks take FBRST as it was at the kick and report the D/T stop to
+  VPU_STAT at completion. The runtime stops the worker after joining the
+  game thread and before destroying the VU1 instance and the GS.
+  `src/vu/async_vu1_install.cpp` turns it on with `BEN10_ASYNC_VU1=1`;
+  `BEN10_ASYNC_VU1_CYCLES=N` adds a cycle limit.
+- Choosing the completion point. First version: a limit of 1,000,000 EE
+  cycles (about 3.4 ms of console time). Every transfer completed at the
+  limit and the EE then waited for the worker on most of them: a
+  temporary counter (not committed) showed the EE runs 44-49 million
+  cycles (average 46.7 million; its idle thread included) between a kick
+  and its next D1_CHCR read. Without a limit every transfer completed at
+  that read, which is inside the VBlank handler that then kicks the next
+  transfer: the DMA end handler of the old transfer would then run after
+  the new kick, an order neither the console nor the instant model gives.
+  So the default point is the next VBlank start: the DMA end handler is
+  queued ahead of the VBlank handlers, as with the instant model, and the
+  EE overlaps up to one VBlank of its own work with the worker.
+- First level, Linux, option on (default point): the level renders as
+  without it (compared by eye); 6,599 of 6,600 transfers completed at the
+  VBlank, one at a register access. CPU per game frame
+  (`cpu_per_frame.sh`, 90 s): game thread 31.1 ms (75-79 ms with the
+  option off), worker 40.0 ms. The frame rate on this 2-core machine does
+  not change (3.75 game frames per second): the GS thread uses about 260
+  ms of CPU per game frame here, so the worker has no free core, and the
+  EE waited for it at about three quarters of the VBlanks (about 150 ms
+  each). On a machine with free cores the game thread's 31 ms and the
+  worker's 40 ms run side by side, and the worker and the GS bands set the
+  frame rate.
+- What changes for the game: its VIF1 DMA end handler runs at the next
+  VBlank instead of at once. The handler only clears the "frame kicked"
+  and "waiting for the DMA" flags (state+0x08, findings/15 s.12), which
+  the VBlank handler checks before the next kick.
+- Checked: ps2xTest 454/454 and the replay checksums (VU1 and VU0) are
+  unchanged (they do not use the option); MinGW compiles the changed
+  files. Not tested: Windows; long play; other levels.

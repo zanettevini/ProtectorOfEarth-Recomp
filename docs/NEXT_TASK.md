@@ -16,11 +16,14 @@
    Done: the VU0 microprograms run translated too (s.19, patch 0032; game
    thread 86 -> 75 ms per frame on Linux); their per-call overhead is the
    next thing to look at there. FMAC flags four lanes at a time (s.20,
-   patch 0033, -4% VU). Pending a decision: VIF1/VU1 on a thread of its
-   own (s.21): two fifths of the game thread's frame is EE work that
-   could overlap the VU1 work, but the VIF1 completion interrupt (the
-   game's DMAC handler kicks the next transfer) would then reach the EE
-   later in EE time, as on the console. Profile the game thread with
+   patch 0033, -4% VU). VIF1/VU1 on a worker thread, opt-in
+   (`BEN10_ASYNC_VU1=1`, s.22, patch 0034): the game thread drops from
+   about 76 to 31 ms of CPU per frame on Linux, the worker takes 40 ms
+   beside it; the 2-core Linux machine cannot show the frame-rate gain.
+   Next: the maintainer measures it on Windows (frame rate and
+   `cpu_per_frame_windows.ps1` with and without the variable) and decides
+   whether it becomes the default; then the worker's own cost (the VU
+   code) and the GS bands. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
    `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
@@ -40,7 +43,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0033 upstream to PS2Recomp.
+5. Send patches 0002-0034 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
