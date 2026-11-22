@@ -451,3 +451,22 @@ the timing model and is left for a decision of its own.
   its time is the EE's own work that a VU1 thread could overlap: at best
   about a quarter faster, not twice. Not pursued for now; the VU code
   itself has to get faster (s.11-12).
+
+## 14. Step 1 done: stores and VI writes at issue, flags on demand (patch 0027)
+
+- Why the commit pass still ran almost every cycle with flags removed
+  (s.12): stores and VI writes. Every store is due one cycle after issue;
+  most VI writes too (only ILW and ILWR write VI 4 cycles later). A result
+  due one cycle after issue is committed by the `advanceOneCycle` at the
+  end of the same pair's step, and nothing between the instruction and
+  that commit reads it (PATH1 reads VU memory after the commit, in the
+  same `advanceOneCycle`).
+- Patch 0027, for translated code: stores are written at once
+  (`storeOrQueue<true>`), latency-1 VI writes are written at once as the
+  commit would (16-bit) and become the register's latest write (an older
+  ILW still queued to it is dropped, as before); flags use the issue-order
+  ring of s.12, applied when read. The interpreter keeps its queues for
+  stores and VI.
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454. Translated code 321 M -> 291 M
+  instructions (-9.4%); `advanceOneCycle` with the commit 67 M -> 33 M.
