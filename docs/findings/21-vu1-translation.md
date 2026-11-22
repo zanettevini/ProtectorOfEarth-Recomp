@@ -358,4 +358,41 @@ Each step must keep `--sum` identical to the interpreter.
 - Where this leaves the plan: about 550 instructions per translated pair
   remain (step bookkeeping, flag pipeline, per-cycle commit). Small
   changes inside this model give a few percent each; the next gains need a
-  different execution model for translated code (s.11, to come).
+  different execution model for translated code (s.11).
+
+## 11. Plan: from about 550 to about 150 instructions per pair
+
+Where a translated pair's cost goes (replay, GCC, after patch 0026; per VU
+cycle): the pair step itself about 215 instructions (hazard check, write
+bookkeeping, VI queue, branch and end bits, budget), the FMAC model and
+flag packing about 160, the per-cycle commit and PATH1 progress about 120.
+The same model, implemented for translated code without its general-purpose
+machinery, with every step checked by the replay checksums (registers,
+flags, VU memory, GS output and cycle count identical):
+
+1. Flags as an ordered history instead of a slot pipeline committed every
+   cycle: each FMAC instruction appends {ready cycle, MAC, status, sticky};
+   MAC/status/clip are materialised only when read (FMAND, FMEQ, FMOR,
+   FSAND..., FCAND..., the end of the program, a resume) or when the
+   history is full. In group F flags are read at 24 places (findings/20
+   s.14).
+2. No per-cycle commit when nothing is due: the next due cycle of the
+   remaining queues (Q, P, stores, VI) is kept, and a pair advances the
+   cycle by one with a single compare when nothing is due.
+3. PATH1 (XGKICK) progressed in batches: up to the next store commit or
+   the end of the transfer, instead of 16 bytes every other cycle, since
+   only a store into the packet's range can change what it copies.
+4. The pair's register reads, writes, latencies and branch/end bits
+   emitted by the translator as straight-line code (no walk over the
+   decoded usage), and no save/restore copies around the immediate VF/ACC
+   writes.
+5. Then the VU0 microprograms through the same translator (a quarter of
+   the game thread on Windows, s.8; they re-enter at the same few
+   addresses, findings/20 s.12).
+
+Outside the VU code, for the target of 25-30 frames per second in the
+first level on Windows: the 6 GS bands spend 33-53 ms per game frame each
+there (s.7), which alone would cap the level near 20 per second; the band
+count (6 at most by default) and the rasteriser need work too. Running
+VIF1 and VU1 on their own thread (as on the console) is a larger change of
+the timing model and is left for a decision of its own.
