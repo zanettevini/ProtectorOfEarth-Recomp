@@ -781,3 +781,55 @@ the timing model and is left for a decision of its own.
   are the timing model itself; going much lower needs the block-level
   translation of s.11-12 (whole straight-line runs with the pipeline
   timing worked out at build time).
+
+## 24. Translated blocks (patch 0037)
+
+- Decision (maintainer): go on with block-level translation (s.23, last
+  point). First step: blocks with the same timing model, so the results
+  stay identical by construction; static scheduling only where it can be
+  proved at build time.
+- What a block is (`tools/vu1_translate`): a straight-line run of pairs of
+  one overlay chunk, from a leader (the chunk's first pair, a static
+  branch target of B/BAL/IBxx, the pair after a branch's or an E bit's
+  delay slot, the pair after a D/T or reserved pair) up to a branch, an
+  E/D/T pair, the next leader, or 64 pairs. 447 blocks cover 5,922 of the
+  6,727 translated pairs (about 13 per block). They are generated into 32
+  more files (`generated/vu1/vu1_native_blocks_N.cpp`).
+- How it runs: the resolver puts a block's function at its first pair only
+  if every pair of the block is in code memory as translated (the longest
+  one when several match; VU0 gets only blocks whose pairs are all valid
+  on VU0). The block function runs its body pairs one after another and
+  its last pair through the ordinary per-pair step, which sets the PC and
+  handles the branch or the end; with a branch, delay slot or end pending
+  at entry it runs only its first pair, through the ordinary step.
+- Patch 0037: `execPairWith(..., blockBody)` stops after the writes for a
+  body pair (no PC, branch-delay or E/D/T tail); `blockPairUpper` /
+  `blockPairUpperLower` run a body pair with only the checks that can
+  still matter inside a block (the stop request; the step makes the
+  budget check itself; the previous pair's cycle advance has already made
+  every commit due by this cycle; the PC is stored only when the block
+  leaves early, since only branches read it); `MaskedTiming` checks only
+  the read lanes the translator could not settle at build time. A lane is
+  settled when its latest write is by an earlier pair of the same block
+  at least that write's latency in pairs back: pairs issue at least one
+  cycle apart, so the write is due when the read issues and the check
+  could not stall. 14,094 of the 22,319 read lanes of block bodies are
+  settled; reads whose latest write is earlier in the block but closer,
+  or comes from before the block, are still checked at run time.
+- Checked: same checksums and cycle counts on the 40 VU1 and 60 VU0
+  workloads interpreted, translated with blocks and translated without
+  (`ben10_vu1_replay ... --native --no-blocks`); ps2xTest 454/454.
+  `BEN10_VU1_BLOCKS=0` turns blocks off in the game.
+- Gain (replay, translated VU work without the replay's code resolution):
+  24.4 M -> 21.3 M host instructions with blocks, 20.6 M without the
+  redundant checks, 20.0 M with the settled lanes left out: about 180 per
+  VU cycle (256 at the start of s.20-24, -30%). Per VU cycle now: upper
+  words 56, block bodies and last pairs about 58, lower words 22, the
+  per-cycle commit 17, the run loop 7, PATH1 6. Compiling a block file
+  takes less memory and time than a pair file (GCC: 494 MB and 10 s
+  against 590 MB and 15 s).
+- What is left in a body pair (about 50 host instructions, spread thin):
+  the remaining hazard lanes, the write bookkeeping (write sequence and
+  pending mark), the VF0/VI0 reset, the VI write, the ready marks, the
+  calls to the upper and lower word functions and the cycle advance with
+  its commit and PATH1 checks.

@@ -44,8 +44,9 @@ fix and how it was found.
 | `0034-async-vif1-worker.patch` | Optional VIF1/VU1 worker thread (`PS2Memory::setAsyncVif1`, off by default): a VIF1 transfer runs beside the EE and completes for it at fixed points of the EE's execution (register accesses, idle, the next VBlank) | findings/21 s.22 |
 | `0035-vu1-fmac-operands-zero-results-in-place-writes.patch` | VU interpreter: FMAC product operands four lanes at a time, exact model out of line, zero results with a zero operand on the fast path, no save/restore around in-place immediate writes; same results | findings/21 s.23 |
 | `0036-gs-bilinear-inline-rounding.patch` | GS CPU backend: bilinear filter rounds channels inline instead of calling `lround`; same results | findings/20 s.20 |
+| `0037-vu1-translated-blocks.patch` | VU interpreter: the per-pair step for the body of a translated block (no PC/branch/end tail, only the checks that can matter, hazard check on the lanes not settled at build time); for translated code only | findings/21 s.24 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035 and 0036 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0037 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

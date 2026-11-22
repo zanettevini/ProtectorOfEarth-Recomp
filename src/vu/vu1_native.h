@@ -45,9 +45,36 @@ namespace ben10::vu1_native
         size_t count;
     };
 
+    // A translated block (findings/21 s.24): `count` consecutive pairs from
+    // `pc`, whose words are words[2 * i] (lower) and words[2 * i + 1]
+    // (upper). The resolver puts `fn` at the block's first pair only when
+    // every pair of the block is in code memory as translated.
+    struct NativeBlock
+    {
+        uint32_t pc;
+        uint32_t count;
+        const uint32_t *words;
+        VU1Interpreter::NativePairFn fn;
+        bool vu0; // every pair decodes the same as VU0 code
+    };
+
+    struct NativeBlockTable
+    {
+        const NativeBlock *blocks;
+        size_t count;
+    };
+
     // Defined by the generated index (generated/vu1/vu1_native_index.cpp).
     extern const NativeTable kTables[];
     extern const size_t kTableCount;
+    extern const NativeBlockTable kBlockTables[];
+    extern const size_t kBlockTableCount;
+
+    // Whether the resolvers hand out blocks (default on). Off, every pair
+    // runs through its own function as before (comparisons:
+    // BEN10_VU1_BLOCKS=0, ben10_vu1_replay --no-blocks).
+    void setBlocksEnabled(bool enabled);
+    size_t blockCount();
 
     // VU1Interpreter::NativeResolver.
     void resolve(const uint8_t *vuCode, uint32_t codeSize,

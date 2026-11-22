@@ -28,6 +28,14 @@
 //      runtime/ps2_vu1_lower_inl.h, inlined for that word).
 //      Everything is spread over kFileCount (32) files (parallel
 //      compilation) plus an index file with the tables of src/vu/vu1_native.h.
+//   4. Splits each chunk into blocks (findings/21 s.24): straight-line runs
+//      of pairs from a leader (chunk start, static branch target, after a
+//      branch's or an E bit's delay slot) up to a branch, an E/D/T pair or
+//      the next leader. A block function runs its body pairs one after
+//      another (VU1NativeAccess::blockPair*: no PC/branch/end tail, and a
+//      hazard check only on the read lanes not settled at build time, see
+//      MaskedTiming) and its last pair through the ordinary step. 32 more
+//      files, vu1_native_blocks_N.cpp, with the block tables.
 //
 // USAGE
 //   ben10_vu1_translate <game ELF> <output folder>
@@ -250,6 +258,13 @@ int main(int argc, char **argv)
     std::vector<uint8_t> code(kVuCodeSize, 0);
     size_t n = 0;
     size_t vu0Pairs = 0; // pairs that may also run on VU0
+    // Per pair, for the blocks below: its decode and whether it is valid on VU0.
+    struct PairInfo
+    {
+        VU1Interpreter::DecodedInstructionPair decoded;
+        bool vu0 = false;
+    };
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, PairInfo> pairInfo;
     for (const auto &[pc, lower, upper] : pairs)
     {
         std::memcpy(code.data() + pc, &lower, 4);
@@ -270,6 +285,7 @@ int main(int argc, char **argv)
             if (vu0Same)
                 ++vu0Pairs;
         }
+        pairInfo[{pc, lower, upper}] = PairInfo{d, vu0Same};
         const int f = static_cast<int>(n % kFileCount);
         char id[32];
         std::snprintf(id, sizeof(id), "p%04X_%zu", pc, n);
@@ -310,6 +326,284 @@ int main(int argc, char **argv)
         ++n;
     }
 
+    // ---- Blocks (findings/21 s.24) ----------------------------------------
+    // A block is a straight-line run of pairs of one overlay chunk, starting
+    // at a leader: the chunk's first pair, a static branch target, or the
+    // pair after a branch's delay slot or after an E bit's delay slot (where
+    // the run loop next dispatches). Its body pairs (no branch, no E/D/T
+    // bit, no reserved instruction) run inline one after another
+    // (VU1NativeAccess::blockPair*); its last pair runs through the
+    // ordinary per-pair step, which sets the PC and handles branches and
+    // ends. A block needs at least one body pair.
+    constexpr size_t kBlockMax = 64; // pairs per block
+    struct Block
+    {
+        uint32_t pc = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> words; // (lower, upper) per pair
+        bool vu0 = true;
+    };
+    std::map<std::pair<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>>, Block> blocks;
+    for (const Entry &e : entries)
+    {
+        auto next = lmas.upper_bound(e.lma);
+        const uint32_t end = next != lmas.end() ? *next : vutextEnd;
+        const uint32_t size = std::min(kChunkMax, end - e.lma);
+        struct Item
+        {
+            uint32_t pc, lower, upper;
+            const PairInfo *info;
+        };
+        std::vector<Item> seq;
+        for (uint32_t p = 0; p + 8 <= size; p += 8)
+        {
+            const uint32_t pc = e.vma + p;
+            if (pc + 8 > kVuCodeSize)
+                break;
+            const size_t off = vutext->offset + (e.lma - vutext->addr) + p;
+            const uint32_t lower = u32(elf, off), upper = u32(elf, off + 4);
+            seq.push_back({pc, lower, upper, &pairInfo.at({pc, lower, upper})});
+        }
+        const auto isBranch = [](const Item &it)
+        { return it.info->decoded.lowerUsage.pipeline == VU1Interpreter::PipelineBranch; };
+        const auto endsBody = [&](const Item &it)
+        {
+            const auto &d = it.info->decoded;
+            return isBranch(it) || d.eBit || d.dBit || d.tBit || d.upperUsage.reserved || d.lowerUsage.reserved;
+        };
+        std::set<size_t> leaders{0u};
+        for (size_t i = 0; i < seq.size(); ++i)
+        {
+            const auto &d = seq[i].info->decoded;
+            if (isBranch(seq[i]) || d.eBit)
+                leaders.insert(i + 2);
+            if (d.dBit || d.tBit || d.upperUsage.reserved || d.lowerUsage.reserved)
+                leaders.insert(i + 1);
+            // B, BAL and the IBxx compares: PC-relative, known here (JR/JALR
+            // are not). target = pc + 8 + imm11 * 8, as the lower executor.
+            const uint32_t op = seq[i].lower >> 25;
+            if ((seq[i].upper & 0x80000000u) == 0u && isBranch(seq[i]) && op != 0x24u && op != 0x25u)
+            {
+                int32_t imm = static_cast<int32_t>(seq[i].lower & 0x7FFu);
+                if (imm & 0x400)
+                    imm -= 0x800;
+                const uint32_t target = (seq[i].pc + 8u + static_cast<uint32_t>(imm * 8)) & 0x3FFFu;
+                if (target >= seq.front().pc && target <= seq.back().pc)
+                    leaders.insert((target - seq.front().pc) / 8u);
+            }
+        }
+        for (size_t l : leaders)
+        {
+            if (l >= seq.size())
+                continue;
+            // Body: l, l+1, ... while the pair can be a body pair and the
+            // next one exists, is not a leader and the block is not full.
+            size_t last = l;
+            while (last + 1 < seq.size() && !endsBody(seq[last]) && !leaders.count(last + 1) &&
+                   last + 1 - l + 1 <= kBlockMax)
+                ++last;
+            if (endsBody(seq[last]) && (seq[last].info->decoded.upperUsage.reserved || seq[last].info->decoded.lowerUsage.reserved))
+                --last; // never run a reserved pair from a block (falls back)
+            if (last <= l)
+                continue; // no body pair: nothing to gain
+            Block b;
+            b.pc = seq[l].pc;
+            for (size_t i = l; i <= last; ++i)
+            {
+                b.words.emplace_back(seq[i].lower, seq[i].upper);
+                b.vu0 = b.vu0 && seq[i].info->vu0;
+            }
+            auto key = std::make_pair(b.pc, b.words);
+            blocks.emplace(std::move(key), std::move(b));
+        }
+    }
+
+    // Block files: the decoded pairs again as constants (each file is its
+    // own translation unit), one function per block, and the block table.
+    std::vector<std::ostringstream> blockFiles(kFileCount);
+    std::vector<std::ostringstream> blockTables(kFileCount);
+    std::vector<std::set<uint32_t>> blockUppers(kFileCount), blockLowers(kFileCount);
+    std::vector<size_t> blockCounts(kFileCount, 0);
+    size_t blockPairs = 0;
+    size_t b = 0;
+    for (const auto &[key, block] : blocks)
+    {
+        const int f = static_cast<int>(b % kFileCount);
+        std::ostringstream &o = blockFiles[f];
+        char bid[32];
+        std::snprintf(bid, sizeof(bid), "b%04X_%zu", block.pc, b);
+        o << "\n    // block at 0x" << std::hex << block.pc << std::dec << ", " << block.words.size() << " pairs\n";
+        for (size_t i = 0; i < block.words.size(); ++i)
+        {
+            const uint32_t pc = block.pc + static_cast<uint32_t>(i) * 8u;
+            const auto &[lower, upper] = block.words[i];
+            const auto &d = pairInfo.at({pc, lower, upper}).decoded;
+            o << "    constexpr Pair k_" << bid << "_" << i << "{.lower = 0x" << std::hex << d.lower << "u, .upper = 0x" << d.upper << std::dec << "u,\n"
+              << "        .lowerUsage = ";
+            usage(o, d.lowerUsage);
+            o << ",\n        .upperUsage = ";
+            usage(o, d.upperUsage);
+            o << ",\n        .iBit = " << (d.iBit ? "true" : "false") << ", .eBit = " << (d.eBit ? "true" : "false")
+              << ", .mBit = " << (d.mBit ? "true" : "false") << ", .dBit = " << (d.dBit ? "true" : "false")
+              << ", .tBit = " << (d.tBit ? "true" : "false")
+              << ", .upperVfShadowReg = " << +d.upperVfShadowReg << "u, .suppressedLowerVf = " << +d.suppressedLowerVf << "u};\n";
+            blockUppers[f].insert(upper);
+            if ((upper & 0x80000000u) == 0u)
+                blockLowers[f].insert(lower);
+        }
+        o << "    const uint32_t kWords_" << bid << "[] = {";
+        for (const auto &[lower, upper] : block.words)
+            o << "0x" << std::hex << lower << "u, 0x" << upper << "u, " << std::dec;
+        o << "};\n";
+        // The ordinary per-pair step of pair i (the last pair, or the first
+        // one when the block cannot be entered).
+        const auto ordinaryStep = [&](size_t i)
+        {
+            const auto &[lower, upper] = block.words[i];
+            char un[16], ln[16];
+            std::snprintf(un, sizeof(un), "u%08X", upper);
+            std::snprintf(ln, sizeof(ln), "l%08X", lower);
+            if ((upper & 0x80000000u) != 0u)
+                o << "VU1NativeAccess::execPairUpper<&ben10::vu1_native::upper::" << un << ", k_" << bid << "_" << i
+                  << ">(vu, k_" << bid << "_" << i << ", frame);\n";
+            else
+                o << "VU1NativeAccess::execPairUpperLower<&ben10::vu1_native::upper::" << un
+                  << ", &ben10::vu1_native::lower::" << ln << ", k_" << bid << "_" << i << ">(vu, k_" << bid << "_" << i << ", frame);\n";
+        };
+        o << "    Result " << bid << "(VU1Interpreter &vu, Frame &frame)\n    {\n"
+          << "        // A branch, delay slot or end pending: the first pair alone,\n"
+          << "        // as the run loop would run it.\n"
+          << "        if (!VU1NativeAccess::blockCanEnter(vu))\n"
+          << "            return ";
+        ordinaryStep(0);
+        const size_t count = block.words.size();
+        // The latest write of each VF lane, VI register and ACC lane by an
+        // earlier pair of this block: its index and latency. A read whose
+        // latest write is at least that latency in pairs back cannot stall
+        // (pairs issue at least one cycle apart) and is left out of the
+        // pair's hazard check (MaskedTiming, findings/21 s.24). Reads with no
+        // write in the block yet depend on the state at entry: kept.
+        struct LastWrite
+        {
+            bool valid = false;
+            size_t index = 0;
+            uint32_t latency = 0;
+        };
+        LastWrite vfLast[32][4]{}, viLast[16]{}, accLast[4]{};
+        const auto settled = [](const LastWrite &w, size_t j)
+        { return w.valid && j - w.index >= w.latency; };
+        const auto vfMask = [&](const VU1Interpreter::VfAccess &a, size_t j)
+        {
+            uint8_t keep = 0;
+            for (uint32_t bit = 0; bit < 4u; ++bit) // lane bit b is component 3 - b
+                if ((a.lanes & (1u << bit)) != 0u && !(a.reg == 0u || settled(vfLast[a.reg][3u - bit], j)))
+                    keep |= static_cast<uint8_t>(1u << bit);
+            return keep;
+        };
+        for (size_t i = 0; i + 1 < count; ++i)
+        {
+            const uint32_t pc = block.pc + static_cast<uint32_t>(i) * 8u;
+            const auto &[lower, upper] = block.words[i];
+            char un[16], ln[16];
+            std::snprintf(un, sizeof(un), "u%08X", upper);
+            std::snprintf(ln, sizeof(ln), "l%08X", lower);
+            const auto &d = pairInfo.at({pc, lower, upper}).decoded;
+            const uint8_t u0 = d.upperUsage.vfReadCount > 0u ? vfMask(d.upperUsage.vfRead[0], i) : 0u;
+            const uint8_t u1 = d.upperUsage.vfReadCount > 1u ? vfMask(d.upperUsage.vfRead[1], i) : 0u;
+            const uint8_t l0 = d.lowerUsage.vfReadCount > 0u ? vfMask(d.lowerUsage.vfRead[0], i) : 0u;
+            const uint8_t l1 = d.lowerUsage.vfReadCount > 1u ? vfMask(d.lowerUsage.vfRead[1], i) : 0u;
+            uint16_t vi = 0;
+            for (uint32_t r = 1; r < 16u; ++r)
+                if (((d.upperUsage.viRead | d.lowerUsage.viRead) & (1u << r)) != 0u && !settled(viLast[r], i))
+                    vi |= static_cast<uint16_t>(1u << r);
+            uint8_t acc = 0;
+            for (uint32_t bit = 0; bit < 4u; ++bit)
+                if (((d.upperUsage.accRead | d.lowerUsage.accRead) & (1u << bit)) != 0u && !settled(accLast[3u - bit], i))
+                    acc |= static_cast<uint8_t>(1u << bit);
+            // Then this pair's writes, as markPairWritesConst marks them
+            // (lower first, then upper, VI, ACC).
+            const auto markVf = [&](const VU1Interpreter::VfAccess &w, uint32_t latency)
+            {
+                for (uint32_t bit = 0; bit < 4u; ++bit)
+                    if ((w.lanes & (1u << bit)) != 0u)
+                        vfLast[w.reg][3u - bit] = {true, i, latency};
+            };
+            if (d.lowerUsage.vfWrite.reg != 0u && d.suppressedLowerVf != d.lowerUsage.vfWrite.reg)
+                markVf(d.lowerUsage.vfWrite, d.lowerUsage.vfLatency != 0u ? d.lowerUsage.vfLatency : d.lowerUsage.latency);
+            if (d.upperUsage.vfWrite.reg != 0u)
+                markVf(d.upperUsage.vfWrite, d.upperUsage.vfLatency != 0u ? d.upperUsage.vfLatency : d.upperUsage.latency);
+            for (uint32_t r = 1; r < 16u; ++r)
+                if ((d.lowerUsage.viWrite & (1u << r)) != 0u)
+                    viLast[r] = {true, i, d.lowerUsage.viLatency != 0u ? d.lowerUsage.viLatency : d.lowerUsage.latency};
+            for (uint32_t bit = 0; bit < 4u; ++bit)
+                if ((d.upperUsage.accWrite & (1u << bit)) != 0u)
+                    accLast[3u - bit] = {true, i, 1u}; // kAccForwardLatency
+            char masks[96];
+            std::snprintf(masks, sizeof(masks), ", 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu", u0, u1, l0, l1, vi, acc);
+            if ((upper & 0x80000000u) != 0u)
+                o << "        if (!VU1NativeAccess::blockPairUpper<&ben10::vu1_native::upper::" << un << ", k_" << bid << "_" << i
+                  << ", 0x" << std::hex << pc << std::dec << "u, " << (i == 0 ? "true" : "false") << masks << ">(vu, frame))\n";
+            else
+                o << "        if (!VU1NativeAccess::blockPairUpperLower<&ben10::vu1_native::upper::" << un
+                  << ", &ben10::vu1_native::lower::" << ln << ", k_" << bid << "_" << i
+                  << ", 0x" << std::hex << pc << std::dec << "u, " << (i == 0 ? "true" : "false") << masks << ">(vu, frame))\n";
+            o << "            return Result::Break;\n";
+        }
+        // The last pair: the run loop's checks, then the ordinary step.
+        {
+            const size_t i = count - 1;
+            const uint32_t pc = block.pc + static_cast<uint32_t>(i) * 8u;
+            const auto &[lower, upper] = block.words[i];
+            char un[16], ln[16];
+            std::snprintf(un, sizeof(un), "u%08X", upper);
+            std::snprintf(ln, sizeof(ln), "l%08X", lower);
+            (void)lower;
+            (void)upper;
+            (void)un;
+            (void)ln;
+            o << "        VU1NativeAccess::blockSetPc(vu, frame, 0x" << std::hex << pc << std::dec << "u);\n"
+              << "        if (VU1NativeAccess::loopHead(vu, frame) == Result::Break)\n"
+              << "            return Result::Break;\n"
+              << "        return ";
+            ordinaryStep(i);
+        }
+        o << "    }\n";
+        blockTables[f] << "        {0x" << std::hex << block.pc << std::dec << "u, " << count << "u, kWords_" << bid << ", &" << bid
+                       << ", " << (block.vu0 ? "true" : "false") << "},\n";
+        ++blockCounts[f];
+        blockPairs += count;
+        ++b;
+    }
+    for (int f = 0; f < kFileCount; ++f)
+    {
+        std::ostringstream head;
+        head << "// Generated by tools/vu1_translate from the game's ELF: do not edit, do not version.\n"
+                "// Translated blocks (findings/21 s.24).\n"
+                "#include \"vu/vu1_native.h\"\n"
+                "#include \"runtime/ps2_vu1_lower_inl.h\"\n\n"
+                "namespace ben10::vu1_native::upper\n{\n";
+        for (uint32_t u : blockUppers[f])
+        {
+            char un[16];
+            std::snprintf(un, sizeof(un), "u%08X", u);
+            head << "    void " << un << "(VU1Interpreter &vu);\n";
+        }
+        head << "}\nnamespace ben10::vu1_native::lower\n{\n";
+        for (uint32_t l : blockLowers[f])
+        {
+            char ln[16];
+            std::snprintf(ln, sizeof(ln), "l%08X", l);
+            head << "    void " << ln << "(VU1Interpreter &vu, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upper);\n";
+        }
+        head << "}\n\nnamespace\n{\n"
+                "    using Pair = VU1NativeAccess::Pair;\n"
+                "    using Frame = VU1NativeAccess::Frame;\n"
+                "    using Result = VU1NativeAccess::Result;\n";
+        std::ofstream(outDir / ("vu1_native_blocks_" + std::to_string(f) + ".cpp"))
+            << head.str() << blockFiles[f].str() << "}\n\nnamespace ben10::vu1_native\n{\n    extern const NativeBlock kBlocks" << f
+            << "[];\n    const NativeBlock kBlocks" << f << "[] = {\n" << blockTables[f].str()
+            << (blockCounts[f] == 0 ? "        {0u, 0u, nullptr, nullptr, false},\n" : "") << "    };\n}\n";
+    }
+
     std::ostringstream index;
     index << "// Generated by tools/vu1_translate from the game's ELF: do not edit, do not version.\n"
              "#include \"vu/vu1_native.h\"\n\nnamespace ben10::vu1_native\n{\n";
@@ -324,13 +618,20 @@ int main(int argc, char **argv)
         text.replace(text.find("@UPPER_DECLS@"), 13, decls);
         std::ofstream(outDir / ("vu1_native_" + std::to_string(f) + ".cpp")) << text;
     }
+    for (int f = 0; f < kFileCount; ++f)
+        index << "    extern const NativeBlock kBlocks" << f << "[];\n";
+    index << "    const NativeBlockTable kBlockTables[] = {\n";
+    for (int f = 0; f < kFileCount; ++f)
+        index << "        {kBlocks" << f << ", " << blockCounts[f] << "u},\n";
+    index << "    };\n    const size_t kBlockTableCount = " << kFileCount << ";\n";
     index << "    const NativeTable kTables[] = {\n";
     for (int f = 0; f < kFileCount; ++f)
         index << "        {kPairs" << f << ", " << counts[f] << "u},\n";
     index << "    };\n    const size_t kTableCount = " << kFileCount << ";\n}\n";
     std::ofstream(outDir / "vu1_native_index.cpp") << index.str();
 
-    std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs (%zu also valid on VU0), %zu upper and %zu lower words -> %s\n",
-                entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), outDir.string().c_str());
+    std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs (%zu also valid on VU0), %zu upper and %zu lower words, "
+                "%zu blocks of %zu pairs -> %s\n",
+                entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), blocks.size(), blockPairs, outDir.string().c_str());
     return 0;
 }

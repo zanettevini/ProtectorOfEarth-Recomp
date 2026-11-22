@@ -1,0 +1,250 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU interpreter: per-pair step for the body of a translated block
+
+What it is for:
+  Translated VU code ran one function per instruction pair, each called by
+  the run loop (budget and stop checks, a table lookup, an indirect call),
+  and each ended with the PC update, the branch-delay handling and the
+  E/D/T end checks. In a straight-line run of pairs none of that tail can
+  do anything but advance the PC.
+
+The change (used only by translated code; the interpreter is unchanged):
+  - execPairWith takes `blockBody`: for a pair in the body of a translated
+    block (no branch, no E/D/T bit, nothing pending), after the writes and
+    the VF0/VI0 reset it only advances the cycle and returns; the block
+    sets the PC itself.
+  - VU1NativeAccess::blockPairUpper / blockPairUpperLower: one body pair
+    at a constant PC: the stop request check, then the step with
+    blockBody. The run loop's other checks cannot fire inside a block: the
+    previous pair's cycle advance has just made every commit due by this
+    cycle, the step itself makes the budget check, and the PC is inside
+    code memory. The PC is set only when the block leaves early (only
+    branches read it). The first pair skips the stop check too (the run
+    loop has just made it).
+  - MaskedTiming / calculatePairReadyCycleMasked: the constant hazard
+    check with only the read lanes a block's translator could not settle
+    at build time (a lane whose latest write is by an earlier pair of the
+    block at least that write's latency in pairs back cannot stall, since
+    pairs issue at least one cycle apart). A static_assert keeps the masks
+    subsets of what the pair reads.
+  - VU1NativeAccess::blockCanEnter (no branch, delay slot or end pending),
+    blockSetPc and loopHead, for the block functions the port generates.
+  A block function runs its body pairs this way and its last pair through
+  the ordinary step, so the run loop sees the same state after it as after
+  running the same pairs one by one.
+
+How it was checked:
+  The port's replay: same checksums and cycle counts on the 40 VU1 and 60
+  VU0 workloads with blocks on, with them off and interpreted. ps2xTest
+  454/454.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -382,7 +382,7 @@
+     // store per lane written (findings/21 s.15). Same results.
+     template <class UpperExec, class LowerExec, class Timing>
+     StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower,
+-                            Timing timing, bool immediateWrites = false);
++                            Timing timing, bool immediateWrites = false, bool blockBody = false);
+     struct DynamicTiming
+     {
+         const DecodedInstructionPair &decoded;
+@@ -395,6 +395,23 @@
+         PS2_VU_FORCEINLINE uint64_t ready(const VU1Interpreter &vu) const { return vu.template calculatePairReadyCycleConst<D>(); }
+         PS2_VU_FORCEINLINE void mark(VU1Interpreter &vu) const { vu.template markPairWritesConst<D>(); }
+     };
++    // ConstTiming for a pair inside a translated block (findings/21 s.24):
++    // only the read lanes given here are checked. The translator leaves out
++    // a lane whose latest write is by an earlier pair of the same block at
++    // least that write's latency in pairs back: pairs issue at least one
++    // cycle apart, so that write is due by the time this pair issues and the
++    // check could not stall. (kU0/kU1: upper VF reads 0/1, kL0/kL1: lower VF
++    // reads 0/1, kVi: VI registers, kAcc: ACC lanes; each a subset of what
++    // the pair reads.)
++    template <const DecodedInstructionPair &D, uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++    struct MaskedTiming
++    {
++        PS2_VU_FORCEINLINE uint64_t ready(const VU1Interpreter &vu) const
++        {
++            return vu.template calculatePairReadyCycleMasked<D, kU0, kU1, kL0, kL1, kVi, kAcc>();
++        }
++        PS2_VU_FORCEINLINE void mark(VU1Interpreter &vu) const { vu.template markPairWritesConst<D>(); }
++    };
+     // VF / ACC results written at issue (translated code). Exact because
+     // every instruction that reads a VF or ACC lane waits (the hazard check)
+     // until the lane's latest write is due, so no read can tell when the
+@@ -507,6 +524,8 @@
+     // The same two for a pair known at compile time, unrolled.
+     template <const DecodedInstructionPair &D>
+     uint64_t calculatePairReadyCycleConst() const;
++    template <const DecodedInstructionPair &D, uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++    uint64_t calculatePairReadyCycleMasked() const;
+     template <const DecodedInstructionPair &D>
+     void markPairWritesConst();
+     // Lane bit b (x = bit 3 ... w = bit 0) is component 3 - b.
+@@ -727,6 +746,47 @@
+     return ready;
+ }
+ 
++// calculatePairReadyCycleConst with only the given read lanes (MaskedTiming).
++template <const VU1Interpreter::DecodedInstructionPair &D, uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++PS2_VU_FORCEINLINE uint64_t VU1Interpreter::calculatePairReadyCycleMasked() const
++{
++    static_assert((kU0 & ~D.upperUsage.vfRead[0].lanes & 0xFu) == 0u && (kU1 & ~D.upperUsage.vfRead[1].lanes & 0xFu) == 0u &&
++                      (kL0 & ~D.lowerUsage.vfRead[0].lanes & 0xFu) == 0u && (kL1 & ~D.lowerUsage.vfRead[1].lanes & 0xFu) == 0u &&
++                      (kVi & ~(D.upperUsage.viRead | D.lowerUsage.viRead)) == 0u &&
++                      (kAcc & ~(D.upperUsage.accRead | D.lowerUsage.accRead) & 0xFu) == 0u,
++                  "MaskedTiming may only drop read lanes");
++    uint64_t ready = m_cycle;
++    if constexpr (D.upperUsage.vfReadCount > 0u)
++        maxVfReady<D.upperUsage.vfRead[0].reg, kU0>(ready);
++    if constexpr (D.upperUsage.vfReadCount > 1u)
++        maxVfReady<D.upperUsage.vfRead[1].reg, kU1>(ready);
++    if constexpr (D.lowerUsage.vfReadCount > 0u)
++        maxVfReady<D.lowerUsage.vfRead[0].reg, kL0>(ready);
++    if constexpr (D.lowerUsage.vfReadCount > 1u)
++        maxVfReady<D.lowerUsage.vfRead[1].reg, kL1>(ready);
++    maxViReady<static_cast<uint16_t>(kVi & 0xFFFEu)>(ready);
++    maxAccReady<kAcc>(ready);
++
++    if constexpr (D.lowerUsage.pipeline == PipelineFdiv)
++        if (m_fdiv.valid)
++            ready = std::max(ready, m_fdiv.readyCycle);
++    if constexpr (D.lowerUsage.pipeline == PipelineEfu)
++        ready = std::max(ready, m_efuResourceReady);
++    if constexpr (D.lowerUsage.waitQ)
++        if (m_fdiv.valid)
++            ready = std::max(ready, m_fdiv.readyCycle);
++    if constexpr (D.lowerUsage.waitP)
++    {
++        for (const ScalarPipelineEntry &entry : m_efu)
++            if (entry.valid)
++                ready = std::max(ready, entry.readyCycle);
++    }
++    if constexpr (D.lowerUsage.pipeline == PipelineXgkick)
++        if (m_xgkick.active)
++            ready = std::max(ready, m_cycle + 1u);
++    return ready;
++}
++
+ template <const VU1Interpreter::DecodedInstructionPair &D>
+ PS2_VU_FORCEINLINE void VU1Interpreter::markPairWritesConst()
+ {
+@@ -848,7 +908,7 @@
+ 
+ template <class UpperExec, class LowerExec, class Timing>
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
+-                                                                           Timing timing, bool immediateWrites)
++                                                                           Timing timing, bool immediateWrites, bool blockBody)
+ {
+     if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+     {
+@@ -1025,6 +1085,17 @@
+     m_state.vf[0][3] = 1.0f;
+     m_state.vi[0] = 0;
+ 
++    // A pair in the body of a translated block (VU1NativeAccess::blockPair):
++    // no branch, delay slot, E, D or T bit can be pending or start here (the
++    // translator ends blocks before such pairs and the block checks the
++    // state on entry), so what follows reduces to the cycle advance; the
++    // block sets the PC itself (findings/21 s.24).
++    if (blockBody)
++    {
++        advanceOneCycle();
++        return StepResult::Continue;
++    }
++
+     uint32_t nextPc = m_state.pc + 8u;
+     if (nextPc >= f.codeSize)
+         nextPc = 0u;
+@@ -1214,6 +1285,90 @@
+             { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+             VU1Interpreter::ConstTiming<P>{}, true);
+     }
++    // ---- Translated blocks (findings/21 s.24) ---------------------------
++    // A block function runs a straight-line run of pairs: the body pairs
++    // here, one after another without going back to the run loop, then the
++    // last pair (a branch and its delay slot, an E/D/T pair, or simply the
++    // last pair) through its ordinary per-pair function.
++    // A block may start only where the run loop would run its first pair
++    // with no branch, delay slot or end pending.
++    // The run loop's checks before a pair (budget, stop, a due commit, the
++    // end of code memory).
++    static PS2_VU_FORCEINLINE Result loopHead(VU1Interpreter &vu, Frame &frame)
++    {
++        return vu.loopHead(frame);
++    }
++    static PS2_VU_FORCEINLINE bool blockCanEnter(const VU1Interpreter &vu)
++    {
++        return !vu.m_state.branchPending && !vu.m_state.ebit && !vu.m_state.haltAfterDelaySlot;
++    }
++    // Sets the PC the run loop would hold before the pair at `pc` (wrapping
++    // at the end of code memory as the per-pair step does).
++    static PS2_VU_FORCEINLINE void blockSetPc(VU1Interpreter &vu, const Frame &frame, uint32_t pc)
++    {
++        vu.m_state.pc = pc >= frame.codeSize ? 0u : pc;
++    }
++    // One body pair at kPc, as the run loop followed by the per-pair step
++    // would run it, without what cannot happen inside a block:
++    // - the run loop's commit check: the previous pair's cycle advance has
++    //   just committed everything due by this cycle;
++    // - its budget check: the step makes the same one before it executes;
++    // - its end-of-code-memory check: kPc is inside code memory;
++    // - the PC update: only branches (never in a body) read the PC, so it is
++    //   set only when the block leaves early.
++    // The stop request is still checked (a full flag ring can set it). The
++    // first pair skips that too (the run loop has just checked it). The
++    // hazard check reads only the lanes the translator could not settle at
++    // build time (MaskedTiming). Returns false when the run loop would stop
++    // (Break), with the PC at kPc.
++    template <void (*Upper)(VU1Interpreter &), const Pair &P, uint32_t kPc, bool kFirst,
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++    static PS2_VU_FORCEINLINE bool blockPairUpper(VU1Interpreter &vu, Frame &frame)
++    {
++        if constexpr (!kFirst)
++        {
++            if (vu.m_stopRequested) [[unlikely]]
++            {
++                vu.m_state.pc = kPc;
++                return false;
++            }
++        }
++        const uint32_t lowerWord = P.lower;
++        const uint32_t upperWord = P.upper;
++        if (vu.execPairWith(
++                P, frame, [](VU1Interpreter &v)
++                { Upper(v); },
++                [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
++                { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
++            return true;
++        vu.m_state.pc = kPc;
++        return false;
++    }
++    template <void (*Upper)(VU1Interpreter &), LowerFn Lower, const Pair &P, uint32_t kPc, bool kFirst,
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++    static PS2_VU_FORCEINLINE bool blockPairUpperLower(VU1Interpreter &vu, Frame &frame)
++    {
++        if constexpr (!kFirst)
++        {
++            if (vu.m_stopRequested) [[unlikely]]
++            {
++                vu.m_state.pc = kPc;
++                return false;
++            }
++        }
++        const uint32_t upperWord = P.upper;
++        if (vu.execPairWith(
++                P, frame, [](VU1Interpreter &v)
++                { Upper(v); },
++                [upperWord](VU1Interpreter &v, Frame &fr)
++                { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
++            return true;
++        vu.m_state.pc = kPc;
++        return false;
++    }
++
+     // One upper instruction, inline: called with a constant word, the
+     // compiler keeps only that instruction's code.
+     static PS2_VU_FORCEINLINE void execUpper(VU1Interpreter &vu, uint32_t instr)

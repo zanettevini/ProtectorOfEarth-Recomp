@@ -25,7 +25,8 @@
 //   lines computed the same thing.
 //   Always: total VU cycles, wall time, VU cycles per second.
 //   --native: the translated VU1 code (src/vu/vu1_native.h, findings/21)
-//   runs every pair it has; the sums must not change.
+//   runs every pair it has; the sums must not change. Translated blocks
+//   (findings/21 s.24) are on with it; --no-blocks runs pair by pair.
 //
 // VU0 (--vu0): the game's VU0 microprograms (the skinning, started with
 //   VCALLMS, findings/21 s.19), saved by capture_vu0.gdb when
@@ -116,7 +117,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s <capture folder> [--vu0] [--sum] [--reps N] [--native]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <capture folder> [--vu0] [--sum] [--reps N] [--native [--no-blocks]]\n", argv[0]);
         return 2;
     }
     const std::string folder = argv[1];
@@ -127,6 +128,10 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; ++i)
         if (std::strcmp(argv[i], "--vu0") == 0)
             vu0Mode = true;
+#if defined(BEN10_HAVE_VU1_NATIVE)
+        else if (std::strcmp(argv[i], "--no-blocks") == 0)
+            ben10::vu1_native::setBlocksEnabled(false);
+#endif
     for (int i = 2; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--sum") == 0)
@@ -145,7 +150,8 @@ int main(int argc, char **argv)
             else
             {
                 VU1Interpreter::setNativeResolver(&ben10::vu1_native::resolve);
-                std::fprintf(stderr, "translated VU1 code: %zu pairs\n", ben10::vu1_native::pairCount());
+                std::fprintf(stderr, "translated VU1 code: %zu pairs, %zu blocks\n", ben10::vu1_native::pairCount(),
+                             ben10::vu1_native::blockCount());
             }
 #else
             std::fprintf(stderr, "--native: this build has no translated VU1 code (no game ELF at configure time)\n");

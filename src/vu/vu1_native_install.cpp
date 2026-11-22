@@ -7,7 +7,9 @@
 // BEN10_VU1_NATIVE=0 leaves everything to the interpreter (comparisons).
 // The VU0 instance gets ben10::vu1_native::resolveVu0 the same way, for the
 // pairs that also decode the same on VU0 (findings/21 s.19);
-// BEN10_VU0_NATIVE=0 turns off only that part.
+// BEN10_VU0_NATIVE=0 turns off only that part. Translated blocks
+// (straight-line runs of pairs, findings/21 s.24) are on unless
+// BEN10_VU1_BLOCKS=0.
 
 #include "ps2_runtime.h"
 #include "game_overrides.h"
@@ -25,6 +27,15 @@ namespace ben10::vu1_native_install
             std::fprintf(stderr, "[vu1] BEN10_VU1_NATIVE=0: VU1 programs run in the interpreter\n");
             return;
         }
+        // Translated blocks (findings/21 s.24): on unless BEN10_VU1_BLOCKS=0.
+        if (const char *b = std::getenv("BEN10_VU1_BLOCKS"); b != nullptr && b[0] == '0')
+        {
+            ben10::vu1_native::setBlocksEnabled(false);
+            std::fprintf(stderr, "[vu1] BEN10_VU1_BLOCKS=0: translated pairs run one by one\n");
+        }
+        else
+            std::fprintf(stderr, "[vu1] translated blocks on: %zu (BEN10_VU1_BLOCKS=0 turns them off)\n",
+                         ben10::vu1_native::blockCount());
         VU1Interpreter::setNativeResolver(&ben10::vu1_native::resolve);
         std::fprintf(stderr, "[vu1] translated VU1 code on: %zu pairs (BEN10_VU1_NATIVE=0 turns it off)\n",
                      ben10::vu1_native::pairCount());

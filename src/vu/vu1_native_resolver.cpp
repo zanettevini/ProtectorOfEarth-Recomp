@@ -19,7 +19,10 @@ namespace ben10::vu1_native
         // Candidates per pair slot (pc / 8): the overlay groups overlap in
         // VU memory, so one address has several possible pairs.
         std::vector<std::vector<const NativePair *>> g_byPc;
+        // Blocks by their first pair's slot (findings/21 s.24).
+        std::vector<std::vector<const NativeBlock *>> g_blocksByPc;
         std::once_flag g_once;
+        bool g_blocksEnabled = true;
 
         void buildIndex()
         {
@@ -31,6 +34,14 @@ namespace ben10::vu1_native
                     if ((p.pc >> 3) < g_byPc.size())
                         g_byPc[p.pc >> 3].push_back(&p);
                 }
+            g_blocksByPc.assign(0x4000u / 8u, {});
+            for (size_t t = 0; t < kBlockTableCount; ++t)
+                for (size_t i = 0; i < kBlockTables[t].count; ++i)
+                {
+                    const NativeBlock &b = kBlockTables[t].blocks[i];
+                    if (b.fn != nullptr && (b.pc >> 3) < g_blocksByPc.size())
+                        g_blocksByPc[b.pc >> 3].push_back(&b);
+                }
         }
     }
 
@@ -39,6 +50,20 @@ namespace ben10::vu1_native
         size_t n = 0;
         for (size_t t = 0; t < kTableCount; ++t)
             n += kTables[t].count;
+        return n;
+    }
+
+    void setBlocksEnabled(bool enabled)
+    {
+        g_blocksEnabled = enabled;
+    }
+
+    size_t blockCount()
+    {
+        size_t n = 0;
+        for (size_t t = 0; t < kBlockTableCount; ++t)
+            for (size_t i = 0; i < kBlockTables[t].count; ++i)
+                n += kBlockTables[t].blocks[i].fn != nullptr ? 1u : 0u;
         return n;
     }
 
@@ -74,6 +99,27 @@ namespace ben10::vu1_native
                         table[slot] = p->fn;
                         break;
                     }
+            }
+            if (!g_blocksEnabled)
+                return;
+            // A block replaces its first pair's function when all its pairs
+            // are in code memory as translated (the longest one if several).
+            for (uint32_t slot = 0; slot < entries && slot < g_blocksByPc.size(); ++slot)
+            {
+                const NativeBlock *best = nullptr;
+                for (const NativeBlock *b : g_blocksByPc[slot])
+                {
+                    if (vu0Only && !b->vu0)
+                        continue;
+                    if (b->pc + b->count * 8u > codeSize || slot + b->count > entries)
+                        continue;
+                    if (std::memcmp(vuCode + b->pc, b->words, b->count * 8u) != 0)
+                        continue;
+                    if (best == nullptr || b->count > best->count)
+                        best = b;
+                }
+                if (best != nullptr)
+                    table[slot] = best->fn;
             }
         }
     }

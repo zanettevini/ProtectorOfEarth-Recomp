@@ -25,9 +25,12 @@
    screen, then the busiest GS band. Patch 0035 (s.23): VU work -14%
    since patch 0032 on the replay. GS (findings/20 s.20): the
    dispatcher's page sets memoised (the busiest band), `lround` inline in
-   the bilinear filter (patch 0036). Next: the maintainer measures on
-   Windows; then block-level VU translation (s.23, last point); the
-   maintainer decides later whether the option becomes the default. Profile the game thread with
+   the bilinear filter (patch 0036). Translated blocks (s.24, patch
+   0037): VU work 20.0 M host instructions on the replay, -30% since
+   s.20. Next: the maintainer measures on Windows; then the upper words
+   (the largest cost left, 56 per VU cycle) and more static scheduling in
+   blocks; the maintainer decides later whether the async option becomes
+   the default. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
    `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
@@ -47,7 +50,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0036 upstream to PS2Recomp.
+5. Send patches 0002-0037 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
