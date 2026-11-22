@@ -2,25 +2,25 @@
 
 ## For the agent
 
-1. **Next: native VU1 phase 2 (decision D14, findings/21 s.3).** Phase 1
-   is in: every VU pair is translated to a function running the
-   interpreter's own step (`tools/vu1_translate`, `generated/vu1/`,
-   `src/vu/`). Phase 2a-2d are in (patches 0019-0022: upper and lower
-   executors folded per word, VF/ACC results written at issue; translated
-   VU code 793 M -> 349 M instructions on the replay). Next, in order:
-   static timing per block for the remaining queues (VI, flags, Q/P,
-   stores; the pipelines are empty at every resume); flags only where
-   read. After each step,
+1. **Next: faster translated VU code (decision D14, findings/21 s.11).**
+   Every VU1 pair is translated (`tools/vu1_translate`, `generated/vu1/`,
+   `src/vu/`); patches 0019-0026 brought the translated code from 793 M to
+   321 M instructions on the replay (about 550 per pair). On Windows the
+   game thread limits the first level (findings/21 s.7: one core at 100%,
+   9-10 game frames per second), and a profile (s.8) shows it is almost all
+   VU time. The target agreed with the maintainer: test again when the
+   first level can reach about 25-30 frames per second. Next, in order
+   (s.11): flags as a history read on demand; no per-cycle commit when
+   nothing is due; PATH1 progressed in batches; straight-line pair code;
+   the VU0 microprograms translated; then the GS bands (they alone would
+   cap the level near 20 per second). After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
    checksums as without `--native`; measure with `callgrind` on the replay
-   and `tools/perf/cpu_per_frame.sh` in the game (the frame rate of the
-   Linux test machine varies by up to 20% between runs). On Windows the
-   game thread limits the first level (findings/21 s.7: one core at 100%),
-   but the translated code saves only about a tenth of its time there with
-   MSVC. The Windows profile (findings/21 s.8) gives the order: the FMAC
-   model inline on MSVC (done, patch 0025, findings/21 s.9; not yet built
-   with MSVC), then the VU0 microprograms translated (a quarter of the game
-   thread), then static timing and a cheaper FMAC path. Then play on (the maintainer reached the first Sumo
+   and `tools/perf/cpu_per_frame.sh` in the game (the Linux test machine's
+   frame rate varies by up to 20% between runs); on Windows with
+   `BEN10_PROFILE` and `tools/perf/win_profile.py`. Patch 0025 (MSVC) is not
+   built on Windows yet; the maintainer's build script stops any compiler
+   process above 6 GB. Then play on (the maintainer reached the first Sumo
    Slammer card on Windows, findings/20 s.17) and fix the next thing that
    breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
