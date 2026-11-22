@@ -18,8 +18,9 @@
    game thread limits the first level (findings/21 s.7: one core at 100%),
    but the translated code saves only about a tenth of its time there with
    MSVC. The Windows profile (findings/21 s.8) gives the order: the FMAC
-   model inline on MSVC (pick the opcode case at translation time), then
-   the VU0 microprograms translated (a quarter of the game thread). Then play on (the maintainer reached the first Sumo
+   model inline on MSVC (done, patch 0025, findings/21 s.9; not yet built
+   with MSVC), then the VU0 microprograms translated (a quarter of the game
+   thread), then static timing and a cheaper FMAC path. Then play on (the maintainer reached the first Sumo
    Slammer card on Windows, findings/20 s.17) and fix the next thing that
    breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call
@@ -30,7 +31,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0024 upstream to PS2Recomp.
+5. Send patches 0002-0025 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

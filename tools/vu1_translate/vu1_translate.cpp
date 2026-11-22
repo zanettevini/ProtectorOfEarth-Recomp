@@ -214,8 +214,8 @@ int main(int argc, char **argv)
         std::snprintf(name, sizeof(name), "u%08X", upper);
         files[f] << "\n    // upper 0x" << std::hex << upper << std::dec << "\n"
                  << "    }\n    namespace ben10::vu1_native::upper\n    {\n"
-                 << "    BEN10_VU1_NOINLINE void " << name << "(VU1Interpreter &vu) { VU1NativeAccess::execUpper(vu, 0x"
-                 << std::hex << upper << std::dec << "u); }\n"
+                 << "    BEN10_VU1_NOINLINE void " << name << "(VU1Interpreter &vu) { VU1NativeAccess::execUpperWord<0x"
+                 << std::hex << upper << std::dec << "u>(vu); }\n"
                  << "    }\n    namespace\n    {\n";
     }
 
@@ -237,8 +237,8 @@ int main(int argc, char **argv)
                  << "    }\n    namespace ben10::vu1_native::lower\n    {\n"
                  << "    BEN10_VU1_NOINLINE void " << name
                  << "(VU1Interpreter &vu, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upper)"
-                 << " { VU1NativeLowerAccess::execLower(vu, 0x" << std::hex << lower << std::dec
-                 << "u, vuData, dataSize, gs, memory, upper); }\n"
+                 << " { VU1NativeLowerAccess::execLowerWord<0x" << std::hex << lower << std::dec
+                 << "u>(vu, vuData, dataSize, gs, memory, upper); }\n"
                  << "    }\n    namespace\n    {\n";
     }
 

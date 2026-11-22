@@ -295,3 +295,26 @@ Each step must keep `--sum` identical to the interpreter.
 - Next, from this profile: the FMAC model inline on MSVC without the
   memory blow-up of s.6 (pick the opcode case at translation time), and
   the VU0 microprograms translated like VU1's.
+
+## 9. Executors as templates on the instruction word (patch 0025)
+
+- Each translated upper or lower function inlined the whole executor with
+  a constant word and left it to the compiler to drop the other opcode
+  cases. GCC does that before inlining; MSVC does not (s.6), so on Windows
+  the FMAC model had to stay out of line (s.8).
+- Patch 0025: `execUpperT<kConst, kInstr>` and `execLowerT<kConst, kInstr>`
+  hold the executors' bodies with every opcode case group under
+  `if constexpr`. The interpreter instantiates `<false, 0>` (every case);
+  translated code calls `VU1NativeAccess::execUpperWord<W>` and
+  `VU1NativeLowerAccess::execLowerWord<W>`, which instantiate only W's case,
+  with constant fields and dest mask, on any compiler. The FMAC model is
+  forced inline again everywhere. The case groups were wrapped by a script
+  that also checked that every non-empty group ends in `return` or `break`
+  (empty groups keep falling through: the reserved upper ops 0x30-0x33
+  still reach `default`).
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454. GCC: same instruction count (it already
+  pruned), one generated file compiles with 529 MB instead of 711 MB.
+  MSVC: not built yet. The Windows build script now stops any compiler
+  process above 6 GB, so a repeat of s.6 fails the build instead of
+  freezing the machine.

@@ -32,8 +32,9 @@ fix and how it was found.
 | `0022-vu1-immediate-vf-acc-writes.patch` | VU1 interpreter: translated pairs write VF/ACC results at issue (hazard tracking and the end-of-program flush unchanged); the interpreter keeps its queues; same results and cycle counts | findings/21 s.3 |
 | `0023-vu1-fmac-inline-msvc.patch` | VU1 interpreter: the FMAC result/flag model is forced inline on GCC/Clang only; on MSVC plain `inline` (forcing it into every opcode case made one translated file need over 30 GB to compile); same results | findings/21 s.6 |
 | `0024-vu1-xgkick-reset-without-buffer.patch` | VU1 interpreter: resetting the XGKICK state at each program start and each XGKICK no longer zeroes its 64 KB packet buffer (only read below what was copied in); same results | findings/21 s.8 |
+| `0025-vu1-executors-per-word-templates.patch` | VU1 interpreter: upper and lower executors as templates on the instruction word (`execUpperT`/`execLowerT`, every opcode case under `if constexpr`), so translated code compiles only its word's case on any compiler; FMAC model forced inline again; same results | findings/21 s.9 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022, 0024 and 0025 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

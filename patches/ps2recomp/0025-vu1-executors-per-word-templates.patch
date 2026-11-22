@@ -1,0 +1,2728 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: upper and lower executors as templates on the instruction word
+
+What it is for:
+  Translated VU1 code builds one function per distinct upper and lower
+  word by inlining the executor with a constant word, and relied on the
+  compiler dropping every opcode case the word cannot reach. GCC and Clang
+  do that before inlining; MSVC inlines first: with the FMAC model forced
+  inline (patch 0020) one generated file needed more than 30 GB, and
+  without it (patch 0023) the model ran out of line, about a quarter of
+  the Ben 10 port's game thread on Windows.
+
+The change:
+  - execUpperT<kConst, kInstr> and execLowerT<kConst, kInstr>: the
+    executors' bodies, with every opcode case group (main opcode, lower
+    special funct and funct2, upper special op) under
+    `if constexpr (PS2_VU_UPPER_CASE(...))` and the like. With kConst
+    false every condition is true: execUpper and execLowerInline call
+    <false, 0> and behave as before. With kConst true only the cases of
+    kInstr are instantiated, and the fields and dest mask are constants.
+    Case groups without statements still fall through; every other group
+    already ended in return or break.
+  - VU1NativeAccess::execUpperWord<W> and VU1NativeLowerAccess::
+    execLowerWord<W> for translated code.
+  - PS2_VU_FMAC_INLINE is the forced inline on every compiler again
+    (patch 0023 made it plain inline on MSVC).
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code; GCC 13: one generated file compiles with 529 MB at
+  most (711 MB before).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -20,17 +20,12 @@
+ #define PS2_VU_FORCEINLINE inline __attribute__((always_inline))
+ #endif
+ 
+-// The FMAC result and flag model (runtime/ps2_vu1_fmac_inl.h): forced inline
+-// on GCC and Clang, which drop the unused opcode cases of a constant upper
+-// word before inlining. MSVC inlines first and prunes afterwards: forcing
+-// the model into every case of the upper executor made one file of
+-// translated code need more than 30 GB to compile, so there the compiler
+-// decides.
+-#if defined(_MSC_VER)
+-#define PS2_VU_FMAC_INLINE inline
+-#else
++// The FMAC result and flag model (runtime/ps2_vu1_fmac_inl.h), forced inline.
++// Translated code compiles one opcode case per upper word (execUpperT), so
++// each copy of the model is for one instruction. (Before that, MSVC inlined
++// the model into all ~70 cases of every translated word before dropping the
++// unused ones, and one file needed more than 30 GB: findings/21 s.6.)
+ #define PS2_VU_FMAC_INLINE PS2_VU_FORCEINLINE
+-#endif
+ 
+ struct VU1State
+ {
+@@ -382,9 +377,17 @@
+     void rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize, const PS2Memory *memory, uint64_t generation);
+ 
+     void execUpper(uint32_t instr); // inline, runtime/ps2_vu1_upper_inl.h
++    // The upper executor for any word (kConst false) or for the word kInstr
++    // known at build time (runtime/ps2_vu1_upper_inl.h).
++    template <bool kConst, uint32_t kInstr>
++    void execUpperT(uint32_t instr);
+     void execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr);
+     // The same, inline (runtime/ps2_vu1_lower_inl.h, not included here).
+     void execLowerInline(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr);
++    // The lower executor for any word (kConst false) or for the word kInstr
++    // known at build time (runtime/ps2_vu1_lower_inl.h).
++    template <bool kConst, uint32_t kInstr>
++    void execLowerT(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr);
+ 
+     void applyDest(float *dst, const float *result, uint8_t dest);
+     void applyDestAcc(const float *result, uint8_t dest);
+@@ -834,6 +837,13 @@
+     {
+         vu.execUpper(instr);
+     }
++    // One upper word known at build time: only its own opcode case is
++    // compiled (no switch left for the compiler to fold).
++    template <uint32_t kWord>
++    static PS2_VU_FORCEINLINE void execUpperWord(VU1Interpreter &vu)
++    {
++        vu.execUpperT<true, kWord>(kWord);
++    }
+     static Pair decode(const VU1Interpreter &vu, const uint8_t *vuCode, uint32_t pc)
+     {
+         return vu.decodeInstructionPair(vuCode, pc);
+--- a/ps2xRuntime/include/runtime/ps2_vu1_upper_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_upper_inl.h
+@@ -1,10 +1,18 @@
+ #ifndef PS2_RUNTIME_VU1_UPPER_INL_H
+ #define PS2_RUNTIME_VU1_UPPER_INL_H
+ 
+-// The VU upper (FMAC) executor, inline: included by runtime/ps2_vu1.h so
+-// that execPair called with a constant decoded pair (translated VU1 code)
+-// can fold the opcode switch and the dest mask. Moved unchanged from
+-// src/lib/vu/ps2_vu1_upper.cpp.
++// The VU upper (FMAC) executor, inline: included by runtime/ps2_vu1.h.
++// Moved from src/lib/vu/ps2_vu1_upper.cpp. It is a template on the
++// instruction: execUpperT<false, 0>(word) is the interpreter (any word at run
++// time, what execUpper runs); execUpperT<true, W>(W) runs the word W known at
++// build time (translated VU1 code). Every opcode case is under
++// `if constexpr (PS2_VU_UPPER_CASE(...))`, true for every case in the
++// interpreter and only for W's own case otherwise, so a translated word
++// instantiates only its own code: no compiler has to drop the other cases
++// after inlining them (MSVC did not, findings/21 s.6), and the fields and the
++// dest mask are constants.
++
++#include <initializer_list>
+ 
+ #include <cmath>
+ #include <cstring>
+@@ -12,6 +20,16 @@
+ 
+ namespace ps2_vu1_upper_detail
+ {
++    constexpr bool valueIn(uint32_t value, std::initializer_list<uint32_t> values)
++    {
++        for (uint32_t v : values)
++            if (v == value)
++                return true;
++        return false;
++    }
++    // Bits 5:0 select the opcode; ops 0x3C-0x3F use the special selector.
++    constexpr uint32_t upperOp(uint32_t word) { return word & 0x3Fu; }
++    constexpr uint32_t upperSpecialOp(uint32_t word) { return (word & 0x3u) | ((word >> 4) & 0x7Cu); }
+     inline int32_t vuFloatToInt(float value, float scale)
+     {
+         const double scaled = static_cast<double>(value) * static_cast<double>(scale);
+@@ -52,12 +70,21 @@
+     }
+ }
+ 
++// True when the case with these opcodes is to be compiled: always in the
++// interpreter (kConst false), only the known word's own case otherwise.
++#define PS2_VU_UPPER_CASE(...) \
++    (!kConst || ps2_vu1_upper_detail::valueIn(ps2_vu1_upper_detail::upperOp(kInstr), {__VA_ARGS__}))
++#define PS2_VU_UPPER_SPECIAL_CASE(...) \
++    (!kConst || ps2_vu1_upper_detail::valueIn(ps2_vu1_upper_detail::upperSpecialOp(kInstr), {__VA_ARGS__}))
++
+ // ============================================================================
+ // Upper instructions (FMAC pipeline)
+ // ============================================================================
+-PS2_VU_FORCEINLINE void VU1Interpreter::execUpper(uint32_t instr)
++template <bool kConst, uint32_t kInstr>
++PS2_VU_FORCEINLINE void VU1Interpreter::execUpperT(uint32_t instrArg)
+ {
+     using namespace ps2_vu1_upper_detail;
++    const uint32_t instr = kConst ? kInstr : instrArg;
+     m_currentUpperInstruction = instr;
+     // Fields (written out here: the short helpers of src/lib/vu/ps2_vu1_detail.h
+     // would clash with macros of the same names in other headers).
+@@ -91,447 +118,659 @@
+     case 0x01:
+     case 0x02:
+     case 0x03: // ADDbc
+-    {
+-        float bc = broadcast(vt, op & 3);
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] + bc;
+-        applyFmacDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x00, 0x01, 0x02, 0x03))
++        {
++            float bc = broadcast(vt, op & 3);
++            for (int c = 0; c < 4; c++)
++                result[c] = vs[c] + bc;
++            applyFmacDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x04:
+     case 0x05:
+     case 0x06:
+     case 0x07: // SUBbc
+-    {
+-        float bc = broadcast(vt, op & 3);
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] - bc;
+-        applyFmacDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x04, 0x05, 0x06, 0x07))
++        {
++            float bc = broadcast(vt, op & 3);
++            for (int c = 0; c < 4; c++)
++                result[c] = vs[c] - bc;
++            applyFmacDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x08:
+     case 0x09:
+     case 0x0A:
+     case 0x0B: // MADDbc
+-    {
+-        float bc = broadcast(vt, op & 3);
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] + vs[c] * bc;
+-        applyFmacDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x08, 0x09, 0x0A, 0x0B))
++        {
++            float bc = broadcast(vt, op & 3);
++            for (int c = 0; c < 4; c++)
++                result[c] = acc[c] + vs[c] * bc;
++            applyFmacDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x0C:
+     case 0x0D:
+     case 0x0E:
+     case 0x0F: // MSUBbc
+-    {
+-        float bc = broadcast(vt, op & 3);
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] - vs[c] * bc;
+-        applyFmacDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x0C, 0x0D, 0x0E, 0x0F))
++        {
++            float bc = broadcast(vt, op & 3);
++            for (int c = 0; c < 4; c++)
++                result[c] = acc[c] - vs[c] * bc;
++            applyFmacDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x10:
+     case 0x11:
+     case 0x12:
+     case 0x13: // MAXbc
+-    {
+-        // Raw operands, not the normalised copies (see vuRawMax).
+-        const float bc = m_state.vf[ft][op & 3];
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMax(m_state.vf[fs][c], bc);
+-        applyDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x10, 0x11, 0x12, 0x13))
++        {
++            // Raw operands, not the normalised copies (see vuRawMax).
++            const float bc = m_state.vf[ft][op & 3];
++            for (int c = 0; c < 4; c++)
++                result[c] = vuRawMax(m_state.vf[fs][c], bc);
++            applyDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x14:
+     case 0x15:
+     case 0x16:
+     case 0x17: // MINIbc
+-    {
+-        const float bc = m_state.vf[ft][op & 3];
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMin(m_state.vf[fs][c], bc);
+-        applyDest(vd, result, dest);
++        if constexpr (PS2_VU_UPPER_CASE(0x14, 0x15, 0x16, 0x17))
++        {
++            const float bc = m_state.vf[ft][op & 3];
++            for (int c = 0; c < 4; c++)
++                result[c] = vuRawMin(m_state.vf[fs][c], bc);
++            applyDest(vd, result, dest);
++            return;
++        }
+         return;
+-    }
+     case 0x18:
+     case 0x19:
+     case 0x1A:
+     case 0x1B: // MULbc
+-    {
+-        float bc = broadcast(vt, op & 3);
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] * bc;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    }
+-    case 0x1C: // MULq
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] * q;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x1D: // MAXi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMax(m_state.vf[fs][c], m_state.i);
+-        applyDest(vd, result, dest);
+-        return;
+-    case 0x1E: // MULi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] * i;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x1F: // MINIi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMin(m_state.vf[fs][c], m_state.i);
+-        applyDest(vd, result, dest);
+-        return;
+-    case 0x20: // ADDq
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] + q;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x21: // MADDq
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] + vs[c] * q;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x22: // ADDi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] + i;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x23: // MADDi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] + vs[c] * i;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x24: // SUBq
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] - q;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x25: // MSUBq
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] - vs[c] * q;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x26: // SUBi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] - i;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x27: // MSUBi
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] - vs[c] * i;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x28: // ADD
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] + vt[c];
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x29: // MADD
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] + vs[c] * vt[c];
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x2A: // MUL
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] * vt[c];
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x2B: // MAX
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMax(m_state.vf[fs][c], m_state.vf[ft][c]);
+-        applyDest(vd, result, dest);
+-        return;
+-    case 0x2C: // SUB
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vs[c] - vt[c];
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x2D: // MSUB
+-        for (int c = 0; c < 4; c++)
+-            result[c] = acc[c] - vs[c] * vt[c];
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x2E: // OPMSUB
+-        result[0] = acc[0] - vs[1] * vt[2];
+-        result[1] = acc[1] - vs[2] * vt[0];
+-        result[2] = acc[2] - vs[0] * vt[1];
+-        result[3] = 0.0f;
+-        applyFmacDest(vd, result, dest);
+-        return;
+-    case 0x2F: // MINI
+-        for (int c = 0; c < 4; c++)
+-            result[c] = vuRawMin(m_state.vf[fs][c], m_state.vf[ft][c]);
+-        applyDest(vd, result, dest);
+-        return;
+-
+-    // Upper special group (low op 0x3C..0x3F).
+-    // Like lower1 special, the real selector is not just bits 5:0.  Dobie decodes:
+-    //   op = (instr & 0x3) | ((instr >> 4) & 0x7C)
+-    // Several instructions in this group also use FT as the destination, not FD.
+-    case 0x3C:
+-    case 0x3D:
+-    case 0x3E:
+-    case 0x3F:
+-    {
+-        const uint8_t specialOp = static_cast<uint8_t>((instr & 0x3u) | ((instr >> 4) & 0x7Cu));
+-        float *vtDest = m_state.vf[ft];
+-
+-        switch (specialOp)
++        if constexpr (PS2_VU_UPPER_CASE(0x18, 0x19, 0x1A, 0x1B))
+         {
+-        case 0x00:
+-        case 0x01:
+-        case 0x02:
+-        case 0x03: // ADDAbc
+-        {
+-            float bc = broadcast(vt, specialOp & 3);
++            float bc = broadcast(vt, op & 3);
+             for (int c = 0; c < 4; c++)
+-                result[c] = vs[c] + bc;
+-            applyFmacDestAcc(result, dest);
++                result[c] = vs[c] * bc;
++            applyFmacDest(vd, result, dest);
+             return;
+         }
+-        case 0x04:
+-        case 0x05:
+-        case 0x06:
+-        case 0x07: // SUBAbc
++        return;
++    case 0x1C: // MULq
++        if constexpr (PS2_VU_UPPER_CASE(0x1C))
+         {
+-            float bc = broadcast(vt, specialOp & 3);
+             for (int c = 0; c < 4; c++)
+-                result[c] = vs[c] - bc;
+-            applyFmacDestAcc(result, dest);
++                result[c] = vs[c] * q;
++            applyFmacDest(vd, result, dest);
+             return;
+         }
+-        case 0x08:
+-        case 0x09:
+-        case 0x0A:
+-        case 0x0B: // MADDAbc
++        return;
++    case 0x1D: // MAXi
++        if constexpr (PS2_VU_UPPER_CASE(0x1D))
+         {
+-            float bc = broadcast(vt, specialOp & 3);
+             for (int c = 0; c < 4; c++)
+-                result[c] = acc[c] + vs[c] * bc;
+-            applyFmacDestAcc(result, dest);
++                result[c] = vuRawMax(m_state.vf[fs][c], m_state.i);
++            applyDest(vd, result, dest);
+             return;
+         }
+-        case 0x0C:
+-        case 0x0D:
+-        case 0x0E:
+-        case 0x0F: // MSUBAbc
++        return;
++    case 0x1E: // MULi
++        if constexpr (PS2_VU_UPPER_CASE(0x1E))
+         {
+-            float bc = broadcast(vt, specialOp & 3);
+             for (int c = 0; c < 4; c++)
+-                result[c] = acc[c] - vs[c] * bc;
+-            applyFmacDestAcc(result, dest);
++                result[c] = vs[c] * i;
++            applyFmacDest(vd, result, dest);
+             return;
+         }
+-        case 0x10: // ITOF0
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv;
+-                std::memcpy(&iv, &m_state.vf[fs][c], 4);
+-                result[c] = static_cast<float>(iv);
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x11: // ITOF4
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv;
+-                std::memcpy(&iv, &m_state.vf[fs][c], 4);
+-                result[c] = static_cast<float>(iv) / 16.0f;
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x12: // ITOF12
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv;
+-                std::memcpy(&iv, &m_state.vf[fs][c], 4);
+-                result[c] = static_cast<float>(iv) / 4096.0f;
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x13: // ITOF15
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv;
+-                std::memcpy(&iv, &m_state.vf[fs][c], 4);
+-                result[c] = static_cast<float>(iv) / 32768.0f;
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x14: // FTOI0
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv = vuFloatToInt(vs[c], 1.0f);
+-                std::memcpy(&result[c], &iv, 4);
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x15: // FTOI4
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv = vuFloatToInt(vs[c], 16.0f);
+-                std::memcpy(&result[c], &iv, 4);
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x16: // FTOI12
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv = vuFloatToInt(vs[c], 4096.0f);
+-                std::memcpy(&result[c], &iv, 4);
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x17: // FTOI15
+-            for (int c = 0; c < 4; c++)
+-            {
+-                int32_t iv = vuFloatToInt(vs[c], 32768.0f);
+-                std::memcpy(&result[c], &iv, 4);
+-            }
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x18:
+-        case 0x19:
+-        case 0x1A:
+-        case 0x1B: // MULAbc
++        return;
++    case 0x1F: // MINIi
++        if constexpr (PS2_VU_UPPER_CASE(0x1F))
+         {
+-            float bc = broadcast(vt, specialOp & 3);
+             for (int c = 0; c < 4; c++)
+-                result[c] = vs[c] * bc;
+-            applyFmacDestAcc(result, dest);
++                result[c] = vuRawMin(m_state.vf[fs][c], m_state.i);
++            applyDest(vd, result, dest);
+             return;
+         }
+-        case 0x1C: // MULAq
+-            for (int c = 0; c < 4; c++)
+-                result[c] = vs[c] * q;
+-            applyFmacDestAcc(result, dest);
+-            return;
+-        case 0x1D: // ABS
+-            for (int c = 0; c < 4; c++)
+-                result[c] = std::fabs(vs[c]);
+-            applyDest(vtDest, result, dest);
+-            return;
+-        case 0x1E: // MULAi
+-            for (int c = 0; c < 4; c++)
+-                result[c] = vs[c] * i;
+-            applyFmacDestAcc(result, dest);
+-            return;
+-        case 0x1F: // CLIP
++        return;
++    case 0x20: // ADDq
++        if constexpr (PS2_VU_UPPER_CASE(0x20))
+         {
+-            uint32_t wBits = 0u;
+-            std::memcpy(&wBits, &m_state.vf[ft][3], sizeof(wBits));
+-            const int32_t limit = (wBits & 0x7F800000u) != 0u ? static_cast<int32_t>(wBits & 0x7FFFFFFFu) : 0x007FFFFF;
+-
+-            const auto exceedsClipPlane = [limit](float value, uint32_t signMask)
+-            {
+-                uint32_t bits = 0u;
+-                std::memcpy(&bits, &value, sizeof(bits));
+-                bits ^= signMask;
+-                int32_t orderedBits = 0;
+-                std::memcpy(&orderedBits, &bits, sizeof(orderedBits));
+-                return orderedBits > limit;
+-            };
+-
+-            uint32_t flags = 0u;
+-            if (exceedsClipPlane(m_state.vf[fs][0], 0x00000000u))
+-                flags |= 0x01u;
+-            if (exceedsClipPlane(m_state.vf[fs][0], 0x80000000u))
+-                flags |= 0x02u;
+-            if (exceedsClipPlane(m_state.vf[fs][1], 0x00000000u))
+-                flags |= 0x04u;
+-            if (exceedsClipPlane(m_state.vf[fs][1], 0x80000000u))
+-                flags |= 0x08u;
+-            if (exceedsClipPlane(m_state.vf[fs][2], 0x00000000u))
+-                flags |= 0x10u;
+-            if (exceedsClipPlane(m_state.vf[fs][2], 0x80000000u))
+-                flags |= 0x20u;
+-            queueClip(flags);
+-            return;
+-        }
+-        case 0x20: // ADDAq
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] + q;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x21: // MADDAq
++        }
++        return;
++    case 0x21: // MADDq
++        if constexpr (PS2_VU_UPPER_CASE(0x21))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] + vs[c] * q;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x22: // ADDAi
++        }
++        return;
++    case 0x22: // ADDi
++        if constexpr (PS2_VU_UPPER_CASE(0x22))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] + i;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x23: // MADDAi
++        }
++        return;
++    case 0x23: // MADDi
++        if constexpr (PS2_VU_UPPER_CASE(0x23))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] + vs[c] * i;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x24: // SUBAq
++        }
++        return;
++    case 0x24: // SUBq
++        if constexpr (PS2_VU_UPPER_CASE(0x24))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] - q;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x25: // MSUBAq
++        }
++        return;
++    case 0x25: // MSUBq
++        if constexpr (PS2_VU_UPPER_CASE(0x25))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] - vs[c] * q;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x26: // SUBAi
++        }
++        return;
++    case 0x26: // SUBi
++        if constexpr (PS2_VU_UPPER_CASE(0x26))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] - i;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x27: // MSUBAi
++        }
++        return;
++    case 0x27: // MSUBi
++        if constexpr (PS2_VU_UPPER_CASE(0x27))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] - vs[c] * i;
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x28: // ADDA
++        }
++        return;
++    case 0x28: // ADD
++        if constexpr (PS2_VU_UPPER_CASE(0x28))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] + vt[c];
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x29: // MADDA
++        }
++        return;
++    case 0x29: // MADD
++        if constexpr (PS2_VU_UPPER_CASE(0x29))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] + vs[c] * vt[c];
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x2A: // MULA
++        }
++        return;
++    case 0x2A: // MUL
++        if constexpr (PS2_VU_UPPER_CASE(0x2A))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] * vt[c];
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x2C: // SUBA
++        }
++        return;
++    case 0x2B: // MAX
++        if constexpr (PS2_VU_UPPER_CASE(0x2B))
++        {
++            for (int c = 0; c < 4; c++)
++                result[c] = vuRawMax(m_state.vf[fs][c], m_state.vf[ft][c]);
++            applyDest(vd, result, dest);
++            return;
++        }
++        return;
++    case 0x2C: // SUB
++        if constexpr (PS2_VU_UPPER_CASE(0x2C))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = vs[c] - vt[c];
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x2D: // MSUBA
++        }
++        return;
++    case 0x2D: // MSUB
++        if constexpr (PS2_VU_UPPER_CASE(0x2D))
++        {
+             for (int c = 0; c < 4; c++)
+                 result[c] = acc[c] - vs[c] * vt[c];
+-            applyFmacDestAcc(result, dest);
++            applyFmacDest(vd, result, dest);
+             return;
+-        case 0x2E: // OPMULA
+-            result[0] = vs[1] * vt[2];
+-            result[1] = vs[2] * vt[0];
+-            result[2] = vs[0] * vt[1];
++        }
++        return;
++    case 0x2E: // OPMSUB
++        if constexpr (PS2_VU_UPPER_CASE(0x2E))
++        {
++            result[0] = acc[0] - vs[1] * vt[2];
++            result[1] = acc[1] - vs[2] * vt[0];
++            result[2] = acc[2] - vs[0] * vt[1];
+             result[3] = 0.0f;
+-            applyFmacDestAcc(result, dest);
+-            return;
+-        case 0x2F:
+-        case 0x30: // NOP
++            applyFmacDest(vd, result, dest);
+             return;
+-        default:
+-            reportReservedInstruction(true, instr);
++        }
++        return;
++    case 0x2F: // MINI
++        if constexpr (PS2_VU_UPPER_CASE(0x2F))
++        {
++            for (int c = 0; c < 4; c++)
++                result[c] = vuRawMin(m_state.vf[fs][c], m_state.vf[ft][c]);
++            applyDest(vd, result, dest);
+             return;
++
++        // Upper special group (low op 0x3C..0x3F).
++        // Like lower1 special, the real selector is not just bits 5:0.  Dobie decodes:
++        //   op = (instr & 0x3) | ((instr >> 4) & 0x7C)
++        // Several instructions in this group also use FT as the destination, not FD.
+         }
+-    }
++        return;
++    case 0x3C:
++    case 0x3D:
++    case 0x3E:
++    case 0x3F:
++        if constexpr (PS2_VU_UPPER_CASE(0x3C, 0x3D, 0x3E, 0x3F))
++        {
++            const uint8_t specialOp = static_cast<uint8_t>((instr & 0x3u) | ((instr >> 4) & 0x7Cu));
++            float *vtDest = m_state.vf[ft];
++
++            switch (specialOp)
++            {
++            case 0x00:
++            case 0x01:
++            case 0x02:
++            case 0x03: // ADDAbc
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x00, 0x01, 0x02, 0x03))
++                {
++                    float bc = broadcast(vt, specialOp & 3);
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] + bc;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x04:
++            case 0x05:
++            case 0x06:
++            case 0x07: // SUBAbc
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x04, 0x05, 0x06, 0x07))
++                {
++                    float bc = broadcast(vt, specialOp & 3);
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] - bc;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x08:
++            case 0x09:
++            case 0x0A:
++            case 0x0B: // MADDAbc
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x08, 0x09, 0x0A, 0x0B))
++                {
++                    float bc = broadcast(vt, specialOp & 3);
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] + vs[c] * bc;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x0C:
++            case 0x0D:
++            case 0x0E:
++            case 0x0F: // MSUBAbc
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x0C, 0x0D, 0x0E, 0x0F))
++                {
++                    float bc = broadcast(vt, specialOp & 3);
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] - vs[c] * bc;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x10: // ITOF0
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x10))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv;
++                        std::memcpy(&iv, &m_state.vf[fs][c], 4);
++                        result[c] = static_cast<float>(iv);
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x11: // ITOF4
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x11))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv;
++                        std::memcpy(&iv, &m_state.vf[fs][c], 4);
++                        result[c] = static_cast<float>(iv) / 16.0f;
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x12: // ITOF12
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x12))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv;
++                        std::memcpy(&iv, &m_state.vf[fs][c], 4);
++                        result[c] = static_cast<float>(iv) / 4096.0f;
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x13: // ITOF15
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x13))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv;
++                        std::memcpy(&iv, &m_state.vf[fs][c], 4);
++                        result[c] = static_cast<float>(iv) / 32768.0f;
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x14: // FTOI0
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x14))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv = vuFloatToInt(vs[c], 1.0f);
++                        std::memcpy(&result[c], &iv, 4);
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x15: // FTOI4
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x15))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv = vuFloatToInt(vs[c], 16.0f);
++                        std::memcpy(&result[c], &iv, 4);
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x16: // FTOI12
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x16))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv = vuFloatToInt(vs[c], 4096.0f);
++                        std::memcpy(&result[c], &iv, 4);
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x17: // FTOI15
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x17))
++                {
++                    for (int c = 0; c < 4; c++)
++                    {
++                        int32_t iv = vuFloatToInt(vs[c], 32768.0f);
++                        std::memcpy(&result[c], &iv, 4);
++                    }
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x18:
++            case 0x19:
++            case 0x1A:
++            case 0x1B: // MULAbc
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x18, 0x19, 0x1A, 0x1B))
++                {
++                    float bc = broadcast(vt, specialOp & 3);
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] * bc;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x1C: // MULAq
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x1C))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] * q;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x1D: // ABS
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x1D))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = std::fabs(vs[c]);
++                    applyDest(vtDest, result, dest);
++                    return;
++                }
++                return;
++            case 0x1E: // MULAi
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x1E))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] * i;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x1F: // CLIP
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x1F))
++                {
++                    uint32_t wBits = 0u;
++                    std::memcpy(&wBits, &m_state.vf[ft][3], sizeof(wBits));
++                    const int32_t limit = (wBits & 0x7F800000u) != 0u ? static_cast<int32_t>(wBits & 0x7FFFFFFFu) : 0x007FFFFF;
++
++                    const auto exceedsClipPlane = [limit](float value, uint32_t signMask)
++                    {
++                        uint32_t bits = 0u;
++                        std::memcpy(&bits, &value, sizeof(bits));
++                        bits ^= signMask;
++                        int32_t orderedBits = 0;
++                        std::memcpy(&orderedBits, &bits, sizeof(orderedBits));
++                        return orderedBits > limit;
++                    };
++
++                    uint32_t flags = 0u;
++                    if (exceedsClipPlane(m_state.vf[fs][0], 0x00000000u))
++                        flags |= 0x01u;
++                    if (exceedsClipPlane(m_state.vf[fs][0], 0x80000000u))
++                        flags |= 0x02u;
++                    if (exceedsClipPlane(m_state.vf[fs][1], 0x00000000u))
++                        flags |= 0x04u;
++                    if (exceedsClipPlane(m_state.vf[fs][1], 0x80000000u))
++                        flags |= 0x08u;
++                    if (exceedsClipPlane(m_state.vf[fs][2], 0x00000000u))
++                        flags |= 0x10u;
++                    if (exceedsClipPlane(m_state.vf[fs][2], 0x80000000u))
++                        flags |= 0x20u;
++                    queueClip(flags);
++                    return;
++                }
++                return;
++            case 0x20: // ADDAq
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x20))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] + q;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x21: // MADDAq
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x21))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] + vs[c] * q;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x22: // ADDAi
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x22))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] + i;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x23: // MADDAi
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x23))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] + vs[c] * i;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x24: // SUBAq
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x24))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] - q;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x25: // MSUBAq
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x25))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] - vs[c] * q;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x26: // SUBAi
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x26))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] - i;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x27: // MSUBAi
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x27))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] - vs[c] * i;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x28: // ADDA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x28))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] + vt[c];
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x29: // MADDA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x29))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] + vs[c] * vt[c];
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x2A: // MULA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x2A))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] * vt[c];
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x2C: // SUBA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x2C))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = vs[c] - vt[c];
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x2D: // MSUBA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x2D))
++                {
++                    for (int c = 0; c < 4; c++)
++                        result[c] = acc[c] - vs[c] * vt[c];
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x2E: // OPMULA
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x2E))
++                {
++                    result[0] = vs[1] * vt[2];
++                    result[1] = vs[2] * vt[0];
++                    result[2] = vs[0] * vt[1];
++                    result[3] = 0.0f;
++                    applyFmacDestAcc(result, dest);
++                    return;
++                }
++                return;
++            case 0x2F:
++            case 0x30: // NOP
++                if constexpr (PS2_VU_UPPER_SPECIAL_CASE(0x2F, 0x30))
++                {
++                    return;
++                }
++                return;
++            default:
++                reportReservedInstruction(true, instr);
++                return;
++            }
++        }
++        return;
+ 
+     case 0x30:
+     case 0x31:
+@@ -543,4 +782,12 @@
+     }
+ }
+ 
++#undef PS2_VU_UPPER_CASE
++#undef PS2_VU_UPPER_SPECIAL_CASE
++
++PS2_VU_FORCEINLINE void VU1Interpreter::execUpper(uint32_t instr)
++{
++    execUpperT<false, 0u>(instr);
++}
++
+ #endif
+--- a/ps2xRuntime/include/runtime/ps2_vu1_lower_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_lower_inl.h
+@@ -5,8 +5,12 @@
+ // included by runtime/ps2_vu1.h (it needs the memory and GIF headers):
+ // src/lib/vu/ps2_vu1_lower.cpp builds the interpreter's out-of-line
+ // execLower from it, and translated VU1 code includes it to build one
+-// function per distinct lower word. Moved unchanged from
+-// src/lib/vu/ps2_vu1_lower.cpp (field helpers renamed).
++// function per distinct lower word. Moved from src/lib/vu/ps2_vu1_lower.cpp
++// (field helpers renamed). Like the upper executor it is a template on the
++// instruction: execLowerT<false, 0>(word, ...) is the interpreter,
++// execLowerT<true, W>(W, ...) a word known at build time, with every opcode
++// case under `if constexpr` so that only the word's own case is compiled
++// (runtime/ps2_vu1_upper_inl.h explains why).
+ 
+ #include "runtime/ps2_vu1.h"
+ #include "runtime/gs/ps2_gif_arbiter.h"
+@@ -15,10 +19,24 @@
+ 
+ #include <cmath>
+ #include <cstring>
++#include <initializer_list>
+ #include <limits>
+ 
+ namespace ps2_vu1_lower_detail
+ {
++    constexpr bool valueIn(uint32_t value, std::initializer_list<uint32_t> values)
++    {
++        for (uint32_t v : values)
++            if (v == value)
++                return true;
++        return false;
++    }
++    // Bits 31:25 select the opcode; in the lower-special group (0x40) bits
++    // 5:0, and for 0x3C-0x3F there the special selector.
++    constexpr uint32_t lowerOpHi(uint32_t word) { return (word >> 25) & 0x7Fu; }
++    constexpr uint32_t lowerFunct(uint32_t word) { return word & 0x3Fu; }
++    constexpr uint32_t lowerFunct2(uint32_t word) { return (word & 0x3u) | ((word >> 4) & 0x7Cu); }
++
+     // The field helpers of src/lib/vu/ps2_vu1_detail.h under other names
+     // (FT, FS... clash with macros of ps2xRecomp's instructions.h).
+     inline uint8_t fieldFt(uint32_t i) { return (uint8_t)((i >> 16) & 0x1F); }
+@@ -87,12 +105,23 @@
+     }
+ }
+ 
++// True when the case with these opcodes is to be compiled: always in the
++// interpreter (kConst false), only the known word's own case otherwise.
++#define PS2_VU_LOWER_CASE(...) \
++    (!kConst || ps2_vu1_lower_detail::valueIn(ps2_vu1_lower_detail::lowerOpHi(kInstr), {__VA_ARGS__}))
++#define PS2_VU_LOWER_FUNCT_CASE(...) \
++    (!kConst || ps2_vu1_lower_detail::valueIn(ps2_vu1_lower_detail::lowerFunct(kInstr), {__VA_ARGS__}))
++#define PS2_VU_LOWER_FUNCT2_CASE(...) \
++    (!kConst || ps2_vu1_lower_detail::valueIn(ps2_vu1_lower_detail::lowerFunct2(kInstr), {__VA_ARGS__}))
++
+ // ============================================================================
+ // Lower instructions
+ // ============================================================================
+-PS2_VU_FORCEINLINE void VU1Interpreter::execLowerInline(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr)
++template <bool kConst, uint32_t kInstr>
++PS2_VU_FORCEINLINE void VU1Interpreter::execLowerT(uint32_t instrArg, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr)
+ {
+     using namespace ps2_vu1_lower_detail;
++    const uint32_t instr = kConst ? kInstr : instrArg;
+     (void)upperInstr;
+     if (instr == 0x00000000 || instr == 0x8000033C) // NOP
+         return;
+@@ -104,712 +133,877 @@
+     switch (opHi)
+     {
+     case 0x00: // LQ (Load Quadword from VU data memory)
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldFt(instr);  // VF destination
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
+-        uint8_t dest = (instr >> 21) & 0xF;
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
+-        addr &= (dataSize - 1);
+-        if (addr + 16 <= dataSize)
+-        {
+-            float tmp[4];
+-            std::memcpy(tmp, vuData + addr, 16);
+-            applyDest(m_state.vf[it], tmp, dest);
++        if constexpr (PS2_VU_LOWER_CASE(0x00))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldFt(instr);  // VF destination
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
++            uint8_t dest = (instr >> 21) & 0xF;
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
++            addr &= (dataSize - 1);
++            if (addr + 16 <= dataSize)
++            {
++                float tmp[4];
++                std::memcpy(tmp, vuData + addr, 16);
++                applyDest(m_state.vf[it], tmp, dest);
++            }
++            return;
+         }
+         return;
+-    }
+     case 0x01: // SQ (Store Quadword to VU data memory)
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldFs(instr);  // VF source
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI base
+-        uint8_t dest = (instr >> 21) & 0xF;
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[it] + imm)) * 16u;
+-        addr &= (dataSize - 1);
+-        if (addr + 16 <= dataSize)
+-        {
+-            uint32_t words[4]{};
+-            std::memcpy(words, m_state.vf[is], sizeof(words));
+-            queueStore(addr, words, dest);
++        if constexpr (PS2_VU_LOWER_CASE(0x01))
++        {
++            uint8_t is = ps2_vu1_lower_detail::fieldFs(instr);  // VF source
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI base
++            uint8_t dest = (instr >> 21) & 0xF;
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[it] + imm)) * 16u;
++            addr &= (dataSize - 1);
++            if (addr + 16 <= dataSize)
++            {
++                uint32_t words[4]{};
++                std::memcpy(words, m_state.vf[is], sizeof(words));
++                queueStore(addr, words, dest);
++            }
++            return;
+         }
+         return;
+-    }
+     case 0x04: // ILW (Integer Load Word from VU data memory)
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI destination
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
+-        uint8_t dest = (instr >> 21) & 0xF;
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
+-        addr &= (dataSize - 1);
+-        if (addr + 16 <= dataSize)
+-        {
+-            int comp = 0;
+-            if (dest & 0x8)
+-                comp = 0;
+-            else if (dest & 0x4)
+-                comp = 1;
+-            else if (dest & 0x2)
+-                comp = 2;
+-            else
+-                comp = 3;
+-            uint32_t v;
+-            std::memcpy(&v, vuData + addr + comp * 4, 4);
+-            if (it != 0)
+-                m_state.vi[it] = (int32_t)(int16_t)(v & 0xFFFF);
++        if constexpr (PS2_VU_LOWER_CASE(0x04))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI destination
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
++            uint8_t dest = (instr >> 21) & 0xF;
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
++            addr &= (dataSize - 1);
++            if (addr + 16 <= dataSize)
++            {
++                int comp = 0;
++                if (dest & 0x8)
++                    comp = 0;
++                else if (dest & 0x4)
++                    comp = 1;
++                else if (dest & 0x2)
++                    comp = 2;
++                else
++                    comp = 3;
++                uint32_t v;
++                std::memcpy(&v, vuData + addr + comp * 4, 4);
++                if (it != 0)
++                    m_state.vi[it] = (int32_t)(int16_t)(v & 0xFFFF);
++            }
++            return;
+         }
+         return;
+-    }
+     case 0x05: // ISW (Integer Store Word to VU data memory)
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI source
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
+-        uint8_t dest = (instr >> 21) & 0xF;
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
+-        addr &= (dataSize - 1);
+-        if (addr + 16 <= dataSize)
+-        {
+-            const uint32_t val = static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[it] & 0xFFFF));
+-            const uint32_t words[4] = {val, val, val, val};
+-            queueStore(addr, words, dest);
++        if constexpr (PS2_VU_LOWER_CASE(0x05))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr); // VI source
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr); // VI base
++            uint8_t dest = (instr >> 21) & 0xF;
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            uint32_t addr = ((uint32_t)(int32_t)(m_state.vi[is] + imm)) * 16u;
++            addr &= (dataSize - 1);
++            if (addr + 16 <= dataSize)
++            {
++                const uint32_t val = static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[it] & 0xFFFF));
++                const uint32_t words[4] = {val, val, val, val};
++                queueStore(addr, words, dest);
++            }
++            return;
+         }
+         return;
+-    }
+     case 0x08: // IADDIU
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = (int16_t)(instr & 0x7FF) | ((instr >> 10) & 0x7800);
+-        if (it != 0)
+-            m_state.vi[it] = (int16_t)(m_state.vi[is] + imm);
++        if constexpr (PS2_VU_LOWER_CASE(0x08))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = (int16_t)(instr & 0x7FF) | ((instr >> 10) & 0x7800);
++            if (it != 0)
++                m_state.vi[it] = (int16_t)(m_state.vi[is] + imm);
++            return;
++        }
+         return;
+-    }
+     case 0x09: // ISUBIU
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = (int16_t)(instr & 0x7FF) | ((instr >> 10) & 0x7800);
+-        if (it != 0)
+-            m_state.vi[it] = (int16_t)(m_state.vi[is] - imm);
++        if constexpr (PS2_VU_LOWER_CASE(0x09))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = (int16_t)(instr & 0x7FF) | ((instr >> 10) & 0x7800);
++            if (it != 0)
++                m_state.vi[it] = (int16_t)(m_state.vi[is] - imm);
++            return;
++        }
+         return;
+-    }
+     case 0x10: // FCEQ
+-    {
+-        uint32_t imm24 = instr & 0xFFFFFF;
+-        if (1 != 0)
+-            m_state.vi[1] = ((m_state.clip & 0xFFFFFF) == imm24) ? 1 : 0;
++        if constexpr (PS2_VU_LOWER_CASE(0x10))
++        {
++            uint32_t imm24 = instr & 0xFFFFFF;
++            if (1 != 0)
++                m_state.vi[1] = ((m_state.clip & 0xFFFFFF) == imm24) ? 1 : 0;
++            return;
++        }
+         return;
+-    }
+     case 0x11: // FCSET
+-    {
+-        queueFcset(instr & 0xFFFFFFu);
++        if constexpr (PS2_VU_LOWER_CASE(0x11))
++        {
++            queueFcset(instr & 0xFFFFFFu);
++            return;
++        }
+         return;
+-    }
+     case 0x12: // FCAND
+-    {
+-        uint32_t imm24 = instr & 0xFFFFFF;
+-        if (1 != 0)
+-            m_state.vi[1] = ((m_state.clip & imm24) != 0) ? 1 : 0;
++        if constexpr (PS2_VU_LOWER_CASE(0x12))
++        {
++            uint32_t imm24 = instr & 0xFFFFFF;
++            if (1 != 0)
++                m_state.vi[1] = ((m_state.clip & imm24) != 0) ? 1 : 0;
++            return;
++        }
+         return;
+-    }
+     case 0x13: // FCOR
+-    {
+-        uint32_t imm24 = instr & 0xFFFFFF;
+-        if (1 != 0)
+-            m_state.vi[1] = ((m_state.clip | imm24) == 0xFFFFFF) ? 1 : 0;
++        if constexpr (PS2_VU_LOWER_CASE(0x13))
++        {
++            uint32_t imm24 = instr & 0xFFFFFF;
++            if (1 != 0)
++                m_state.vi[1] = ((m_state.clip | imm24) == 0xFFFFFF) ? 1 : 0;
++            return;
++        }
+         return;
+-    }
+     case 0x14: // FSEQ
+-    {
+-        const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
+-        if (it != 0)
+-            m_state.vi[it] = ((m_state.status & 0xFFFu) == imm12) ? 1 : 0;
++        if constexpr (PS2_VU_LOWER_CASE(0x14))
++        {
++            const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
++            if (it != 0)
++                m_state.vi[it] = ((m_state.status & 0xFFFu) == imm12) ? 1 : 0;
++            return;
++        }
+         return;
+-    }
+     case 0x15: // FSSET
+-    {
+-        const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
+-        queueFsset(imm12);
++        if constexpr (PS2_VU_LOWER_CASE(0x15))
++        {
++            const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
++            queueFsset(imm12);
++            return;
++        }
+         return;
+-    }
+     case 0x16: // FSAND
+-    {
+-        const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
+-        if (it != 0)
+-            m_state.vi[it] = static_cast<int32_t>((m_state.status & 0xFFFu) & imm12);
++        if constexpr (PS2_VU_LOWER_CASE(0x16))
++        {
++            const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
++            if (it != 0)
++                m_state.vi[it] = static_cast<int32_t>((m_state.status & 0xFFFu) & imm12);
++            return;
++        }
+         return;
+-    }
+     case 0x17: // FSOR
+-    {
+-        const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
+-        if (it != 0)
+-            m_state.vi[it] = static_cast<int32_t>((m_state.status & 0xFFFu) | imm12);
++        if constexpr (PS2_VU_LOWER_CASE(0x17))
++        {
++            const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            const uint16_t imm12 = static_cast<uint16_t>((((instr >> 21) & 0x1u) << 11) | (instr & 0x7FFu));
++            if (it != 0)
++                m_state.vi[it] = static_cast<int32_t>((m_state.status & 0xFFFu) | imm12);
++            return;
++        }
+         return;
+-    }
+     case 0x18: // FMEQ
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        if (it != 0)
+-            m_state.vi[it] = ((m_state.mac & 0xFFFF) == (uint32_t)(uint16_t)m_state.vi[is]) ? 1 : 0;
++        if constexpr (PS2_VU_LOWER_CASE(0x18))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            if (it != 0)
++                m_state.vi[it] = ((m_state.mac & 0xFFFF) == (uint32_t)(uint16_t)m_state.vi[is]) ? 1 : 0;
++            return;
++        }
+         return;
+-    }
+     case 0x1A: // FMAND
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        if (it != 0)
+-            m_state.vi[it] = (int32_t)(m_state.mac & (uint32_t)(uint16_t)m_state.vi[is]);
++        if constexpr (PS2_VU_LOWER_CASE(0x1A))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            if (it != 0)
++                m_state.vi[it] = (int32_t)(m_state.mac & (uint32_t)(uint16_t)m_state.vi[is]);
++            return;
++        }
+         return;
+-    }
+     case 0x1B: // FMOR
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        if (it != 0)
+-            m_state.vi[it] = (int32_t)(m_state.mac | (uint32_t)(uint16_t)m_state.vi[is]);
++        if constexpr (PS2_VU_LOWER_CASE(0x1B))
++        {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            if (it != 0)
++                m_state.vi[it] = (int32_t)(m_state.mac | (uint32_t)(uint16_t)m_state.vi[is]);
++            return;
++        }
+         return;
+-    }
+     case 0x1C: // FCGET
+-    {
+-        const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        if (it != 0)
+-            m_state.vi[it] = static_cast<int32_t>(m_state.clip & 0x0FFFu);
++        if constexpr (PS2_VU_LOWER_CASE(0x1C))
++        {
++            const uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            if (it != 0)
++                m_state.vi[it] = static_cast<int32_t>(m_state.clip & 0x0FFFu);
++            return;
++        }
+         return;
+-    }
+     case 0x20: // B (unconditional branch)
+-    {
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
+-        m_state.branchPending = true;
+-        m_state.branchTarget = target;
+-        m_state.branchDelay = 1;
+-        return;
+-    }
+-    case 0x21: // BAL (Branch and link)
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
+-        if (it != 0)
+-            m_state.vi[it] = (int32_t)((m_state.pc + 16) / 8);
+-        m_state.branchPending = true;
+-        m_state.branchTarget = target;
+-        m_state.branchDelay = 1;
+-        return;
+-    }
+-    case 0x24: // JR
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
+-        m_state.branchPending = true;
+-        m_state.branchTarget = target;
+-        m_state.branchDelay = 1;
+-        return;
+-    }
+-    case 0x25: // JALR
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
+-        if (it != 0)
+-            m_state.vi[it] = (int32_t)((m_state.pc + 16) / 8);
+-        m_state.branchPending = true;
+-        m_state.branchTarget = target;
+-        m_state.branchDelay = 1;
+-        return;
+-    }
+-    case 0x28: // IBEQ
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) == (int16_t)readBranchVi(it))
++        if constexpr (PS2_VU_LOWER_CASE(0x20))
+         {
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+             uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
+             m_state.branchPending = true;
+             m_state.branchTarget = target;
+             m_state.branchDelay = 1;
++            return;
+         }
+         return;
+-    }
+-    case 0x29: // IBNE
+-    {
+-        uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) != (int16_t)readBranchVi(it))
++    case 0x21: // BAL (Branch and link)
++        if constexpr (PS2_VU_LOWER_CASE(0x21))
+         {
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+             uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++            if (it != 0)
++                m_state.vi[it] = (int32_t)((m_state.pc + 16) / 8);
+             m_state.branchPending = true;
+             m_state.branchTarget = target;
+             m_state.branchDelay = 1;
++            return;
+         }
+         return;
+-    }
+-    case 0x2C: // IBLTZ
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) < 0)
++    case 0x24: // JR
++        if constexpr (PS2_VU_LOWER_CASE(0x24))
+         {
+-            uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
+             m_state.branchPending = true;
+             m_state.branchTarget = target;
+             m_state.branchDelay = 1;
++            return;
+         }
+         return;
+-    }
+-    case 0x2D: // IBGTZ
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) > 0)
++    case 0x25: // JALR
++        if constexpr (PS2_VU_LOWER_CASE(0x25))
+         {
+-            uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            uint32_t target = ((uint32_t)(uint16_t)readBranchVi(is) * 8u) & pcMask;
++            if (it != 0)
++                m_state.vi[it] = (int32_t)((m_state.pc + 16) / 8);
+             m_state.branchPending = true;
+             m_state.branchTarget = target;
+             m_state.branchDelay = 1;
++            return;
+         }
+         return;
+-    }
+-    case 0x2E: // IBLEZ
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) <= 0)
++    case 0x28: // IBEQ
++        if constexpr (PS2_VU_LOWER_CASE(0x28))
+         {
+-            uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
+-            m_state.branchPending = true;
+-            m_state.branchTarget = target;
+-            m_state.branchDelay = 1;
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) == (int16_t)readBranchVi(it))
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
++            return;
+         }
+         return;
+-    }
+-    case 0x2F: // IBGEZ
+-    {
+-        uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
+-        int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
+-        if ((int16_t)readBranchVi(is) >= 0)
++    case 0x29: // IBNE
++        if constexpr (PS2_VU_LOWER_CASE(0x29))
+         {
+-            uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
+-            m_state.branchPending = true;
+-            m_state.branchTarget = target;
+-            m_state.branchDelay = 1;
++            uint8_t it = ps2_vu1_lower_detail::fieldVit(instr);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) != (int16_t)readBranchVi(it))
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
++            return;
+         }
+         return;
+-    }
+-
+-    case 0x40: // Lower1 / lower special. Bit31 set; low 6 bits select integer or special op.
+-    {
+-        const uint8_t funct = instr & 0x3Fu;
+-        const uint8_t vfT = ps2_vu1_lower_detail::fieldFt(instr);
+-        const uint8_t vfS = ps2_vu1_lower_detail::fieldFs(instr);
+-        const uint8_t viT = ps2_vu1_lower_detail::fieldVit(instr);
+-        const uint8_t viS = ps2_vu1_lower_detail::fieldVis(instr);
+-        const uint8_t viD = ps2_vu1_lower_detail::fieldVid(instr);
+-        const uint8_t dest = (instr >> 21) & 0xF;
+-
+-        switch (funct)
++    case 0x2C: // IBLTZ
++        if constexpr (PS2_VU_LOWER_CASE(0x2C))
+         {
+-        case 0x30: // IADD
+-            if (viD != 0)
+-                m_state.vi[viD] = (int16_t)(m_state.vi[viS] + m_state.vi[viT]);
+-            return;
+-        case 0x31: // ISUB
+-            if (viD != 0)
+-                m_state.vi[viD] = (int16_t)(m_state.vi[viS] - m_state.vi[viT]);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) < 0)
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
+             return;
+-        case 0x32: // IADDI
++        }
++        return;
++    case 0x2D: // IBGTZ
++        if constexpr (PS2_VU_LOWER_CASE(0x2D))
+         {
+-            int16_t imm5 = (int16_t)((int32_t)((instr >> 6) & 0x1F) << 27 >> 27);
+-            if (viT != 0)
+-                m_state.vi[viT] = (int16_t)(m_state.vi[viS] + imm5);
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) > 0)
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
+             return;
+         }
+-        case 0x34: // IAND
+-            if (viD != 0)
+-                m_state.vi[viD] = m_state.vi[viS] & m_state.vi[viT];
++        return;
++    case 0x2E: // IBLEZ
++        if constexpr (PS2_VU_LOWER_CASE(0x2E))
++        {
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) <= 0)
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
+             return;
+-        case 0x35: // IOR
+-            if (viD != 0)
+-                m_state.vi[viD] = m_state.vi[viS] | m_state.vi[viT];
++        }
++        return;
++    case 0x2F: // IBGEZ
++        if constexpr (PS2_VU_LOWER_CASE(0x2F))
++        {
++            uint8_t is = ps2_vu1_lower_detail::fieldVis(instr);
++            int16_t imm = ps2_vu1_lower_detail::fieldImm11(instr);
++            if ((int16_t)readBranchVi(is) >= 0)
++            {
++                uint32_t target = (m_state.pc + 8 + imm * 8) & pcMask;
++                m_state.branchPending = true;
++                m_state.branchTarget = target;
++                m_state.branchDelay = 1;
++            }
+             return;
++        }
++        return;
+ 
+-        case 0x3C:
+-        case 0x3D:
+-        case 0x3E:
+-        case 0x3F: // Lower1 special. Dobie decodes this as (instr & 3) | ((instr >> 4) & 0x7C).
++    case 0x40: // Lower1 / lower special. Bit31 set; low 6 bits select integer or special op.
++        if constexpr (PS2_VU_LOWER_CASE(0x40))
+         {
+-            const uint8_t funct2 = (uint8_t)((instr & 0x3u) | ((instr >> 4) & 0x7Cu));
+-            switch (funct2)
+-            {
+-            case 0x30: // MOVE
+-            {
+-                float tmp[4];
+-                std::memcpy(tmp, m_state.vf[vfS], 16);
+-                applyDest(m_state.vf[vfT], tmp, dest);
+-                return;
+-            }
+-            case 0x31: // MR32 (rotate right by 32 bits = shift xyzw -> yzwx)
+-            {
+-                float tmp[4] = {m_state.vf[vfS][1], m_state.vf[vfS][2], m_state.vf[vfS][3], m_state.vf[vfS][0]};
+-                applyDest(m_state.vf[vfT], tmp, dest);
+-                return;
+-            }
+-            case 0x34: // LQI (Load Quadword, post-increment)
+-            {
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
+-                {
+-                    float tmp[4];
+-                    std::memcpy(tmp, vuData + addr, 16);
+-                    applyDest(m_state.vf[vfT], tmp, dest);
+-                }
+-                if (viS != 0)
+-                    m_state.vi[viS] = (int16_t)(m_state.vi[viS] + 1);
+-                return;
+-            }
+-            case 0x35: // SQI (Store Quadword, post-increment)
+-            {
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viT]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
+-                {
+-                    uint32_t words[4]{};
+-                    std::memcpy(words, m_state.vf[vfS], sizeof(words));
+-                    queueStore(addr, words, dest);
+-                }
+-                if (viT != 0)
+-                    m_state.vi[viT] = (int16_t)(m_state.vi[viT] + 1);
+-                return;
+-            }
+-            case 0x36: // LQD (Load Quadword, pre-decrement)
++            const uint8_t funct = instr & 0x3Fu;
++            const uint8_t vfT = ps2_vu1_lower_detail::fieldFt(instr);
++            const uint8_t vfS = ps2_vu1_lower_detail::fieldFs(instr);
++            const uint8_t viT = ps2_vu1_lower_detail::fieldVit(instr);
++            const uint8_t viS = ps2_vu1_lower_detail::fieldVis(instr);
++            const uint8_t viD = ps2_vu1_lower_detail::fieldVid(instr);
++            const uint8_t dest = (instr >> 21) & 0xF;
++
++            switch (funct)
+             {
+-                if (viS != 0)
+-                    m_state.vi[viS] = (int16_t)(m_state.vi[viS] - 1);
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
++            case 0x30: // IADD
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x30))
+                 {
+-                    float tmp[4];
+-                    std::memcpy(tmp, vuData + addr, 16);
+-                    applyDest(m_state.vf[vfT], tmp, dest);
++                    if (viD != 0)
++                        m_state.vi[viD] = (int16_t)(m_state.vi[viS] + m_state.vi[viT]);
++                    return;
+                 }
+                 return;
+-            }
+-            case 0x37: // SQD (Store Quadword, pre-decrement)
+-            {
+-                if (viT != 0)
+-                    m_state.vi[viT] = (int16_t)(m_state.vi[viT] - 1);
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viT]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
++            case 0x31: // ISUB
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x31))
+                 {
+-                    uint32_t words[4]{};
+-                    std::memcpy(words, m_state.vf[vfS], sizeof(words));
+-                    queueStore(addr, words, dest);
++                    if (viD != 0)
++                        m_state.vi[viD] = (int16_t)(m_state.vi[viS] - m_state.vi[viT]);
++                    return;
+                 }
+                 return;
+-            }
+-            case 0x38: // DIV
+-            {
+-                int fsf = (instr >> 21) & 0x3;
+-                int ftf = (instr >> 23) & 0x3;
+-                const float num = normalizeOperand(m_state.vf[vfS][fsf]);
+-                const float den = normalizeOperand(m_state.vf[vfT][ftf]);
+-                uint32_t statusDi = 0u;
+-                float result = 0.0f;
+-                if (den == 0.0f)
+-                {
+-                    statusDi = num == 0.0f ? 0x10u : 0x20u;
+-                    result = std::signbit(num) != std::signbit(den)
+-                                 ? -std::numeric_limits<float>::max()
+-                                 : std::numeric_limits<float>::max();
+-                }
+-                else
++            case 0x32: // IADDI
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x32))
+                 {
+-                    result = num / den;
++                    int16_t imm5 = (int16_t)((int32_t)((instr >> 6) & 0x1F) << 27 >> 27);
++                    if (viT != 0)
++                        m_state.vi[viT] = (int16_t)(m_state.vi[viS] + imm5);
++                    return;
+                 }
+-                uint32_t ignoredFlags = 0u;
+-                result = normalizeResult(result, ignoredFlags);
+-                queueQ(result, 7u, statusDi);
+                 return;
+-            }
+-            case 0x39: // SQRT
+-            {
+-                int ftf = (instr >> 23) & 0x3;
+-                const float val = normalizeOperand(m_state.vf[vfT][ftf]);
+-                queueQ(std::sqrt(std::fabs(val)), 7u,
+-                       val < 0.0f ? 0x10u : 0u);
+-                return;
+-            }
+-            case 0x3A: // RSQRT
+-            {
+-                int fsf = (instr >> 21) & 0x3;
+-                int ftf = (instr >> 23) & 0x3;
+-                const float num = normalizeOperand(m_state.vf[vfS][fsf]);
+-                const float radicand = normalizeOperand(m_state.vf[vfT][ftf]);
+-                const float den = std::sqrt(std::fabs(radicand));
+-                uint32_t statusDi = radicand < 0.0f ? 0x10u : 0u;
+-                float result = 0.0f;
+-                if (den != 0.0f)
+-                    result = num / den;
+-                else
++            case 0x34: // IAND
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x34))
+                 {
+-                    statusDi = num == 0.0f ? 0x10u : 0x20u;
+-                    result = std::signbit(num)
+-                                 ? -std::numeric_limits<float>::max()
+-                                 : std::numeric_limits<float>::max();
++                    if (viD != 0)
++                        m_state.vi[viD] = m_state.vi[viS] & m_state.vi[viT];
++                    return;
+                 }
+-                uint32_t ignoredFlags = 0u;
+-                result = normalizeResult(result, ignoredFlags);
+-                queueQ(result, 13u, statusDi);
+                 return;
+-            }
+-            case 0x3B: // WAITQ
+-                return;
+-            case 0x3C: // MTIR (Move To Integer Register)
+-            {
+-                // MTIR encodes a two-bit fsf component selector in bits
+-                // 22:21. It is not a four-bit destination mask.
+-                const uint32_t comp = (instr >> 21) & 0x3u;
+-                uint32_t fval;
+-                std::memcpy(&fval, &m_state.vf[vfS][comp], 4);
+-                if (viT != 0)
+-                    m_state.vi[viT] = (int32_t)(int16_t)(fval & 0xFFFF);
+-                return;
+-            }
+-            case 0x3D: // MFIR (Move From Integer Register)
+-            {
+-                float result[4];
+-                int32_t val = (int32_t)(int16_t)(m_state.vi[viS] & 0xFFFF);
+-                std::memcpy(&result[0], &val, 4);
+-                result[1] = result[0];
+-                result[2] = result[0];
+-                result[3] = result[0];
+-                applyDest(m_state.vf[vfT], result, dest);
+-                return;
+-            }
+-            case 0x3E: // ILWR - integer load word from address in VI[is]
+-            {
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
++            case 0x35: // IOR
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x35))
+                 {
+-                    int comp = 0;
+-                    if (dest & 0x8)
+-                        comp = 0;
+-                    else if (dest & 0x4)
+-                        comp = 1;
+-                    else if (dest & 0x2)
+-                        comp = 2;
+-                    else
+-                        comp = 3;
+-                    uint32_t v;
+-                    std::memcpy(&v, vuData + addr + comp * 4, 4);
+-                    if (viT != 0)
+-                        m_state.vi[viT] = (int32_t)(int16_t)(v & 0xFFFF);
++                    if (viD != 0)
++                        m_state.vi[viD] = m_state.vi[viS] | m_state.vi[viT];
++                    return;
+                 }
+                 return;
+-            }
+-            case 0x3F: // ISWR - integer store word to address in VI[is]
+-            {
+-                uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
+-                addr &= (dataSize - 1);
+-                if (addr + 16 <= dataSize)
+-                {
+-                    const uint32_t val =
+-                        static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[viT] & 0xFFFF));
+-                    const uint32_t words[4] = {val, val, val, val};
+-                    queueStore(addr, words, dest);
+-                }
+-                return;
+-            }
+-            case 0x40: // RNEXT
+-            {
+-                const uint32_t x = (m_state.r >> 4) & 1u;
+-                const uint32_t y = (m_state.r >> 22) & 1u;
+-                m_state.r = ((m_state.r << 1) ^ x ^ y) & 0x007FFFFFu;
+-                m_state.r |= 0x3F800000u;
+-                float value = 0.0f;
+-                std::memcpy(&value, &m_state.r, sizeof(value));
+-                const float result[4] = {value, value, value, value};
+-                applyDest(m_state.vf[vfT], result, dest);
+-                return;
+-            }
+-            case 0x41: // RGET
+-            {
+-                float value = 0.0f;
+-                std::memcpy(&value, &m_state.r, sizeof(value));
+-                const float result[4] = {value, value, value, value};
+-                applyDest(m_state.vf[vfT], result, dest);
+-                return;
+-            }
+-            case 0x42: // RINIT
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                uint32_t bits = 0u;
+-                std::memcpy(&bits, &m_state.vf[vfS][component], sizeof(bits));
+-                m_state.r = 0x3F800000u | (bits & 0x007FFFFFu);
+-                return;
+-            }
+-            case 0x43: // RXOR
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                uint32_t bits = 0u;
+-                std::memcpy(&bits, &m_state.vf[vfS][component], sizeof(bits));
+-                m_state.r = 0x3F800000u | ((m_state.r ^ bits) & 0x007FFFFFu);
+-                return;
+-            }
+-            case 0x64: // MFP (Move From P register)
+-            {
+-                float result[4] = {m_state.p, m_state.p, m_state.p, m_state.p};
+-                applyDest(m_state.vf[vfT], result, dest);
+-                return;
+-            }
+-            case 0x68: // XTOP - move current VIF1 TOP into VI register
+-            {
+-                if (viT != 0)
+-                    m_state.vi[viT] = (int32_t)(m_state.top & 0x3FFu);
+-                return;
+-            }
+-            case 0x69: // XITOP - move current VIF1 ITOP into VI register
+-            {
+-                if (viT != 0)
+-                    m_state.vi[viT] = (int32_t)(m_state.itop & 0x3FFu);
+-                return;
+-            }
+-            case 0x6C: // XGKICK - send GIF packet from VU1 data memory
+-                startXgkick(static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[viS])));
+-                return;
+-            case 0x70: // ESADD
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float y = normalizeOperand(m_state.vf[vfS][1]);
+-                const float z = normalizeOperand(m_state.vf[vfS][2]);
+-                queueP(x * x + y * y + z * z, 11u);
+-                return;
+-            }
+-            case 0x71: // ERSADD
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float y = normalizeOperand(m_state.vf[vfS][1]);
+-                const float z = normalizeOperand(m_state.vf[vfS][2]);
+-                const float sum = x * x + y * y + z * z;
+-                queueP(sum != 0.0f ? 1.0f / sum : sum, 18u);
+-                return;
+-            }
+-            case 0x72: // ELENG
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float y = normalizeOperand(m_state.vf[vfS][1]);
+-                const float z = normalizeOperand(m_state.vf[vfS][2]);
+-                queueP(std::sqrt(x * x + y * y + z * z), 18u);
+-                return;
+-            }
+-            case 0x73: // ERLENG
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float y = normalizeOperand(m_state.vf[vfS][1]);
+-                const float z = normalizeOperand(m_state.vf[vfS][2]);
+-                const float len = std::sqrt(x * x + y * y + z * z);
+-                queueP(len != 0.0f ? 1.0f / len : len, 24u);
+-                return;
+-            }
+-            case 0x74: // EATANxy
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float y = normalizeOperand(m_state.vf[vfS][1]);
+-                queueP(x != 0.0f ? vuEatan(y / x) : 0.0f, 54u);
+-                return;
+-            }
+-            case 0x75: // EATANxz
+-            {
+-                const float x = normalizeOperand(m_state.vf[vfS][0]);
+-                const float z = normalizeOperand(m_state.vf[vfS][2]);
+-                queueP(x != 0.0f ? vuEatan(z / x) : 0.0f, 54u);
+-                return;
+-            }
+-            case 0x76: // ESUM
+-            {
+-                float sum = 0.0f;
+-                for (uint32_t component = 0; component < 4u; ++component)
+-                    sum += normalizeOperand(m_state.vf[vfS][component]);
+-                queueP(sum, 12u);
+-                return;
+-            }
+-            case 0x77: // ERSQRT
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                const float value = normalizeOperand(m_state.vf[vfS][component]);
+-                float result = value;
+-                if (result >= 0.0f)
++
++            case 0x3C:
++            case 0x3D:
++            case 0x3E:
++            case 0x3F: // Lower1 special. Dobie decodes this as (instr & 3) | ((instr >> 4) & 0x7C).
++                if constexpr (PS2_VU_LOWER_FUNCT_CASE(0x3C, 0x3D, 0x3E, 0x3F))
+                 {
+-                    result = std::sqrt(result);
+-                    if (result != 0.0f)
+-                        result = 1.0f / result;
++                    const uint8_t funct2 = (uint8_t)((instr & 0x3u) | ((instr >> 4) & 0x7Cu));
++                    switch (funct2)
++                    {
++                    case 0x30: // MOVE
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x30))
++                        {
++                            float tmp[4];
++                            std::memcpy(tmp, m_state.vf[vfS], 16);
++                            applyDest(m_state.vf[vfT], tmp, dest);
++                            return;
++                        }
++                        return;
++                    case 0x31: // MR32 (rotate right by 32 bits = shift xyzw -> yzwx)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x31))
++                        {
++                            float tmp[4] = {m_state.vf[vfS][1], m_state.vf[vfS][2], m_state.vf[vfS][3], m_state.vf[vfS][0]};
++                            applyDest(m_state.vf[vfT], tmp, dest);
++                            return;
++                        }
++                        return;
++                    case 0x34: // LQI (Load Quadword, post-increment)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x34))
++                        {
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                float tmp[4];
++                                std::memcpy(tmp, vuData + addr, 16);
++                                applyDest(m_state.vf[vfT], tmp, dest);
++                            }
++                            if (viS != 0)
++                                m_state.vi[viS] = (int16_t)(m_state.vi[viS] + 1);
++                            return;
++                        }
++                        return;
++                    case 0x35: // SQI (Store Quadword, post-increment)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x35))
++                        {
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viT]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                uint32_t words[4]{};
++                                std::memcpy(words, m_state.vf[vfS], sizeof(words));
++                                queueStore(addr, words, dest);
++                            }
++                            if (viT != 0)
++                                m_state.vi[viT] = (int16_t)(m_state.vi[viT] + 1);
++                            return;
++                        }
++                        return;
++                    case 0x36: // LQD (Load Quadword, pre-decrement)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x36))
++                        {
++                            if (viS != 0)
++                                m_state.vi[viS] = (int16_t)(m_state.vi[viS] - 1);
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                float tmp[4];
++                                std::memcpy(tmp, vuData + addr, 16);
++                                applyDest(m_state.vf[vfT], tmp, dest);
++                            }
++                            return;
++                        }
++                        return;
++                    case 0x37: // SQD (Store Quadword, pre-decrement)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x37))
++                        {
++                            if (viT != 0)
++                                m_state.vi[viT] = (int16_t)(m_state.vi[viT] - 1);
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viT]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                uint32_t words[4]{};
++                                std::memcpy(words, m_state.vf[vfS], sizeof(words));
++                                queueStore(addr, words, dest);
++                            }
++                            return;
++                        }
++                        return;
++                    case 0x38: // DIV
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x38))
++                        {
++                            int fsf = (instr >> 21) & 0x3;
++                            int ftf = (instr >> 23) & 0x3;
++                            const float num = normalizeOperand(m_state.vf[vfS][fsf]);
++                            const float den = normalizeOperand(m_state.vf[vfT][ftf]);
++                            uint32_t statusDi = 0u;
++                            float result = 0.0f;
++                            if (den == 0.0f)
++                            {
++                                statusDi = num == 0.0f ? 0x10u : 0x20u;
++                                result = std::signbit(num) != std::signbit(den)
++                                             ? -std::numeric_limits<float>::max()
++                                             : std::numeric_limits<float>::max();
++                            }
++                            else
++                            {
++                                result = num / den;
++                            }
++                            uint32_t ignoredFlags = 0u;
++                            result = normalizeResult(result, ignoredFlags);
++                            queueQ(result, 7u, statusDi);
++                            return;
++                        }
++                        return;
++                    case 0x39: // SQRT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x39))
++                        {
++                            int ftf = (instr >> 23) & 0x3;
++                            const float val = normalizeOperand(m_state.vf[vfT][ftf]);
++                            queueQ(std::sqrt(std::fabs(val)), 7u,
++                                   val < 0.0f ? 0x10u : 0u);
++                            return;
++                        }
++                        return;
++                    case 0x3A: // RSQRT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3A))
++                        {
++                            int fsf = (instr >> 21) & 0x3;
++                            int ftf = (instr >> 23) & 0x3;
++                            const float num = normalizeOperand(m_state.vf[vfS][fsf]);
++                            const float radicand = normalizeOperand(m_state.vf[vfT][ftf]);
++                            const float den = std::sqrt(std::fabs(radicand));
++                            uint32_t statusDi = radicand < 0.0f ? 0x10u : 0u;
++                            float result = 0.0f;
++                            if (den != 0.0f)
++                                result = num / den;
++                            else
++                            {
++                                statusDi = num == 0.0f ? 0x10u : 0x20u;
++                                result = std::signbit(num)
++                                             ? -std::numeric_limits<float>::max()
++                                             : std::numeric_limits<float>::max();
++                            }
++                            uint32_t ignoredFlags = 0u;
++                            result = normalizeResult(result, ignoredFlags);
++                            queueQ(result, 13u, statusDi);
++                            return;
++                        }
++                        return;
++                    case 0x3B: // WAITQ
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3B))
++                        {
++                            return;
++                        }
++                        return;
++                    case 0x3C: // MTIR (Move To Integer Register)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3C))
++                        {
++                            // MTIR encodes a two-bit fsf component selector in bits
++                            // 22:21. It is not a four-bit destination mask.
++                            const uint32_t comp = (instr >> 21) & 0x3u;
++                            uint32_t fval;
++                            std::memcpy(&fval, &m_state.vf[vfS][comp], 4);
++                            if (viT != 0)
++                                m_state.vi[viT] = (int32_t)(int16_t)(fval & 0xFFFF);
++                            return;
++                        }
++                        return;
++                    case 0x3D: // MFIR (Move From Integer Register)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3D))
++                        {
++                            float result[4];
++                            int32_t val = (int32_t)(int16_t)(m_state.vi[viS] & 0xFFFF);
++                            std::memcpy(&result[0], &val, 4);
++                            result[1] = result[0];
++                            result[2] = result[0];
++                            result[3] = result[0];
++                            applyDest(m_state.vf[vfT], result, dest);
++                            return;
++                        }
++                        return;
++                    case 0x3E: // ILWR - integer load word from address in VI[is]
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3E))
++                        {
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                int comp = 0;
++                                if (dest & 0x8)
++                                    comp = 0;
++                                else if (dest & 0x4)
++                                    comp = 1;
++                                else if (dest & 0x2)
++                                    comp = 2;
++                                else
++                                    comp = 3;
++                                uint32_t v;
++                                std::memcpy(&v, vuData + addr + comp * 4, 4);
++                                if (viT != 0)
++                                    m_state.vi[viT] = (int32_t)(int16_t)(v & 0xFFFF);
++                            }
++                            return;
++                        }
++                        return;
++                    case 0x3F: // ISWR - integer store word to address in VI[is]
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x3F))
++                        {
++                            uint32_t addr = ((uint32_t)(uint16_t)m_state.vi[viS]) * 16u;
++                            addr &= (dataSize - 1);
++                            if (addr + 16 <= dataSize)
++                            {
++                                const uint32_t val =
++                                    static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[viT] & 0xFFFF));
++                                const uint32_t words[4] = {val, val, val, val};
++                                queueStore(addr, words, dest);
++                            }
++                            return;
++                        }
++                        return;
++                    case 0x40: // RNEXT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x40))
++                        {
++                            const uint32_t x = (m_state.r >> 4) & 1u;
++                            const uint32_t y = (m_state.r >> 22) & 1u;
++                            m_state.r = ((m_state.r << 1) ^ x ^ y) & 0x007FFFFFu;
++                            m_state.r |= 0x3F800000u;
++                            float value = 0.0f;
++                            std::memcpy(&value, &m_state.r, sizeof(value));
++                            const float result[4] = {value, value, value, value};
++                            applyDest(m_state.vf[vfT], result, dest);
++                            return;
++                        }
++                        return;
++                    case 0x41: // RGET
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x41))
++                        {
++                            float value = 0.0f;
++                            std::memcpy(&value, &m_state.r, sizeof(value));
++                            const float result[4] = {value, value, value, value};
++                            applyDest(m_state.vf[vfT], result, dest);
++                            return;
++                        }
++                        return;
++                    case 0x42: // RINIT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x42))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            uint32_t bits = 0u;
++                            std::memcpy(&bits, &m_state.vf[vfS][component], sizeof(bits));
++                            m_state.r = 0x3F800000u | (bits & 0x007FFFFFu);
++                            return;
++                        }
++                        return;
++                    case 0x43: // RXOR
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x43))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            uint32_t bits = 0u;
++                            std::memcpy(&bits, &m_state.vf[vfS][component], sizeof(bits));
++                            m_state.r = 0x3F800000u | ((m_state.r ^ bits) & 0x007FFFFFu);
++                            return;
++                        }
++                        return;
++                    case 0x64: // MFP (Move From P register)
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x64))
++                        {
++                            float result[4] = {m_state.p, m_state.p, m_state.p, m_state.p};
++                            applyDest(m_state.vf[vfT], result, dest);
++                            return;
++                        }
++                        return;
++                    case 0x68: // XTOP - move current VIF1 TOP into VI register
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x68))
++                        {
++                            if (viT != 0)
++                                m_state.vi[viT] = (int32_t)(m_state.top & 0x3FFu);
++                            return;
++                        }
++                        return;
++                    case 0x69: // XITOP - move current VIF1 ITOP into VI register
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x69))
++                        {
++                            if (viT != 0)
++                                m_state.vi[viT] = (int32_t)(m_state.itop & 0x3FFu);
++                            return;
++                        }
++                        return;
++                    case 0x6C: // XGKICK - send GIF packet from VU1 data memory
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x6C))
++                        {
++                            startXgkick(static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[viS])));
++                            return;
++                        }
++                        return;
++                    case 0x70: // ESADD
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x70))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float y = normalizeOperand(m_state.vf[vfS][1]);
++                            const float z = normalizeOperand(m_state.vf[vfS][2]);
++                            queueP(x * x + y * y + z * z, 11u);
++                            return;
++                        }
++                        return;
++                    case 0x71: // ERSADD
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x71))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float y = normalizeOperand(m_state.vf[vfS][1]);
++                            const float z = normalizeOperand(m_state.vf[vfS][2]);
++                            const float sum = x * x + y * y + z * z;
++                            queueP(sum != 0.0f ? 1.0f / sum : sum, 18u);
++                            return;
++                        }
++                        return;
++                    case 0x72: // ELENG
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x72))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float y = normalizeOperand(m_state.vf[vfS][1]);
++                            const float z = normalizeOperand(m_state.vf[vfS][2]);
++                            queueP(std::sqrt(x * x + y * y + z * z), 18u);
++                            return;
++                        }
++                        return;
++                    case 0x73: // ERLENG
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x73))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float y = normalizeOperand(m_state.vf[vfS][1]);
++                            const float z = normalizeOperand(m_state.vf[vfS][2]);
++                            const float len = std::sqrt(x * x + y * y + z * z);
++                            queueP(len != 0.0f ? 1.0f / len : len, 24u);
++                            return;
++                        }
++                        return;
++                    case 0x74: // EATANxy
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x74))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float y = normalizeOperand(m_state.vf[vfS][1]);
++                            queueP(x != 0.0f ? vuEatan(y / x) : 0.0f, 54u);
++                            return;
++                        }
++                        return;
++                    case 0x75: // EATANxz
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x75))
++                        {
++                            const float x = normalizeOperand(m_state.vf[vfS][0]);
++                            const float z = normalizeOperand(m_state.vf[vfS][2]);
++                            queueP(x != 0.0f ? vuEatan(z / x) : 0.0f, 54u);
++                            return;
++                        }
++                        return;
++                    case 0x76: // ESUM
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x76))
++                        {
++                            float sum = 0.0f;
++                            for (uint32_t component = 0; component < 4u; ++component)
++                                sum += normalizeOperand(m_state.vf[vfS][component]);
++                            queueP(sum, 12u);
++                            return;
++                        }
++                        return;
++                    case 0x77: // ERSQRT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x77))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            const float value = normalizeOperand(m_state.vf[vfS][component]);
++                            float result = value;
++                            if (result >= 0.0f)
++                            {
++                                result = std::sqrt(result);
++                                if (result != 0.0f)
++                                    result = 1.0f / result;
++                            }
++                            queueP(result, 18u);
++                            return;
++                        }
++                        return;
++                    case 0x78: // ESQRT
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x78))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            const float value = normalizeOperand(m_state.vf[vfS][component]);
++                            queueP(value >= 0.0f ? std::sqrt(value) : value, 12u);
++                            return;
++                        }
++                        return;
++                    case 0x79: // ESIN
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x79))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            const float value = normalizeOperand(m_state.vf[vfS][component]);
++                            queueP(vuEsin(value), 29u);
++                            return;
++                        }
++                        return;
++                    case 0x7A: // ERCPR
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x7A))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            const float value = normalizeOperand(m_state.vf[vfS][component]);
++                            queueP(value != 0.0f ? 1.0f / value : value, 12u);
++                            return;
++                        }
++                        return;
++                    case 0x7B: // WAITP
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x7B))
++                        {
++                            return;
++                        }
++                        return;
++                    case 0x7C: // EATAN
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x7C))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            queueP(vuEatan(normalizeOperand(m_state.vf[vfS][component])), 54u);
++                            return;
++                        }
++                        return;
++                    case 0x7D: // EEXP
++                        if constexpr (PS2_VU_LOWER_FUNCT2_CASE(0x7D))
++                        {
++                            const uint32_t component = (instr >> 21) & 3u;
++                            queueP(vuEexp(normalizeOperand(m_state.vf[vfS][component])), 44u);
++                            return;
++                        }
++                        return;
++                    default:
++                        reportReservedInstruction(false, instr);
++                        return;
++                    }
+                 }
+-                queueP(result, 18u);
+-                return;
+-            }
+-            case 0x78: // ESQRT
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                const float value = normalizeOperand(m_state.vf[vfS][component]);
+-                queueP(value >= 0.0f ? std::sqrt(value) : value, 12u);
+-                return;
+-            }
+-            case 0x79: // ESIN
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                const float value = normalizeOperand(m_state.vf[vfS][component]);
+-                queueP(vuEsin(value), 29u);
+-                return;
+-            }
+-            case 0x7A: // ERCPR
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                const float value = normalizeOperand(m_state.vf[vfS][component]);
+-                queueP(value != 0.0f ? 1.0f / value : value, 12u);
+                 return;
+-            }
+-            case 0x7B: // WAITP
+-                return;
+-            case 0x7C: // EATAN
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                queueP(vuEatan(normalizeOperand(m_state.vf[vfS][component])), 54u);
+-                return;
+-            }
+-            case 0x7D: // EEXP
+-            {
+-                const uint32_t component = (instr >> 21) & 3u;
+-                queueP(vuEexp(normalizeOperand(m_state.vf[vfS][component])), 44u);
+-                return;
+-            }
+             default:
+                 reportReservedInstruction(false, instr);
+                 return;
+             }
+         }
+-        default:
+-            reportReservedInstruction(false, instr);
+-            return;
+-        }
+-    }
++        return;
+     default:
+         reportReservedInstruction(false, instr);
+         break;
+     }
+ }
+ 
++#undef PS2_VU_LOWER_CASE
++#undef PS2_VU_LOWER_FUNCT_CASE
++#undef PS2_VU_LOWER_FUNCT2_CASE
++
++PS2_VU_FORCEINLINE void VU1Interpreter::execLowerInline(uint32_t instr, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upperInstr)
++{
++    execLowerT<false, 0u>(instr, vuData, dataSize, gs, memory, upperInstr);
++}
++
+ // What translated VU1 code needs of the lower executor.
+ struct VU1NativeLowerAccess
+ {
+@@ -818,6 +1012,14 @@
+     {
+         vu.execLowerInline(instr, vuData, dataSize, gs, memory, upperInstr);
+     }
++    // One lower word known at build time: only its own opcode case is
++    // compiled.
++    template <uint32_t kWord>
++    static PS2_VU_FORCEINLINE void execLowerWord(VU1Interpreter &vu, uint8_t *vuData, uint32_t dataSize,
++                                                 GS &gs, PS2Memory *memory, uint32_t upperInstr)
++    {
++        vu.execLowerT<true, kWord>(kWord, vuData, dataSize, gs, memory, upperInstr);
++    }
+ };
+ 
+ #endif
