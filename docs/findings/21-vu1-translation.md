@@ -833,3 +833,41 @@ the timing model and is left for a decision of its own.
   pending mark), the VF0/VI0 reset, the VI write, the ready marks, the
   calls to the upper and lower word functions and the cycle advance with
   its commit and PATH1 checks.
+
+## 25. VI loads at issue, cheaper FMAC entries, no hardening in translated code (patch 0038)
+
+- Measured on the replay after s.24 (calls counted with callgrind): the
+  per-cycle commit still ran 15,102 times at about 126 host instructions,
+  because the integer loads ILW/ILWR (VI latency 4) still went through
+  the delayed VI write queue (24,736 queued writes on the 40 workloads;
+  patch 0027 had made only latency-1 VI writes immediate). A hot
+  four-lane MADD still cost 187 host instructions: about 40 for the flag
+  entry (the 40-byte ring entry zeroed, then written), the operand
+  normalisation of three vectors with blends even when no lane needs it,
+  and a stack-protector check on every call (`-fstack-protector-strong`,
+  the Ubuntu GCC default; MSVC's `/GS` is the same idea).
+- Patch 0038: with immediate writes (translated code) every VI write is
+  made at issue, latency 4 too: exact for the same reason as the VF writes
+  of patch 0022 (every VI reader waits in the hazard check until the
+  latest write is due; a newer write still replaces an older one through
+  the write sequence; `m_immediatePendingUntil` keeps the end-of-program
+  cycle count). `appendFmacFlagEntry` writes the entry once;
+  `normalizeOperands4` skips the blends when no lane has exponent 0 or
+  255; `readBranchVi` inline. CMake: the translated library is built
+  without stack protector and CET markers (`-fno-stack-protector
+  -fcf-protection=none`, MSVC `/GS-`): it is generated from the game's VU
+  programs, has only fixed-size local arrays and takes no outside input;
+  the rest of the port keeps the defaults.
+- Checked: same checksums and cycle counts on the 40 VU1 and 60 VU0
+  workloads, interpreted, translated with and without blocks; ps2xTest
+  454/454.
+- Gain (replay, translated VU work without the replay's code
+  resolution): 20.0 M -> 19.5 M (flag entry, operands) -> 17.7 M (VI
+  loads) -> 17.2 M (no hardening) -> 16.95 M (readBranchVi): about 152
+  host instructions per VU cycle, -40% since s.20 (28.4 M). Per VU cycle
+  now: upper words about 50, block bodies 40, lower words 22, last pairs
+  13, run loop 7, commit 7, PATH1 6.
+- A pitfall seen again: a change to CMakeLists.txt makes CMake reset the
+  submodule and reapply the patch files, which dropped runtime edits not
+  yet written to a patch; they were redone from the snapshot. Noted in
+  patches/ps2recomp/README.md: write the patch file first.

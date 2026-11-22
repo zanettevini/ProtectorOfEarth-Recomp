@@ -1,0 +1,180 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU interpreter: immediate VI loads in translated code; cheaper FMAC flag entry and operand normalisation
+
+What it is for:
+  In translated VU code the integer loads ILW/ILWR (latency 4) still went
+  through the delayed VI write queue: 24,736 queued writes and the commit
+  passes they need on the port's 40 replay workloads. And every FMAC
+  instruction zeroed a 40-byte flag ring entry and then wrote it again.
+
+The change (same results):
+  - execPairWith with immediate writes: VI writes of any latency are
+    written at issue (latency 1 was already). Exact for the same reason as
+    the immediate VF writes: every instruction that reads a VI register
+    waits in the hazard check until the latest write is due, a newer write
+    still replaces an older one (the write sequence), and
+    m_immediatePendingUntil keeps the pipelines pending until the write
+    would have committed, so the end-of-program cycle count is unchanged.
+  - appendFmacFlagEntry: the FMAC flag entry written field by field once,
+    on a power-of-two ring index; the full-ring case goes through
+    appendFlagEntry as before.
+  - normalizeOperands4: when no lane has exponent 0 or 255 (the common
+    case) the operands are stored unchanged without the blends.
+  - readBranchVi inline (it was called out of line by every branch).
+
+How it was checked:
+  The port's replay: same checksums and cycle counts on the 40 VU1 and 60
+  VU0 workloads, interpreted, translated with blocks and without;
+  translated VU work 20.0 M -> 17.7 M host instructions. ps2xTest 454/454.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -485,6 +485,9 @@
+     // kFmacLatency cycles; nullptr (after reporting errorCode) if 8 entries
+     // are still not due.
+     FlagPipelineEntry *appendFlagEntry(uint32_t errorCode, bool upper);
++    // appendFlagEntry for an FMAC result (MAC, status and sticky written),
++    // with each field written once (findings/21 s.25).
++    void appendFmacFlagEntry(uint32_t mac, uint32_t status, uint32_t extraSticky);
+     // Applies to m_state.mac/status/clip, in issue order, every flag entry
+     // due by now (what the per-cycle commit used to do), and drops them.
+     void materializeFlags();
+@@ -896,6 +899,17 @@
+         m_immediatePendingUntil = m_cycle + latency;
+ }
+ 
++// Inline (was out of line): what a branch reads from a VI register (the old
++// value if the previous pair wrote it).
++inline int32_t VU1Interpreter::readBranchVi(uint8_t reg) const
++{
++    if (reg == 0u)
++        return 0;
++    if (m_viBranchBackupValid && m_viBranchBackupReg == reg)
++        return m_viBranchBackupValue;
++    return m_state.vi[reg];
++}
++
+ // Inline (was out of line): the VI write a following branch reads before it.
+ inline void VU1Interpreter::recordViWriteForBranch(uint8_t reg, int32_t oldValue)
+ {
+@@ -1059,14 +1073,22 @@
+             decoded.lowerUsage.viLatency != 0u
+                 ? decoded.lowerUsage.viLatency
+                 : decoded.lowerUsage.latency;
+-        if (immediateWrites && latency <= 1u)
++        if (immediateWrites)
+         {
+-            // Due next cycle, i.e. committed at the end of this step: written
+-            // now, as the commit would (16-bit), and made the register's
+-            // latest write so an older queued one (ILW, 4 cycles) is dropped.
++            // Written now, as the commit would (16-bit), and made the
++            // register's latest write so an older queued one (ILW, 4 cycles)
++            // is dropped. Latency 1: due next cycle, i.e. committed at the end
++            // of this step anyway. Longer (ILW/ILWR, 4): exact for the same
++            // reason as the immediate VF writes (writeVfNow): every
++            // instruction that reads a VI register waits in the hazard check
++            // until the latest write is due, and a newer write still replaces
++            // it; m_immediatePendingUntil keeps the pipelines pending until
++            // the write would have committed (findings/21 s.25).
+             m_state.vi[writtenVi] = static_cast<int16_t>(newVi);
+             if (m_viValid != 0u) // an older VI write (ILW) may be queued
+                 m_viLatestWrite[writtenVi] = ++m_nextWriteSequence;
++            if (latency > 1u && m_cycle + latency > m_immediatePendingUntil)
++                m_immediatePendingUntil = m_cycle + latency;
+         }
+         else
+         {
+@@ -1164,6 +1186,37 @@
+     return &entry;
+ }
+ 
++PS2_VU_FORCEINLINE void VU1Interpreter::appendFmacFlagEntry(uint32_t mac, uint32_t status, uint32_t extraSticky)
++{
++    static_assert((kMaxFlagEntries & (kMaxFlagEntries - 1u)) == 0u, "the flag ring size is a power of two");
++    if (m_flagCount == kMaxFlagEntries) [[unlikely]]
++    {
++        // As appendFlagEntry: apply what is due, and report a full ring.
++        FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFFu, true);
++        if (!entry)
++            return;
++        entry->mac = mac;
++        entry->status = status;
++        entry->extraSticky = extraSticky;
++        entry->writesMac = true;
++        entry->writesStatus = true;
++        return;
++    }
++    FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + m_flagCount) & (kMaxFlagEntries - 1u)];
++    ++m_flagCount;
++    entry.readyCycle = m_cycle + kFmacLatency;
++    entry.issueCycle = m_cycle;
++    entry.mac = mac;
++    entry.status = status;
++    entry.extraSticky = extraSticky;
++    entry.clip = 0u;
++    entry.valid = true;
++    entry.writesMac = true;
++    entry.writesStatus = true;
++    entry.writesSticky = false;
++    entry.writesClip = false;
++}
++
+ template <bool kConst>
+ PS2_VU_FORCEINLINE void VU1Interpreter::storeOrQueue(uint32_t address, const uint32_t words[4], uint8_t laneMask)
+ {
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -68,6 +68,12 @@
+         const __m128i exponent = _mm_and_si128(bits, exponentMask);
+         const __m128i isZero = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
+         const __m128i isMax = _mm_cmpeq_epi32(exponent, exponentMask);
++        // Common case: no lane with exponent 0 or 255, nothing to change.
++        if (_mm_movemask_ps(_mm_castsi128_ps(_mm_or_si128(isZero, isMax))) == 0) [[likely]]
++        {
++            _mm_storeu_ps(out, _mm_castsi128_ps(bits));
++            return;
++        }
+         __m128i r = _mm_or_si128(_mm_and_si128(isZero, sign), _mm_andnot_si128(isZero, bits));
+         r = _mm_or_si128(_mm_and_si128(isMax, _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF))), _mm_andnot_si128(isMax, r));
+         _mm_storeu_ps(out, _mm_castsi128_ps(r));
+@@ -600,16 +606,9 @@
+     // Each lane's flags: its sign (S), and Z for the zero lanes. MAC holds
+     // Z in bits 3:0 and S in bits 7:4, x the highest of each.
+     const uint32_t signLanes = static_cast<uint32_t>(_mm_movemask_ps(r)) & destLanes;
+-    FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFFu, true);
+-    if (entry)
+-    {
+-        entry->mac = static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[zeroLanes]) |
+-                     (static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[signLanes]) << 4);
+-        entry->status = (zeroLanes != 0u ? 0x1u : 0u) | (signLanes != 0u ? 0x2u : 0u);
+-        entry->extraSticky = extraSticky;
+-        entry->writesMac = true;
+-        entry->writesStatus = true;
+-    }
++    appendFmacFlagEntry(static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[zeroLanes]) |
++                            (static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[signLanes]) << 4),
++                        (zeroLanes != 0u ? 0x1u : 0u) | (signLanes != 0u ? 0x2u : 0u), extraSticky);
+     return true;
+ #else
+     (void)result;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -115,17 +115,7 @@
+ // applyFmacDestAcc) are inline in runtime/ps2_vu1_fmac_inl.h.
+ 
+ 
+-int32_t VU1Interpreter::readBranchVi(uint8_t reg) const
+-{
+-    if (reg == 0u)
+-        return 0;
+-    if (m_viBranchBackupValid &&
+-        m_viBranchBackupReg == reg)
+-    {
+-        return m_viBranchBackupValue;
+-    }
+-    return m_state.vi[reg];
+-}
++// readBranchVi: inline in runtime/ps2_vu1.h.
+ 
+ // recordViWriteForBranch: inline in runtime/ps2_vu1.h.
+ 

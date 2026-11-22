@@ -181,12 +181,16 @@ if(TARGET ps2_runtime AND EXISTS "${BEN10_GAME_ELF}")
     set_property(GLOBAL APPEND PROPERTY JOB_POOLS ben10_vu1_compile=${BEN10_VU1_COMPILE_JOBS})
     set_property(TARGET ben10_vu1_native PROPERTY JOB_POOL_COMPILE ben10_vu1_compile)
     message(STATUS "Translated VU1 code: at most ${BEN10_VU1_COMPILE_JOBS} files compile at once (${BEN10_HOST_MEMORY_MB} MB RAM)")
+    # No stack-protector cookies or CET branch markers in the translated
+    # code: about 3% of its cost (findings/21 s.25). It is generated from the
+    # game's VU programs and only has fixed-size local arrays and no outside
+    # input; the rest of the port keeps the compiler's defaults.
     if(MSVC)
-        target_compile_options(ben10_vu1_native PRIVATE /bigobj)
+        target_compile_options(ben10_vu1_native PRIVATE /bigobj /GS-)
     else()
         # Optimised in every build, like the runtime (each pair's step must
         # be inlined and folded to be worth having).
-        target_compile_options(ben10_vu1_native PRIVATE -O2 -g)
+        target_compile_options(ben10_vu1_native PRIVATE -O2 -g -fno-stack-protector -fcf-protection=none)
     endif()
 endif()
 
