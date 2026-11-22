@@ -20,10 +20,11 @@
    (`BEN10_ASYNC_VU1=1`, s.22, patch 0034): the game thread drops from
    about 76 to 31 ms of CPU per frame on Linux, the worker takes 40 ms
    beside it; the 2-core Linux machine cannot show the frame-rate gain.
-   Next: the maintainer measures it on Windows (frame rate and
-   `cpu_per_frame_windows.ps1` with and without the variable) and decides
-   whether it becomes the default; then the worker's own cost (the VU
-   code) and the GS bands. Profile the game thread with
+   On Windows (s.22): 9-18 -> 12.7-23.9 game frames per second in the
+   first level; the worker (VU1) is now the limit when enemies are on
+   screen, then the busiest GS band. Next: the worker's own cost (the VU
+   code per pair, s.18-20) and the GS band balance; the maintainer
+   decides later whether the option becomes the default. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
    `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same

@@ -720,4 +720,19 @@ the timing model and is left for a decision of its own.
   the VBlank handler checks before the next kick.
 - Checked: ps2xTest 454/454 and the replay checksums (VU1 and VU0) are
   unchanged (they do not use the option); MinGW compiles the changed
-  files. Not tested: Windows; long play; other levels.
+  files.
+- Windows (maintainer's desktop, MSVC Release, 6 GS bands, first level,
+  about 2 minutes each, `cpu-monitor.ps1` every 10 s; the two runs are
+  not the same path through the level, so compare ranges):
+  - option off (commit with patches 0001-0033): 9-18 game frames per
+    second in the level; the game thread at 100% of a core, 50-126 ms of
+    CPU per game frame; the busiest GS band 39-68 ms.
+  - option on: 12.7-23.9 game frames per second; game thread 14-32 ms;
+    the worker 23-74 ms and near 100% of its core (up to 978 ms per
+    second) when enemies are on screen; the busiest GS band 32-54 ms.
+    Every transfer completed at the VBlank (one at a register); the EE
+    waited for the worker at about half of the VBlanks, 30-39 ms on
+    average. The game played normally and closed cleanly (exit code 0).
+  - So with the option on the worker (VU1 code) is the limit when
+    enemies are on screen, then the busiest GS band; the game thread is
+    not any more.
