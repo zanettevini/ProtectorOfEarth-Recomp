@@ -440,3 +440,14 @@ the timing model and is left for a decision of its own.
   is a decision of its own. Before deciding: measure how many VIF1 and GIF
   transfers the first level starts per frame and how much EE work lies
   between a VIF1 kick and the next point where the EE would have to wait.
+- Measured (a temporary counter in `processPendingTransfers` and in
+  `readIORegister`, not committed; first level, Linux, about 4 game frames
+  per second): every game frame has the same pattern, five VIF0
+  transfers, then three reads of D1_CHCR (waiting for the previous VIF1
+  transfer), one VIF1 transfer, three more reads, a second VIF1 transfer.
+  No GIF (PATH3) transfers at all in the level. The game thread spent
+  about 780 ms of every second inside `processPendingTransfers` (VIF1 and
+  the VU1 programs it starts, VIF0, GIF output), so only about a fifth of
+  its time is the EE's own work that a VU1 thread could overlap: at best
+  about a quarter faster, not twice. Not pursued for now; the VU code
+  itself has to get faster (s.11-12).
