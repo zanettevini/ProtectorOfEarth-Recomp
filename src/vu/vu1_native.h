@@ -15,6 +15,11 @@
 // interpreter runs the pairs it gets no function for itself. A pair's
 // decoding depends only on its 64 bits, so a function picked this way does
 // exactly what the interpreter would do.
+//
+// VU0 (findings/21 s.19): the VU0 microprograms (VCALLMS) are in the same
+// tables. resolveVu0 hands the VU0 interpreter only the pairs marked as
+// decoding the same on VU0 (the translator checks this at build time),
+// since a few lower instructions are reserved there.
 
 #pragma once
 
@@ -31,6 +36,7 @@ namespace ben10::vu1_native
         uint32_t lower; // the pair's lower word (first in memory)
         uint32_t upper; // the pair's upper word
         VU1Interpreter::NativePairFn fn;
+        bool vu0;       // decodes the same as VU0 code: may also run on VU0
     };
 
     struct NativeTable
@@ -47,6 +53,12 @@ namespace ben10::vu1_native
     void resolve(const uint8_t *vuCode, uint32_t codeSize,
                  VU1Interpreter::NativePairFn *table, uint32_t entries);
 
-    // Number of translated pairs (all tables).
+    // The same for the VU0 instance: only pairs marked vu0 (the VU0
+    // skinning microprograms are overlay group B, findings/21 s.19).
+    void resolveVu0(const uint8_t *vuCode, uint32_t codeSize,
+                    VU1Interpreter::NativePairFn *table, uint32_t entries);
+
+    // Number of translated pairs (all tables), and of those valid on VU0.
     size_t pairCount();
+    size_t vu0PairCount();
 }

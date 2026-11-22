@@ -12,8 +12,11 @@
    first level can reach about 25-30 frames per second. Next, in order
    (s.11): flags as a history read on demand; no per-cycle commit when
    nothing is due; PATH1 progressed in batches; straight-line pair code;
-   the VU0 microprograms translated; then the GS bands (they alone would
-   cap the level near 20 per second). After each step
+   then the GS bands (they alone would cap the level near 20 per second).
+   Done: the VU0 microprograms run translated too (s.19, patch 0032; game
+   thread 86 -> 75 ms per frame on Linux); their per-call overhead is the
+   next thing to look at there. VU0 checks: `capture_vu0.gdb` and
+   `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
    checksums as without `--native`; measure with `callgrind` on the replay
    and `tools/perf/cpu_per_frame.sh` in the game (the Linux test machine's
@@ -31,7 +34,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0031 upstream to PS2Recomp.
+5. Send patches 0002-0032 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

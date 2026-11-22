@@ -1,0 +1,97 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU0 runs translated microcode too (setNativeResolverVu0)
+
+What it is for:
+  Patch 0018 added a resolver hook that lets the port hand the VU1
+  interpreter build-time translated functions, one per instruction pair
+  (the port's tools/vu1_translate). The hook was VU1 only. In this game the
+  VU0 microprograms started with VCALLMS (character skinning) are the
+  second largest VU cost once characters are on screen, and the same
+  programs are in the translator's input.
+
+The change:
+  - setNativeResolverVu0(): a second, separate resolver for the VU0
+    instance, none by default (behaviour unchanged unless a port sets it).
+  - resolveNativeCode() picks the resolver of the instance's unit and
+    tracks the matching code memory and upload generation (getVU0Code /
+    getVU0CodeGeneration for VU0).
+  The resolver must only hand out functions whose pair decodes the same
+  on VU0: the EFU instructions, XGKICK and lower opcode 0x64 are reserved
+  there. The micro address mask, data size and the VU0-only paths are read
+  at run time from the instance, so the same translated function is right
+  for both units when the decode is the same.
+
+How it was checked:
+  The port's offline replay (ben10_vu1_replay --vu0) runs VU0 workloads
+  captured in the first level interpreted and translated: identical
+  checksums for every workload. VU1 replay checksums unchanged; ps2xTest
+  454/454.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -173,11 +173,16 @@
+     // that runs exactly that pair (execPair with the pair decoded as a
+     // constant) or nullptr, where the interpreter runs it. The resolver is
+     // asked again whenever the code memory may have changed (a new code
+-    // upload generation, or a run without PS2Memory). VU0 never uses it.
++    // upload generation, or a run without PS2Memory). The VU0 instance uses
++    // the resolver set with setNativeResolverVu0 (VU0 code memory, its own
++    // upload generation), none by default; it must only hand out functions
++    // whose pair decodes the same for VU0 (some lower instructions do not
++    // exist there).
+     using NativePairFn = StepResult (*)(VU1Interpreter &vu, RunFrame &frame);
+     using NativeResolver = void (*)(const uint8_t *vuCode, uint32_t codeSize,
+                                     NativePairFn *table, uint32_t entries);
+     static void setNativeResolver(NativeResolver resolver);
++    static void setNativeResolverVu0(NativeResolver resolver);
+ 
+ private:
+     friend struct VU1NativeAccess;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -1200,6 +1200,7 @@
+ namespace
+ {
+     VU1Interpreter::NativeResolver g_nativeResolver = nullptr;
++    VU1Interpreter::NativeResolver g_nativeResolverVu0 = nullptr;
+ }
+ 
+ void VU1Interpreter::setNativeResolver(NativeResolver resolver)
+@@ -1207,24 +1208,31 @@
+     g_nativeResolver = resolver;
+ }
+ 
+-// Asks the resolver for native pair functions when the VU1 code memory may
+-// have changed since the last run: another code buffer, a new upload
++void VU1Interpreter::setNativeResolverVu0(NativeResolver resolver)
++{
++    g_nativeResolverVu0 = resolver;
++}
++
++// Asks the unit's resolver for native pair functions when its code memory
++// (VU1 or VU0) may have changed since the last run: another code buffer, a new upload
+ // generation, or no PS2Memory to tell (the offline replay).
+ void VU1Interpreter::resolveNativeCode(uint8_t *vuCode, uint32_t codeSize, PS2Memory *memory)
+ {
+-    if (m_unit != Unit::VU1 || g_nativeResolver == nullptr)
++    const bool vu1 = m_unit == Unit::VU1;
++    const NativeResolver resolver = vu1 ? g_nativeResolver : g_nativeResolverVu0;
++    if (resolver == nullptr)
+     {
+         m_nativeActive = false;
+         return;
+     }
+-    const bool tracked = memory != nullptr && vuCode == memory->getVU1Code();
+-    const uint64_t generation = tracked ? memory->getVU1CodeGeneration() : 0u;
++    const bool tracked = memory != nullptr && vuCode == (vu1 ? memory->getVU1Code() : memory->getVU0Code());
++    const uint64_t generation = tracked ? (vu1 ? memory->getVU1CodeGeneration() : memory->getVU0CodeGeneration()) : 0u;
+     if (tracked && m_nativeValid && m_nativeCode == vuCode && m_nativeGeneration == generation)
+         return;
+ 
+     m_nativeTable.fill(nullptr);
+     const uint32_t entries = std::min<uint32_t>(codeSize / 8u, static_cast<uint32_t>(m_nativeTable.size()));
+-    g_nativeResolver(vuCode, codeSize, m_nativeTable.data(), entries);
++    resolver(vuCode, codeSize, m_nativeTable.data(), entries);
+     m_nativeActive = false;
+     for (uint32_t i = 0; i < entries && !m_nativeActive; ++i)
+         m_nativeActive = m_nativeTable[i] != nullptr;

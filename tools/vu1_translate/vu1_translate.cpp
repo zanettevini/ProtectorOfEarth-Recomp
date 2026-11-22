@@ -243,13 +243,33 @@ int main(int argc, char **argv)
     }
 
     VU1Interpreter vu(VU1Interpreter::Unit::VU1);
+    // The same pairs decoded as VU0 code: a pair may run on VU0 only if it
+    // decodes the same there (the EFU instructions, XGKICK and opcode 0x64
+    // do not exist on VU0 and decode as reserved).
+    VU1Interpreter vu0(VU1Interpreter::Unit::VU0);
     std::vector<uint8_t> code(kVuCodeSize, 0);
     size_t n = 0;
+    size_t vu0Pairs = 0; // pairs that may also run on VU0
     for (const auto &[pc, lower, upper] : pairs)
     {
         std::memcpy(code.data() + pc, &lower, 4);
         std::memcpy(code.data() + pc + 4, &upper, 4);
         const VU1Interpreter::DecodedInstructionPair d = VU1NativeAccess::decode(vu, code.data(), pc);
+        bool vu0Same = false;
+        if (pc + 8u <= 0x1000u) // VU0 micro memory is 4 KB
+        {
+            const VU1Interpreter::DecodedInstructionPair d0 = VU1NativeAccess::decode(vu0, code.data(), pc);
+            std::ostringstream a, b;
+            usage(a, d.lowerUsage);
+            usage(a, d.upperUsage);
+            usage(b, d0.lowerUsage);
+            usage(b, d0.upperUsage);
+            vu0Same = a.str() == b.str() && d.iBit == d0.iBit && d.eBit == d0.eBit && d.mBit == d0.mBit &&
+                      d.dBit == d0.dBit && d.tBit == d0.tBit && d.upperVfShadowReg == d0.upperVfShadowReg &&
+                      d.suppressedLowerVf == d0.suppressedLowerVf;
+            if (vu0Same)
+                ++vu0Pairs;
+        }
         const int f = static_cast<int>(n % kFileCount);
         char id[32];
         std::snprintf(id, sizeof(id), "p%04X_%zu", pc, n);
@@ -284,7 +304,8 @@ int main(int argc, char **argv)
             o << "    Result " << id << "(VU1Interpreter &vu, Frame &frame) { return VU1NativeAccess::execPairUpperLower<&ben10::vu1_native::upper::"
               << upperName << ", &ben10::vu1_native::lower::" << lowerName << ", k_" << id << ">(vu, k_" << id << ", frame); }\n";
         }
-        tables[f] << "        {0x" << std::hex << pc << "u, 0x" << lower << "u, 0x" << upper << std::dec << "u, &" << id << "},\n";
+        tables[f] << "        {0x" << std::hex << pc << "u, 0x" << lower << "u, 0x" << upper << std::dec << "u, &" << id
+                  << ", " << (vu0Same ? "true" : "false") << "},\n";
         ++counts[f];
         ++n;
     }
@@ -309,7 +330,7 @@ int main(int argc, char **argv)
     index << "    };\n    const size_t kTableCount = " << kFileCount << ";\n}\n";
     std::ofstream(outDir / "vu1_native_index.cpp") << index.str();
 
-    std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs, %zu upper and %zu lower words -> %s\n",
-                entries.size(), n, upperFile.size(), lowerFile.size(), outDir.string().c_str());
+    std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs (%zu also valid on VU0), %zu upper and %zu lower words -> %s\n",
+                entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), outDir.string().c_str());
     return 0;
 }

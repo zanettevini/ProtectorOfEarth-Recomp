@@ -1,4 +1,5 @@
-// vu1_replay.cpp: replays captured VU1 workloads offline (findings/20 s.2).
+// vu1_replay.cpp: replays captured VU1 (and VU0) workloads offline
+// (findings/20 s.2, findings/21 s.19).
 //
 // WHAT IT IS FOR
 //   The VU1 microprograms are the largest cost in the first level
@@ -26,9 +27,23 @@
 //   --native: the translated VU1 code (src/vu/vu1_native.h, findings/21)
 //   runs every pair it has; the sums must not change.
 //
+// VU0 (--vu0): the game's VU0 microprograms (the skinning, started with
+//   VCALLMS, findings/21 s.19), saved by capture_vu0.gdb when
+//   PS2Runtime::executeVU0Microprogram calls VU1Interpreter::execute:
+//   NNN_code.bin   VU0 micro memory, 4 KB
+//   NNN_data.bin   VU0 data memory, 4 KB
+//   NNN_state.bin  the VU0 instance's VU1State at the call (after the
+//                  runtime's reset and the copy of the EE's VU0 registers)
+//   NNN_args.bin   two uint32: the start PC and ITOP of the call
+//   Each one runs as the runtime runs it: reset, the saved state, then
+//   execute() from the start PC with a budget of 4096 cycles. The sum is the
+//   same as above without the GS memory (VU0 has no XGKICK); with --native
+//   the pairs valid on VU0 run translated (resolveVu0).
+//
 // USAGE
 //   cmake --build --preset linux-debug --target ben10_vu1_replay
 //   out/build/linux-debug/ben10_vu1_replay user/vu1_captures [--sum] [--reps N] [--native]
+//   out/build/linux-debug/ben10_vu1_replay user/vu0_captures --vu0 [--sum] [--reps N] [--native]
 //   Profiling: valgrind --tool=callgrind out/build/.../ben10_vu1_replay ...
 //
 // The data files are the game's: they stay in user/ and are never versioned.
@@ -74,19 +89,44 @@ namespace
         std::vector<uint8_t> code;
         std::vector<uint8_t> data;
         VU1State state{};
+        uint32_t startPC = 0; // VU0 only: the VCALLMS address
+        uint32_t itop = 0;    // VU0 only
     };
+
+    // One checksum of everything a run produced (see OUTPUT above).
+    uint64_t stateSum(const VU1State &s, uint64_t cycles, const std::vector<uint8_t> &data)
+    {
+        uint64_t h = fnv1a(s.vf, sizeof(s.vf));
+        h = fnv1a(s.vi, sizeof(s.vi), h);
+        h = fnv1a(s.acc, sizeof(s.acc), h);
+        h = fnv1a(&s.q, sizeof(s.q), h);
+        h = fnv1a(&s.p, sizeof(s.p), h);
+        h = fnv1a(&s.i, sizeof(s.i), h);
+        h = fnv1a(&s.r, sizeof(s.r), h);
+        h = fnv1a(&s.pc, sizeof(s.pc), h);
+        h = fnv1a(&s.mac, sizeof(s.mac), h);
+        h = fnv1a(&s.clip, sizeof(s.clip), h);
+        h = fnv1a(&s.status, sizeof(s.status), h);
+        h = fnv1a(&cycles, sizeof(cycles), h);
+        return fnv1a(data.data(), data.size(), h);
+    }
 }
 
 int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s <capture folder> [--sum] [--reps N] [--native]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <capture folder> [--vu0] [--sum] [--reps N] [--native]\n", argv[0]);
         return 2;
     }
     const std::string folder = argv[1];
     bool printSums = false;
     int reps = 1;
+    bool vu0Mode = false;
+    bool native = false;
+    for (int i = 2; i < argc; ++i)
+        if (std::strcmp(argv[i], "--vu0") == 0)
+            vu0Mode = true;
     for (int i = 2; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--sum") == 0)
@@ -96,8 +136,17 @@ int main(int argc, char **argv)
         else if (std::strcmp(argv[i], "--native") == 0)
         {
 #if defined(BEN10_HAVE_VU1_NATIVE)
-            VU1Interpreter::setNativeResolver(&ben10::vu1_native::resolve);
-            std::fprintf(stderr, "translated VU1 code: %zu pairs\n", ben10::vu1_native::pairCount());
+            native = true;
+            if (vu0Mode)
+            {
+                VU1Interpreter::setNativeResolverVu0(&ben10::vu1_native::resolveVu0);
+                std::fprintf(stderr, "translated VU0 code: %zu pairs\n", ben10::vu1_native::vu0PairCount());
+            }
+            else
+            {
+                VU1Interpreter::setNativeResolver(&ben10::vu1_native::resolve);
+                std::fprintf(stderr, "translated VU1 code: %zu pairs\n", ben10::vu1_native::pairCount());
+            }
 #else
             std::fprintf(stderr, "--native: this build has no translated VU1 code (no game ELF at configure time)\n");
             return 2;
@@ -105,7 +154,9 @@ int main(int argc, char **argv)
         }
     }
 
-    // Load every NNN_* triple, from 000 up to the first missing one.
+    (void)native;
+    // Load every NNN_* set, from 000 up to the first missing one.
+    const size_t memSize = vu0Mode ? 4096u : 16384u;
     std::vector<Workload> workloads;
     for (int n = 0;; ++n)
     {
@@ -115,9 +166,17 @@ int main(int argc, char **argv)
         w.code = readFile(folder + prefix + "code.bin");
         w.data = readFile(folder + prefix + "data.bin");
         const std::vector<uint8_t> state = readFile(folder + prefix + "state.bin");
-        if (w.code.size() != 16384u || w.data.size() != 16384u || state.size() != sizeof(VU1State))
+        if (w.code.size() != memSize || w.data.size() != memSize || state.size() != sizeof(VU1State))
             break;
         std::memcpy(&w.state, state.data(), sizeof(VU1State));
+        if (vu0Mode)
+        {
+            const std::vector<uint8_t> args = readFile(folder + prefix + "args.bin");
+            if (args.size() != 8u)
+                break;
+            std::memcpy(&w.startPC, args.data(), 4);
+            std::memcpy(&w.itop, args.data() + 4, 4);
+        }
         workloads.push_back(std::move(w));
     }
     if (workloads.empty())
@@ -129,7 +188,7 @@ int main(int argc, char **argv)
     std::vector<uint8_t> vram(4u * 1024u * 1024u, 0u);
     GS gs;
     gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
-    VU1Interpreter vu(VU1Interpreter::Unit::VU1);
+    VU1Interpreter vu(vu0Mode ? VU1Interpreter::Unit::VU0 : VU1Interpreter::Unit::VU1);
 
     uint64_t totalCycles = 0;
     uint64_t lastCycles = 0;
@@ -140,32 +199,35 @@ int main(int argc, char **argv)
         {
             std::vector<uint8_t> code = workloads[i].code;
             std::vector<uint8_t> data = workloads[i].data;
-            vu.state() = workloads[i].state;
-            // MSCNT: resume at the saved PC with the saved TOP/ITOP.
-            vu.resume(code.data(), 16384u, data.data(), 16384u, gs, nullptr,
-                      vu.state().top, vu.state().itop, 65536u);
-            // VU1State::cycles is the interpreter's own running cycle count.
-            const uint64_t cycles = vu.state().cycles - lastCycles;
-            lastCycles = vu.state().cycles;
+            uint64_t cycles = 0;
+            if (vu0Mode)
+            {
+                // As PS2Runtime::executeVU0Microprogram: reset, the EE's VU0
+                // registers (here the saved state), execute from the VCALLMS
+                // address with 4096 cycles. reset() zeroes the cycle count.
+                vu.reset();
+                vu.state() = workloads[i].state;
+                vu.execute(code.data(), 4096u, data.data(), 4096u, gs, nullptr,
+                           workloads[i].startPC, 0u, workloads[i].itop, 4096u);
+                cycles = vu.state().cycles;
+            }
+            else
+            {
+                vu.state() = workloads[i].state;
+                // MSCNT: resume at the saved PC with the saved TOP/ITOP.
+                vu.resume(code.data(), 16384u, data.data(), 16384u, gs, nullptr,
+                          vu.state().top, vu.state().itop, 65536u);
+                // VU1State::cycles is the interpreter's own running cycle count.
+                cycles = vu.state().cycles - lastCycles;
+                lastCycles = vu.state().cycles;
+            }
             totalCycles += cycles;
 
             if (printSums && rep == 0)
             {
-                const VU1State &s = vu.state();
-                uint64_t h = fnv1a(s.vf, sizeof(s.vf));
-                h = fnv1a(s.vi, sizeof(s.vi), h);
-                h = fnv1a(s.acc, sizeof(s.acc), h);
-                h = fnv1a(&s.q, sizeof(s.q), h);
-                h = fnv1a(&s.p, sizeof(s.p), h);
-                h = fnv1a(&s.i, sizeof(s.i), h);
-                h = fnv1a(&s.r, sizeof(s.r), h);
-                h = fnv1a(&s.pc, sizeof(s.pc), h);
-                h = fnv1a(&s.mac, sizeof(s.mac), h);
-                h = fnv1a(&s.clip, sizeof(s.clip), h);
-                h = fnv1a(&s.status, sizeof(s.status), h);
-                h = fnv1a(&cycles, sizeof(cycles), h);
-                h = fnv1a(data.data(), data.size(), h);
-                h = fnv1a(vram.data(), vram.size(), h);
+                uint64_t h = stateSum(vu.state(), cycles, data);
+                if (!vu0Mode)
+                    h = fnv1a(vram.data(), vram.size(), h);
                 std::printf("%03zu %016llx\n", i, static_cast<unsigned long long>(h));
             }
         }

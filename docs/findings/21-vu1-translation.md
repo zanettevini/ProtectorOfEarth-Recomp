@@ -174,8 +174,7 @@ Each step must keep `--sum` identical to the interpreter.
 - The board in the README still lists the VU programs as interpreted:
   phase 1 runs the interpreter's own step code; they count as native once
   phases 1-2 above replace it.
-- VU0 programs (VCALLMS) are not translated yet (the resolver is VU1
-  only).
+- VU0 programs (VCALLMS): translated since s.19 (patch 0032).
 
 ## 6. Windows build: MSVC ran out of memory (patch 0023)
 
@@ -542,3 +541,53 @@ the timing model and is left for a decision of its own.
   check, writes, branch and end bits, cycle advance) about 75, run loop
   (budget and stop checks, dispatch through the native table) about 27,
   lower function about 19, commit pass about 17.
+
+## 19. The VU0 microprograms run translated too (patch 0032)
+
+- What: the game's VU0 microprograms, started from EE code with VCALLMS
+  (character skinning, findings/18), ran in the interpreter: the resolver
+  hook of patch 0018 was VU1 only. The Windows profile (s.8) put them at a
+  quarter of the game thread, and the maintainer saw the level slow down
+  when enemies come on screen: more characters, more skinning calls.
+- The programs are already in the translator's input: they are overlay
+  group B of `.DVP.ovlytab` (findings/20 s.12), copied into VU0 micro
+  memory. A translated pair is only right on VU0 if it decodes the same
+  there: on VU0 the EFU instructions, XGKICK and lower opcode 0x64 are
+  reserved. `tools/vu1_translate` now decodes every pair below 0x1000 (VU0
+  micro memory is 4 KB) a second time as VU0 code and marks it VU0-valid
+  only if the decoded usage and the I/E/M/D/T bits are the same: 2766 of
+  the 6727 pairs. Everything else that differs between the units (micro
+  address mask, data memory size, the VU0-only paths) is read at run time
+  from the interpreter instance, so one function serves both.
+- Patch 0032: `VU1Interpreter::setNativeResolverVu0`, a separate resolver
+  for the VU0 instance (none by default); `resolveNativeCode` uses the
+  resolver, code memory and upload generation of the instance's unit.
+  Port side: `ben10::vu1_native::resolveVu0` hands out only VU0-valid
+  pairs; `src/vu/vu1_native_install.cpp` installs it, and
+  `BEN10_VU0_NATIVE=0` turns off only the VU0 part (`BEN10_VU1_NATIVE=0`
+  turns off both).
+- Check: `tools/vu1_replay/capture_vu0.gdb` saves VU0 calls from the
+  running game (code, data, state, start PC and ITOP, one call in 23) and
+  `ben10_vu1_replay --vu0` replays them the way
+  `PS2Runtime::executeVU0Microprogram` runs them. 60 workloads from the
+  first level: the same 60 checksums interpreted and with `--native`.
+  The VU1 checksums (40 workloads, with and without `--native`) are
+  unchanged; ps2xTest 454/454.
+- What the captures show: the VU0 code memory was the same in all 60
+  calls; the calls start at 0x0, 0x38 and 0x140, and every pair from
+  those entry points to the end bit is translated. The programs are short:
+  2040 VU cycles in 60 calls, about 34 per call. So the cost per call
+  outside the instructions matters as much as the instructions: in the
+  replay (callgrind) the reset, `resetScheduler` and the run setup are a
+  few thousand instructions per call against about 10,000 for the
+  program. (The replay re-resolves the code at every call because it runs
+  without PS2Memory; in the game the resolution is kept until the code
+  memory is written again.)
+- Result in the game, first level, same spot, Linux, `cpu_per_frame.sh`
+  90 s: game thread 86.1 and 87.4 ms of CPU per game frame with
+  `BEN10_VU0_NATIVE=0`, 75.1, 76.5 and 74.9 ms with it on: about 13% less.
+  The level renders the same (screenshot compared by eye). Untested on
+  Windows.
+- Open: the per-call overhead of a VU0 call (reset of the state and the
+  scheduler, copies of the EE's VU0 registers in and out, the rounding
+  mode switch) is now a visible share of each call.
