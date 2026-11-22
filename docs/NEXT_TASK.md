@@ -15,8 +15,10 @@
    checksums as without `--native`; measure with `callgrind` on the replay
    and `tools/perf/cpu_per_frame.sh` in the game (the frame rate of the
    Linux test machine varies by up to 20% between runs). On Windows the
-   game thread limits the first level (findings/20 s.18), so that is where
-   the gain shows. Then play on (the maintainer reached the first Sumo
+   game thread limits the first level (findings/21 s.7: one core at 100%),
+   but the translated code saves only about a tenth of its time there with
+   MSVC: profile the game thread on Windows first (`BEN10_PROFILE`,
+   `tools/perf/win_profile.py`) and work on what the profile shows. Then play on (the maintainer reached the first Sumo
    Slammer card on Windows, findings/20 s.17) and fix the next thing that
    breaks. Key presses in scripted runs: hold 2.5 s.
 2. **Native CDARB, the rest (D12):** counts <= 0 and the init call

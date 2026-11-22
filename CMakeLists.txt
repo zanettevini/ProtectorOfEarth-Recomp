@@ -264,9 +264,18 @@ if(BEN10_BUILD_GAME AND BEN10_GENERATED_SOURCES)
         "${CMAKE_SOURCE_DIR}/thirdparty/PS2Recomp/ps2xRuntime/include/ps2_syscalls.h"
         "${CMAKE_SOURCE_DIR}/thirdparty/PS2Recomp/ps2xRuntime/include/ps2_stubs.h")
 
+    # The sampling profiler includes <windows.h>, which clashes with raylib
+    # and the runtime's own Win32 declarations: compiled on its own.
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/diagnostics/sample_profiler.cpp" PROPERTIES
+        SKIP_UNITY_BUILD_INCLUSION ON
+        SKIP_PRECOMPILE_HEADERS ON)
+
     if(MSVC)
         # Large generated functions exceed the COFF format's section limit.
         target_compile_options(ben10_poe PRIVATE /bigobj /FS)
+        # A linker map (function name -> address) next to the executable, for
+        # tools/perf/win_profile.py (the Release build has no debug symbols).
+        target_link_options(ben10_poe PRIVATE "/MAP:$<TARGET_FILE_DIR:ben10_poe>/ben10_poe.map")
     endif()
 elseif(BEN10_BUILD_GAME)
     message(STATUS "ben10_poe: generated/default/ is empty. Build the ben10_codegen target and configure again.")

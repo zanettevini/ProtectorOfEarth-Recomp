@@ -208,7 +208,7 @@ Each step must keep `--sum` identical to the interpreter.
   7-9), against 7.4-9 with patch 0019. So on Windows the first level did
   not get faster, although the game thread's CPU per frame fell by a
   quarter on Linux since then: the game thread is probably no longer what
-  limits the level there. Next: per-thread CPU on Windows.
+  limits the level there. Next: per-thread CPU on Windows (s.7).
 - Guard in `CMakeLists.txt`: the translated files compile in a Ninja job
   pool sized by the machine's memory (half the RAM divided by 3 GB per
   file with MSVC, 1 GB with GCC/Clang; `BEN10_VU1_COMPILE_JOBS`
@@ -217,3 +217,32 @@ Each step must keep `--sum` identical to the interpreter.
 - The proper fix for every compiler is to pick the opcode case at
   translation time (one function per operation), which phase 2 of D14
   already plans.
+
+## 7. Windows: what limits the first level
+
+- Tool: `tools/perf/cpu_per_frame_windows.ps1`, run beside the game, logs
+  every 10 s the CPU time of each busy thread per second and per game
+  frame (the Windows counterpart of `tools/perf/cpu_per_frame.sh`).
+- Measured on the maintainer's Windows desktop (MSVC Release, commit
+  `8a53de7`, 6 GS bands), first level, 10-second samples:
+
+| | Game thread | Each GS band | Window thread | Game frames/s |
+|---|---|---|---|---|
+| translated VU1 code | 1000 ms/s (one core), 100-111 ms per frame | 33-53 ms per frame (35-45% of a core) | 11-15 ms per frame | 9-10 |
+| `BEN10_VU1_NATIVE=0` (interpreter) | 1000 ms/s, 98-129 ms per frame | 32-53 ms per frame | 12-15 ms per frame | 7.7-10 |
+
+  The menus are the other way round: GS bands near a full core, game
+  thread 6-24 ms per frame, 38-46 frames per second.
+- So the game thread limits the first level on Windows, and the translated
+  code saves only about a tenth of its time there (about 105 against 116
+  ms per frame on average), against a quarter or more on Linux with GCC
+  (s.3). Either MSVC makes much less of the translated code (patch 0023
+  takes part of the inlining away from it), or on Windows most of the game
+  thread's time is outside the VU1 code. Frame rates come in steps (9 or
+  10 per second): a game frame takes a whole number of vblanks.
+- To tell which: `src/diagnostics/sample_profiler.cpp`, a sampling
+  profiler for the Windows build (`BEN10_PROFILE`): it samples the game
+  thread's call stack about every millisecond into a text file, and the
+  build writes a linker map (`ben10_poe.map`, `/MAP`) that
+  `tools/perf/win_profile.py` uses to name the functions. Compiled for
+  Windows with MinGW here; not run yet on Windows (results to come).

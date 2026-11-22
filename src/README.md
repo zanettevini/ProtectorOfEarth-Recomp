@@ -18,6 +18,7 @@ Today:
 | `src/vu/vu1_native.h`, `vu1_native_resolver.cpp`, `vu1_native_install.cpp` | translated VU1 code (D14 phase 1, findings/21): the tables `tools/vu1_translate` generates into `generated/vu1/`, the resolver that matches them to the VU1 code memory pair by pair, and the override that installs it (`BEN10_VU1_NATIVE=0` turns it off) |
 | `src/diagnostics/frame_rate.cpp` | with `BEN10_FPS_LOG` set, logs the game's finished frames per second to stderr (`[fps] ...`), to measure speed; off by default |
 | `src/diagnostics/key_log.cpp` | with `BEN10_KEY_LOG` set, logs the mapped keys raylib sees as held and the window focus (`[keys] ...`), to diagnose keyboard input (findings/20 s.16); off by default |
+| `src/diagnostics/sample_profiler.cpp` | Windows only: with `BEN10_PROFILE` set (to an output file, or `1` for `profile.txt`), samples the game thread's call stack about every millisecond (`BEN10_PROFILE_THREAD` picks another named thread); `tools/perf/win_profile.py` reads it with the build's `ben10_poe.map` (findings/21 s.7); off by default |
 
 Each subject goes in its own folder once it exists, as in Mind over Recomp,
 for example:
