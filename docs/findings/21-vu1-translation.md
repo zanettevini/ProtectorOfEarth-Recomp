@@ -491,3 +491,20 @@ the timing model and is left for a decision of its own.
   `--native`; ps2xTest 454/454. Translated code 270 M -> 214 M
   instructions (from 321 M before step 1: -33%). One generated file now
   compiles with GCC in 15 s and 502 MB (21 s and 529 MB before).
+
+## 16. Lane loops unrolled, loop-head commit check (patch 0029)
+
+- At `-O2` GCC keeps the 4-lane loops of the upper executor and the FMAC
+  model as loops, so in a translated word (constant `dest`) every lane's
+  dest test and all twelve operand normalisations still ran.
+  `PS2_VU_UNROLL_LANES` (`#pragma GCC unroll 4`, `#pragma unroll 4` on
+  Clang; MSVC unrolls such loops itself) before those loops: 214 M -> 199 M.
+- `loopHead` called the commit pass before every pair; now with the same
+  inline check as `advanceOneCycle`: 199 M -> 184 M.
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454.
+- Step 1 so far (patches 0027-0029): translated code 321 M -> 184 M
+  instructions on the replay (-43%). First level, Linux: game thread
+  119 -> 99 ms of CPU per game frame (126 ms before patch 0024); same
+  picture, no `missing-target`. The frame rate there stays at the single
+  GS band's limit (267 ms of CPU per game frame on that 2-core machine).

@@ -5,7 +5,7 @@
 1. **Next: faster translated VU code (decision D14, findings/21 s.11).**
    Every VU1 pair is translated (`tools/vu1_translate`, `generated/vu1/`,
    `src/vu/`); patches 0019-0026 brought the translated code from 793 M to
-   214 M instructions on the replay (patches 0027-0028: about 390 per VU cycle). On Windows the
+   184 M instructions on the replay (patches 0027-0029: about 330 per VU cycle). On Windows the
    game thread limits the first level (findings/21 s.7: one core at 100%,
    9-10 game frames per second), and a profile (s.8) shows it is almost all
    VU time. The target agreed with the maintainer: test again when the
@@ -31,7 +31,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0028 upstream to PS2Recomp.
+5. Send patches 0002-0029 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
