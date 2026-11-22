@@ -1,0 +1,67 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: XGKICK reset leaves the 64 KB packet buffer alone
+
+What it is for:
+  resetScheduler (run at every VU program start, VU1 and VU0
+  microprograms alike) and startXgkick (every XGKICK) reset the XGKICK
+  state with `m_xgkick = {}`, which also zeroes its 64 KB packet buffer.
+  A sampling profile of the Ben 10 port's game thread on Windows (MSVC
+  Release, first level) put about 11% of the thread in that memset.
+
+The change:
+  - XgkickPipeline::resetControl() sets every field but the buffer back
+    to its initial value; resetScheduler and startXgkick use it.
+  - Exact: the buffer is only read below copiedBytes (the GIF tag at a
+    qword just copied, and the packet up to totalBytes when the last tag's
+    end has been copied), and every one of those bytes is copied in from
+    VU memory first.
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -248,6 +248,23 @@
+         uint64_t issueCycle = 0;
+         bool active = false;
+         bool currentTagEop = false;
++
++        // Everything but the packet buffer back to its initial value. The
++        // buffer is only read below copiedBytes, and those bytes are always
++        // copied in first, so it needs no clearing: zeroing its 64 KB at
++        // every program start and every XGKICK cost about a tenth of the
++        // game thread on Windows (findings/21 s.8).
++        void resetControl()
++        {
++            sourceAddress = 0;
++            totalBytes = 0;
++            copiedBytes = 0;
++            currentTagEnd = 0;
++            cycleCredit = 0;
++            issueCycle = 0;
++            active = false;
++            currentTagEop = false;
++        }
+     };
+ 
+     static constexpr uint32_t kFmacLatency = 4u;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -74,7 +74,7 @@
+     m_vfWritePipeline = {};
+     m_viWritePipeline = {};
+     m_accWritePipeline = {};
+-    m_xgkick = {};
++    m_xgkick.resetControl();
+     m_vfReady = {};
+     m_viReady = {};
+     m_accReady = {};
+@@ -630,7 +630,7 @@
+         return;
+ 
+     const uint32_t sourceAddress = (qwordAddress * 16u) % m_activeVuDataSize;
+-    m_xgkick = {};
++    m_xgkick.resetControl();
+     m_xgkick.active = true;
+     m_xgkick.sourceAddress = sourceAddress;
+     m_xgkick.cycleCredit = 1u; // XGKICK's issue cycle counts toward PATH1.

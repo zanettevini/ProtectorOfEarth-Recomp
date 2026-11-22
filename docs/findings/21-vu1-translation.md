@@ -245,4 +245,53 @@ Each step must keep `--sum` identical to the interpreter.
   thread's call stack about every millisecond into a text file, and the
   build writes a linker map (`ben10_poe.map`, `/MAP`) that
   `tools/perf/win_profile.py` uses to name the functions. Compiled for
-  Windows with MinGW here; not run yet on Windows (results to come).
+  Windows with MinGW here; first run on Windows in s.8.
+
+## 8. Windows profile of the game thread; the XGKICK buffer reset (patch 0024)
+
+- Profile: `BEN10_PROFILE` on the maintainer's Windows desktop (commit
+  `e82338d`, MSVC Release, 6 GS bands), first level, 90 s, about 50,000
+  stack samples (one every 1.8 ms; the game ran normally with the
+  profiler on). `tools/perf/win_profile.py`, windows 2-10:
+
+| Inclusive | Function |
+|---|---|
+| 78.5% | `VU1Interpreter::run` (VU1 programs and VU0 microprograms) |
+| 67.0% | `PS2Memory::processVIF1Data` (VU1 programs started by VIF1) |
+| 25.2% | `PS2Runtime::executeVU0Microprogram` (VU0 microprograms: not translated) |
+| 11.6% | `VU1Interpreter::resetScheduler` |
+
+| Self | Function |
+|---|---|
+| 12.6% | `VCRUNTIME140.dll` (`memset`/`memcpy`: 10.8% called by `resetScheduler`) |
+| 8.0% | `VU1Interpreter::updateFmacFlags` |
+| 7.1% | `VU1Interpreter::calculateFmacExactResult` |
+| 4.6% | `VU1Interpreter::commitReadyPipelines` |
+| 4.4% | `VU1Interpreter::queueViWrite` |
+| 4.3% | `VU1Interpreter::normalizeFmacResult` |
+| 3.5% | `VU1Interpreter::calculateFmacProductSticky` |
+| 9.4% | all translated pair, upper and lower functions together |
+
+  Recompiled game code is 1.5% and the IOP 2.8%: on Windows the game
+  thread is VU time.
+- Three causes, by size:
+  1. The FMAC model runs out of line under MSVC (about 23% self): patch
+     0023 lets MSVC decide, and it does not inline it.
+  2. VU0 microprograms (a quarter of the thread) still run in the
+     interpreter: the translation covers VU1 only.
+  3. `resetScheduler`, run at every VU program start (VU1 and every VU0
+     microprogram call), assigned `m_xgkick = {}`, which zeroes the
+     XGKICK state's 64 KB packet buffer; `startXgkick` did the same at
+     every XGKICK.
+- Fix for 3 (patch 0024): `XgkickPipeline::resetControl()` resets every
+  field but the buffer. The buffer is only read below `copiedBytes`, and
+  those bytes are always copied in from VU memory first, so the results
+  are the same: same checksums and cycle count on the 40 workloads with
+  and without `--native`, ps2xTest 454/454. Replay (`callgrind`, the
+  replay does not go through `execute`): translated run loop 349 M -> 336
+  M instructions. First level, Linux: game thread 126 -> 119 ms of CPU per
+  game frame (glibc's `memset` is faster than MSVC's, so the Windows gain
+  should be larger); same picture, no `missing-target`.
+- Next, from this profile: the FMAC model inline on MSVC without the
+  memory blow-up of s.6 (pick the opcode case at translation time), and
+  the VU0 microprograms translated like VU1's.
