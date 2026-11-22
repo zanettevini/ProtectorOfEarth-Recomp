@@ -470,3 +470,24 @@ the timing model and is left for a decision of its own.
 - Same checksums and cycle count on the 40 workloads with and without
   `--native`; ps2xTest 454/454. Translated code 321 M -> 291 M
   instructions (-9.4%); `advanceOneCycle` with the commit 67 M -> 33 M.
+
+## 15. Per-cycle checks inline, hazard check unrolled (patch 0028)
+
+- After patch 0027 the commit pass rarely had work but was still called
+  on every cycle: its prologue cost more than its "nothing due" check
+  (13 M of the 32 M were on its first line). `advanceOneCycle` and
+  `microAddressMask` were calls per pair too. Now inline, with the two
+  "nothing to do" checks (commit not due, no XGKICK) in `advanceOneCycle`:
+  291 M -> 270 M.
+- The hazard check and the write marking walked the decoded usage lists
+  of each pair at run time (two usages, up to two VF reads each, lane
+  masks, VI masks, ACC lanes): about 40 M, although every translated pair's
+  lists are constants. `execPairWith` now takes a timing policy; the
+  translator passes each pair's `constexpr` description as a template
+  argument (`ConstTiming<k_pXXXX>`), and `calculatePairReadyCycleConst` /
+  `markPairWritesConst` unroll the same checks and stores with
+  `if constexpr`. The interpreter keeps the run-time walk.
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454. Translated code 270 M -> 214 M
+  instructions (from 321 M before step 1: -33%). One generated file now
+  compiles with GCC in 15 s and 502 MB (21 s and 529 MB before).

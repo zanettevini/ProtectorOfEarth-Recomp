@@ -35,8 +35,9 @@ fix and how it was found.
 | `0025-vu1-executors-per-word-templates.patch` | VU1 interpreter: upper and lower executors as templates on the instruction word (`execUpperT`/`execLowerT`, every opcode case under `if constexpr`), so translated code compiles only its word's case on any compiler; FMAC model forced inline again; same results | findings/21 s.9 |
 | `0026-vu1-fmac-fast-path.patch` | VU1 interpreter: exact fast path for the FMAC flag model (no extended-precision recomputation when the float result is a comfortably normal number); same results | findings/21 s.10 |
 | `0027-vu1-translated-writes-at-issue-flags-on-demand.patch` | VU1 interpreter: translated code writes stores and latency-1 VI writes at once; the flag pipeline is an issue-order ring applied when flags are read; same results and cycle counts | findings/21 s.14 |
+| `0028-vu1-inline-cycle-checks-const-hazards.patch` | VU1 interpreter: per-cycle commit/XGKICK checks inline; translated pairs get the hazard check and write marking unrolled at compile time (pair as a template argument); same results | findings/21 s.15 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0027 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0028 speed-ups, 0023 an MSVC build fix with the same results, 0018 a hook for translated VU1 code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

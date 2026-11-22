@@ -272,7 +272,7 @@ int main(int argc, char **argv)
         {
             // I bit: the lower word is an immediate, no lower instruction.
             o << "    Result " << id << "(VU1Interpreter &vu, Frame &frame) { return VU1NativeAccess::execPairUpper<&ben10::vu1_native::upper::"
-              << upperName << ">(vu, k_" << id << ", frame); }\n";
+              << upperName << ", k_" << id << ">(vu, k_" << id << ", frame); }\n";
         }
         else
         {
@@ -282,7 +282,7 @@ int main(int argc, char **argv)
                 lowerDecls[f] << "    void " << lowerName
                               << "(VU1Interpreter &vu, uint8_t *vuData, uint32_t dataSize, GS &gs, PS2Memory *memory, uint32_t upper);\n";
             o << "    Result " << id << "(VU1Interpreter &vu, Frame &frame) { return VU1NativeAccess::execPairUpperLower<&ben10::vu1_native::upper::"
-              << upperName << ", &ben10::vu1_native::lower::" << lowerName << ">(vu, k_" << id << ", frame); }\n";
+              << upperName << ", &ben10::vu1_native::lower::" << lowerName << ", k_" << id << ">(vu, k_" << id << ", frame); }\n";
         }
         tables[f] << "        {0x" << std::hex << pc << "u, 0x" << lower << "u, 0x" << upper << std::dec << "u, &" << id << "},\n";
         ++counts[f];

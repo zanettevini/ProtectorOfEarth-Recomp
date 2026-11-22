@@ -1,0 +1,325 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: per-cycle checks inline; compile-time hazard check for translated pairs
+
+What it is for:
+  After patch 0027 the commit pass rarely has work, but it was still
+  called on every VU cycle (advanceOneCycle and microAddressMask were out
+  of line too), its prologue costing more than its "nothing due" check.
+  And the hazard check (calculatePairReadyCycle) and write marking
+  (markPairWrites) walked the decoded usage lists at run time even for
+  translated pairs, whose lists are compile-time constants.
+
+The change:
+  - advanceOneCycle and microAddressMask are inline; advanceOneCycle calls
+    commitReadyPipelines only when m_cycle reaches m_nextCommitCycle and
+    progressXgkick only while an XGKICK is active (both functions keep
+    their own checks).
+  - execPairWith takes a timing policy: DynamicTiming (the interpreter)
+    calls calculatePairReadyCycle/markPairWrites as before; ConstTiming<D>
+    (translated code, D the pair's constexpr decoded form passed as a
+    template argument) calls calculatePairReadyCycleConst<D> and
+    markPairWritesConst<D>, the same checks and stores unrolled with
+    if constexpr (one max per lane read, one store per lane written, in
+    the same order).
+  - VU1NativeAccess::execPairUpper/execPairUpperLower take the pair as a
+    template argument too.
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code; translated code 291 M -> 214 M instructions.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -348,9 +348,26 @@
+     // immediateWrites: the pair's VF and ACC results are written at once
+     // instead of through the delayed-write queues (translated code; see
+     // writeVfNow).
+-    template <class UpperExec, class LowerExec>
++    // timing: how the pair's hazard check and write marking are done.
++    // DynamicTiming (the interpreter) walks the decoded usage at run time;
++    // ConstTiming<D> (translated code) has the pair as a constant and
++    // unrolls both at compile time to one max per register lane read and one
++    // store per lane written (findings/21 s.15). Same results.
++    template <class UpperExec, class LowerExec, class Timing>
+     StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower,
+-                            bool immediateWrites = false);
++                            Timing timing, bool immediateWrites = false);
++    struct DynamicTiming
++    {
++        const DecodedInstructionPair &decoded;
++        PS2_VU_FORCEINLINE uint64_t ready(const VU1Interpreter &vu) const { return vu.calculatePairReadyCycle(decoded); }
++        PS2_VU_FORCEINLINE void mark(VU1Interpreter &vu) const { vu.markPairWrites(decoded); }
++    };
++    template <const DecodedInstructionPair &D>
++    struct ConstTiming
++    {
++        PS2_VU_FORCEINLINE uint64_t ready(const VU1Interpreter &vu) const { return vu.template calculatePairReadyCycleConst<D>(); }
++        PS2_VU_FORCEINLINE void mark(VU1Interpreter &vu) const { vu.template markPairWritesConst<D>(); }
++    };
+     // VF / ACC results written at issue (translated code). Exact because
+     // every instruction that reads a VF or ACC lane waits (the hazard check)
+     // until the lane's latest write is due, so no read can tell when the
+@@ -446,6 +463,54 @@
+     void finishXgkick();
+     uint64_t calculatePairReadyCycle(const DecodedInstructionPair &decoded) const;
+     void markPairWrites(const DecodedInstructionPair &decoded);
++    // The same two for a pair known at compile time, unrolled.
++    template <const DecodedInstructionPair &D>
++    uint64_t calculatePairReadyCycleConst() const;
++    template <const DecodedInstructionPair &D>
++    void markPairWritesConst();
++    // Lane bit b (x = bit 3 ... w = bit 0) is component 3 - b.
++    template <uint8_t Reg, uint8_t Lanes>
++    PS2_VU_FORCEINLINE void maxVfReady(uint64_t &ready) const
++    {
++        if constexpr ((Lanes & 0x8u) != 0u) ready = std::max(ready, m_vfReady[Reg][0]);
++        if constexpr ((Lanes & 0x4u) != 0u) ready = std::max(ready, m_vfReady[Reg][1]);
++        if constexpr ((Lanes & 0x2u) != 0u) ready = std::max(ready, m_vfReady[Reg][2]);
++        if constexpr ((Lanes & 0x1u) != 0u) ready = std::max(ready, m_vfReady[Reg][3]);
++    }
++    template <uint8_t Lanes>
++    PS2_VU_FORCEINLINE void maxAccReady(uint64_t &ready) const
++    {
++        if constexpr ((Lanes & 0x8u) != 0u) ready = std::max(ready, m_accReady[0]);
++        if constexpr ((Lanes & 0x4u) != 0u) ready = std::max(ready, m_accReady[1]);
++        if constexpr ((Lanes & 0x2u) != 0u) ready = std::max(ready, m_accReady[2]);
++        if constexpr ((Lanes & 0x1u) != 0u) ready = std::max(ready, m_accReady[3]);
++    }
++    template <uint16_t Mask>
++    PS2_VU_FORCEINLINE void maxViReady(uint64_t &ready) const
++    {
++        if constexpr (Mask != 0u)
++        {
++            ready = std::max(ready, m_viReady[std::countr_zero(Mask)]);
++            maxViReady<static_cast<uint16_t>(Mask & (Mask - 1u))>(ready);
++        }
++    }
++    template <uint8_t Reg, uint8_t Lanes, uint32_t Latency>
++    PS2_VU_FORCEINLINE void markVfReady()
++    {
++        if constexpr ((Lanes & 0x8u) != 0u) m_vfReady[Reg][0] = m_cycle + Latency;
++        if constexpr ((Lanes & 0x4u) != 0u) m_vfReady[Reg][1] = m_cycle + Latency;
++        if constexpr ((Lanes & 0x2u) != 0u) m_vfReady[Reg][2] = m_cycle + Latency;
++        if constexpr ((Lanes & 0x1u) != 0u) m_vfReady[Reg][3] = m_cycle + Latency;
++    }
++    template <uint16_t Mask, uint32_t Latency>
++    PS2_VU_FORCEINLINE void markViReady()
++    {
++        if constexpr (Mask != 0u)
++        {
++            m_viReady[std::countr_zero(Mask)] = m_cycle + Latency;
++            markViReady<static_cast<uint16_t>(Mask & (Mask - 1u)), Latency>();
++        }
++    }
+     bool pipelinesPending() const;
+ 
+     // Inline: called for every operand of every FMAC instruction.
+@@ -466,7 +531,10 @@
+         return value;
+     }
+     float normalizeResult(float value, uint32_t &laneFlags) const;
+-    uint32_t microAddressMask() const;
++    uint32_t microAddressMask() const
++    {
++        return m_unit == Unit::VU1 ? 0x3FFFu : 0x0FFFu;
++    }
+     int32_t readBranchVi(uint8_t reg) const;
+     void recordViWriteForBranch(uint8_t reg, int32_t oldValue);
+     void reportReservedInstruction(bool upper, uint32_t instruction);
+@@ -572,6 +640,65 @@
+     return StepResult::Continue;
+ }
+ 
++// calculatePairReadyCycle and markPairWrites for a pair known at compile
++// time: the same checks and stores, unrolled (no walk over the usage).
++template <const VU1Interpreter::DecodedInstructionPair &D>
++PS2_VU_FORCEINLINE uint64_t VU1Interpreter::calculatePairReadyCycleConst() const
++{
++    uint64_t ready = m_cycle;
++    if constexpr (D.upperUsage.vfReadCount > 0u)
++        maxVfReady<D.upperUsage.vfRead[0].reg, static_cast<uint8_t>(D.upperUsage.vfRead[0].lanes & 0xFu)>(ready);
++    if constexpr (D.upperUsage.vfReadCount > 1u)
++        maxVfReady<D.upperUsage.vfRead[1].reg, static_cast<uint8_t>(D.upperUsage.vfRead[1].lanes & 0xFu)>(ready);
++    maxViReady<static_cast<uint16_t>(D.upperUsage.viRead & 0xFFFEu)>(ready);
++    maxAccReady<static_cast<uint8_t>(D.upperUsage.accRead & 0xFu)>(ready);
++    if constexpr (D.lowerUsage.vfReadCount > 0u)
++        maxVfReady<D.lowerUsage.vfRead[0].reg, static_cast<uint8_t>(D.lowerUsage.vfRead[0].lanes & 0xFu)>(ready);
++    if constexpr (D.lowerUsage.vfReadCount > 1u)
++        maxVfReady<D.lowerUsage.vfRead[1].reg, static_cast<uint8_t>(D.lowerUsage.vfRead[1].lanes & 0xFu)>(ready);
++    maxViReady<static_cast<uint16_t>(D.lowerUsage.viRead & 0xFFFEu)>(ready);
++    maxAccReady<static_cast<uint8_t>(D.lowerUsage.accRead & 0xFu)>(ready);
++
++    if constexpr (D.lowerUsage.pipeline == PipelineFdiv)
++        if (m_fdiv.valid)
++            ready = std::max(ready, m_fdiv.readyCycle);
++    if constexpr (D.lowerUsage.pipeline == PipelineEfu)
++        ready = std::max(ready, m_efuResourceReady);
++    if constexpr (D.lowerUsage.waitQ)
++        if (m_fdiv.valid)
++            ready = std::max(ready, m_fdiv.readyCycle);
++    if constexpr (D.lowerUsage.waitP)
++    {
++        for (const ScalarPipelineEntry &entry : m_efu)
++            if (entry.valid)
++                ready = std::max(ready, entry.readyCycle);
++    }
++    if constexpr (D.lowerUsage.pipeline == PipelineXgkick)
++        if (m_xgkick.active)
++            ready = std::max(ready, m_cycle + 1u);
++    return ready;
++}
++
++template <const VU1Interpreter::DecodedInstructionPair &D>
++PS2_VU_FORCEINLINE void VU1Interpreter::markPairWritesConst()
++{
++    constexpr VfAccess lowerWrite = D.lowerUsage.vfWrite;
++    if constexpr (lowerWrite.reg != 0u && D.suppressedLowerVf != lowerWrite.reg)
++        markVfReady<lowerWrite.reg, static_cast<uint8_t>(lowerWrite.lanes & 0xFu),
++                    D.lowerUsage.vfLatency != 0u ? D.lowerUsage.vfLatency : D.lowerUsage.latency>();
++    constexpr VfAccess upperWrite = D.upperUsage.vfWrite;
++    if constexpr (upperWrite.reg != 0u)
++        markVfReady<upperWrite.reg, static_cast<uint8_t>(upperWrite.lanes & 0xFu),
++                    D.upperUsage.vfLatency != 0u ? D.upperUsage.vfLatency : D.upperUsage.latency>();
++    markViReady<static_cast<uint16_t>(D.lowerUsage.viWrite & 0xFFFEu),
++                D.lowerUsage.viLatency != 0u ? D.lowerUsage.viLatency : D.lowerUsage.latency>();
++    constexpr uint8_t accWrite = D.upperUsage.accWrite;
++    if constexpr ((accWrite & 0x8u) != 0u) m_accReady[0] = m_cycle + kAccForwardLatency;
++    if constexpr ((accWrite & 0x4u) != 0u) m_accReady[1] = m_cycle + kAccForwardLatency;
++    if constexpr ((accWrite & 0x2u) != 0u) m_accReady[2] = m_cycle + kAccForwardLatency;
++    if constexpr ((accWrite & 0x1u) != 0u) m_accReady[3] = m_cycle + kAccForwardLatency;
++}
++
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPair(const DecodedInstructionPair &decoded, RunFrame &f)
+ {
+     const uint32_t upperWord = decoded.upper;
+@@ -580,7 +707,8 @@
+         decoded, f, [upperWord](VU1Interpreter &vu)
+         { vu.execUpper(upperWord); },
+         [lowerWord, upperWord](VU1Interpreter &vu, RunFrame &frame)
+-        { vu.execLower(lowerWord, frame.vuData, frame.dataSize, *frame.gs, frame.memory, upperWord); });
++        { vu.execLower(lowerWord, frame.vuData, frame.dataSize, *frame.gs, frame.memory, upperWord); },
++        DynamicTiming{decoded});
+ }
+ 
+ PS2_VU_FORCEINLINE void VU1Interpreter::writeVfNow(uint8_t reg, uint8_t laneMask, const float value[4], uint32_t latency)
+@@ -617,9 +745,9 @@
+         m_immediatePendingUntil = m_cycle + latency;
+ }
+ 
+-template <class UpperExec, class LowerExec>
++template <class UpperExec, class LowerExec, class Timing>
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
+-                                                                           bool immediateWrites)
++                                                                           Timing timing, bool immediateWrites)
+ {
+     if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+     {
+@@ -627,7 +755,7 @@
+         return StepResult::Break;
+     }
+ 
+-    uint64_t readyCycle = calculatePairReadyCycle(decoded);
++    uint64_t readyCycle = timing.ready(*this);
+     while (readyCycle > m_cycle)
+     {
+         if (readyCycle >= f.budgetEnd)
+@@ -636,7 +764,7 @@
+             break;
+         }
+         advanceTo(readyCycle);
+-        readyCycle = calculatePairReadyCycle(decoded);
++        readyCycle = timing.ready(*this);
+     }
+     if (m_cycle >= f.budgetEnd)
+         return StepResult::Break;
+@@ -761,7 +889,7 @@
+         }
+     }
+ 
+-    markPairWrites(decoded);
++    timing.mark(*this);
+     if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
+         recordViWriteForBranch(writtenVi, oldVi);
+ 
+@@ -860,6 +988,20 @@
+     }
+ }
+ 
++// One VU cycle: inline, with the two common "nothing to do" cases checked
++// here (the calls cost more than the checks: findings/21 s.15).
++PS2_VU_FORCEINLINE void VU1Interpreter::advanceOneCycle()
++{
++    ++m_cycle;
++    m_state.cycles = m_cycle;
++    // LSU commits become visible at the cycle boundary before PATH1 consumes
++    // its next qword from VU memory.
++    if (m_cycle >= m_nextCommitCycle)
++        commitReadyPipelines();
++    if (m_xgkick.active)
++        progressXgkick();
++}
++
+ inline void VU1Interpreter::materializeFlags()
+ {
+     while (m_flagCount != 0u)
+@@ -920,7 +1062,7 @@
+     }
+     // The pair's step with its upper instruction run by Upper (a function
+     // that runs one upper word, built once per distinct word).
+-    template <void (*Upper)(VU1Interpreter &)>
++    template <void (*Upper)(VU1Interpreter &), const Pair &P>
+     static PS2_VU_FORCEINLINE Result execPairUpper(VU1Interpreter &vu, const Pair &pair, Frame &frame)
+     {
+         const uint32_t lowerWord = pair.lower;
+@@ -930,12 +1072,12 @@
+             { Upper(v); },
+             [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
+             { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-            true);
++            VU1Interpreter::ConstTiming<P>{}, true);
+     }
+     // The same with the lower instruction run by Lower (a function that runs
+     // one lower word, built once per distinct word).
+     using LowerFn = void (*)(VU1Interpreter &, uint8_t *, uint32_t, GS &, PS2Memory *, uint32_t);
+-    template <void (*Upper)(VU1Interpreter &), LowerFn Lower>
++    template <void (*Upper)(VU1Interpreter &), LowerFn Lower, const Pair &P>
+     static PS2_VU_FORCEINLINE Result execPairUpperLower(VU1Interpreter &vu, const Pair &pair, Frame &frame)
+     {
+         const uint32_t upperWord = pair.upper;
+@@ -944,7 +1086,7 @@
+             { Upper(v); },
+             [upperWord](VU1Interpreter &v, Frame &fr)
+             { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-            true);
++            VU1Interpreter::ConstTiming<P>{}, true);
+     }
+     // One upper instruction, inline: called with a constant word, the
+     // compiler keeps only that instruction's code.
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -114,10 +114,6 @@
+ // broadcast, normalizeResult and the FMAC result/flag helpers (applyDest ...
+ // applyFmacDestAcc) are inline in runtime/ps2_vu1_fmac_inl.h.
+ 
+-uint32_t VU1Interpreter::microAddressMask() const
+-{
+-    return m_unit == Unit::VU1 ? 0x3FFFu : 0x0FFFu;
+-}
+ 
+ int32_t VU1Interpreter::readBranchVi(uint8_t reg) const
+ {
+@@ -584,15 +580,6 @@
+     m_xgkick.issueCycle = m_cycle;
+ }
+ 
+-void VU1Interpreter::advanceOneCycle()
+-{
+-    ++m_cycle;
+-    m_state.cycles = m_cycle;
+-    // LSU commits become visible at the cycle boundary before PATH1 consumes
+-    // its next qword from VU memory.
+-    commitReadyPipelines();
+-    progressXgkick();
+-}
+ 
+ void VU1Interpreter::advanceTo(uint64_t targetCycle)
+ {
