@@ -199,7 +199,16 @@ Each step must keep `--sum` identical to the interpreter.
   its own limits. The model is still folded on Linux; on Windows it is
   inlined where MSVC chooses, so the Windows gain of phase 2b can be
   smaller than on Linux. Measured with the fix, same file and command:
-  0.26 GB at most, 9 s.
+  0.26 GB at most, 9 s. The whole Windows build (commit `8a53de7`, at
+  most 5 translated files at once) took 11.2 minutes instead of 24, and
+  the game ran with the translated code on (6,727 pairs) to the first
+  level and exited normally, with no `missing-target`.
+- Windows speed in that session (6 GS bands, one-second samples): about
+  48 game frames per second in the menus, 5-10 in the first level (mostly
+  7-9), against 7.4-9 with patch 0019. So on Windows the first level did
+  not get faster, although the game thread's CPU per frame fell by a
+  quarter on Linux since then: the game thread is probably no longer what
+  limits the level there. Next: per-thread CPU on Windows.
 - Guard in `CMakeLists.txt`: the translated files compile in a Ninja job
   pool sized by the machine's memory (half the RAM divided by 3 GB per
   file with MSVC, 1 GB with GCC/Clang; `BEN10_VU1_COMPILE_JOBS`
