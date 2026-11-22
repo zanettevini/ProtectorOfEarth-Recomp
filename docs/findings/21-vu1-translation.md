@@ -396,3 +396,47 @@ there (s.7), which alone would cap the level near 20 per second; the band
 count (6 at most by default) and the rasteriser need work too. Running
 VIF1 and VU1 on their own thread (as on the console) is a larger change of
 the timing model and is left for a decision of its own.
+
+## 12. Step 1 of s.11 tried: flags applied on demand (not kept)
+
+- Every flag entry (FMAC MAC/status, CLIP, FSSET, FCSET) is due exactly
+  `kFmacLatency` cycles after issue, and within a cycle the upper entry
+  takes a lower slot than the lower one, so the eight-slot flag pipeline is
+  in effect a queue in issue order. Tried: a 16-entry ring in issue order,
+  applied only when something reads the flags (the ten flag-reading lower
+  instructions, the FDIV status update, the end of `run`, a full ring),
+  with the pending checks counting only entries not yet due, so the
+  end-of-program cycle count stays the same.
+- Result: same checksums and cycle count, but the replay cost went from
+  321 M to 324 M instructions. The per-cycle commit still ran on 541,785
+  of 554,310 cycles (74 instructions per call on average): VI writes and
+  stores are due on almost every cycle, so removing the flags from it saved
+  only about 15 M, which the ring bookkeeping gave back. Reverted.
+- So the commit is not dominated by any one queue; together with the pair
+  step and the FMAC model it is spread over many small costs. The
+  remaining steps of s.11 have to replace the per-cycle model for
+  translated code as a whole (a pipeline representation built for it,
+  synchronised with the interpreter's state where control passes between
+  them), not one queue at a time.
+
+## 13. The other route: VIF1 and VU1 off the game thread
+
+- How it works now: DMA transfers are instant. Writing a channel's CHCR
+  runs `PS2Memory::processPendingTransfers`, which processes the whole
+  VIF1 chain (copied at kick time into `chainData`), runs every VU1
+  program it starts (`MSCAL`/`MSCNT` callbacks into `VU1Interpreter`, up to
+  65,536 cycles each) and sends PATH1/PATH2 packets to the GIF, then sets
+  D_STAT, clears CHCR STR and queues the DMAC interrupt cause, all before
+  the EE's next instruction.
+- On the console VU1 runs alongside the EE; PCSX2's MTVU runs it on its
+  own thread. Here that would take: a worker owning VIF1 and VU1 (and
+  their GIF output); the EE waiting for the worker whenever it touches
+  VIF1/DMA/GIF/GS registers, VU1 memory, or sends GIF packets itself
+  (PATH3 or GS registers), so that the GS sees the same order; and
+  completion (D_STAT, CHCR, the interrupt) delivered after a fixed amount
+  of EE time, waiting for the worker then if needed, so that the game
+  stays deterministic instead of depending on which thread is faster.
+- That changes when the game sees DMA completion (now: at once), which
+  is a decision of its own. Before deciding: measure how many VIF1 and GIF
+  transfers the first level starts per frame and how much EE work lies
+  between a VIF1 kick and the next point where the EE would have to wait.
