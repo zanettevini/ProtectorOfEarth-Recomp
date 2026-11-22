@@ -1,0 +1,221 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU interpreter: FMAC flags and operand normalisation four lanes at a time (SSE2)
+
+What it is for:
+  Every FMAC upper instruction normalises its operands, then classifies
+  each written lane (result exponent, product exponent for MADD/MSUB/
+  OPMSUB, exact model when needed), packs MAC/status/sticky and appends a
+  flag entry. Done lane by lane this was about 370 host instructions for
+  one four-lane MADD in translated VU code.
+
+The change:
+  - fmacFlagsFast(): the per-lane fast paths of normalizeFmacResult,
+    calculateFmacProductSticky and updateFmacFlags (patch 0026), checked
+    for all four lanes at once with SSE2 compares and movemask. If every
+    written lane qualifies, it appends the same flag entry (MAC = the sign
+    bits, status S, sticky Z/S of the products) and the per-lane code is
+    skipped; otherwise nothing is changed and the per-lane code runs as
+    before. dest == 0 always takes the per-lane code (no entry).
+  - normalizeOperands4(): normalizeOperand on four lanes (exponent 0 ->
+    signed zero, exponent 255 -> signed max), used by execUpperT.
+  Non-x86 targets keep the per-lane code only (PS2_VU_FMAC_SIMD 0).
+
+How it was checked:
+  The port's VU1 replay (40 workloads) and VU0 replay (60 workloads):
+  same checksums and cycle counts, interpreted and translated. ps2xTest
+  454/454. A throwaway randomised comparison (2 million FMAC operations
+  over every opcode and dest mask, operands near zero, near the range
+  limits and in near-cancellation; 1.04 million took the fast path; 8
+  million operand lanes) found no difference, compiled plainly and with
+  -march=x86-64-v3 -ffp-contract=fast.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -430,6 +430,8 @@
+ 
+     void applyDest(float *dst, const float *result, uint8_t dest);
+     void applyDestAcc(const float *result, uint8_t dest);
++    bool fmacFlagsFast(const float *result, uint8_t dest, bool productSum,
++                       const float *productLeft, const float *productRight);
+     void applyFmacDest(float *dst, float *result, uint8_t dest);
+     void applyFmacDestAcc(float *result, uint8_t dest);
+     // productLeft/productRight: the product operands of a product-sum
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -11,6 +11,15 @@
+ #include <cstring>
+ #include <limits>
+ 
++// SSE2 (every x86-64 compiler): the four-lane fast path of the FMAC flags
++// below. Other targets use the per-lane code only.
++#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
++#define PS2_VU_FMAC_SIMD 1
++#include <emmintrin.h>
++#else
++#define PS2_VU_FMAC_SIMD 0
++#endif
++
+ namespace ps2_vu1_fmac_detail
+ {
+     inline uint32_t exponentOf(float value)
+@@ -34,6 +43,40 @@
+                special == 0x21u || special == 0x23u || special == 0x25u ||
+                special == 0x27u || special == 0x29u || special == 0x2Du;
+     }
++
++    // A dest mask (x = bit 3 ... w = bit 0) with its bits reversed: lane
++    // order (x = bit 0), as _mm_movemask_ps returns it, and back.
++    // VU1Interpreter::normalizeOperand on four lanes: exponent 0 becomes a
++    // signed zero, exponent 255 the largest finite value with its sign.
++    inline void normalizeOperands4(const float *in, float *out)
++    {
++#if PS2_VU_FMAC_SIMD
++        const __m128i bits = _mm_castps_si128(_mm_loadu_ps(in));
++        const __m128i exponentMask = _mm_set1_epi32(0x7F800000);
++        const __m128i sign = _mm_and_si128(bits, _mm_set1_epi32(static_cast<int>(0x80000000u)));
++        const __m128i exponent = _mm_and_si128(bits, exponentMask);
++        const __m128i isZero = _mm_cmpeq_epi32(exponent, _mm_setzero_si128());
++        const __m128i isMax = _mm_cmpeq_epi32(exponent, exponentMask);
++        __m128i r = _mm_or_si128(_mm_and_si128(isZero, sign), _mm_andnot_si128(isZero, bits));
++        r = _mm_or_si128(_mm_and_si128(isMax, _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF))), _mm_andnot_si128(isMax, r));
++        _mm_storeu_ps(out, _mm_castsi128_ps(r));
++#else
++        for (uint32_t component = 0; component < 4u; ++component)
++        {
++            uint32_t b = 0;
++            std::memcpy(&b, &in[component], 4);
++            const uint32_t exponent = (b >> 23) & 0xFFu;
++            if (exponent == 0u)
++                b &= 0x80000000u;
++            else if (exponent == 0xFFu)
++                b = (b & 0x80000000u) | 0x7F7FFFFFu;
++            std::memcpy(&out[component], &b, 4);
++        }
++#endif
++    }
++
++    constexpr uint8_t kReverse4[16] = {0x0u, 0x8u, 0x4u, 0xCu, 0x2u, 0xAu, 0x6u, 0xEu,
++                                       0x1u, 0x9u, 0x5u, 0xDu, 0x3u, 0xBu, 0x7u, 0xFu};
+ }
+ 
+ PS2_VU_FORCEINLINE float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
+@@ -476,6 +519,75 @@
+     entry->writesStatus = true;
+ }
+ 
++// The common case of normalizeFmacResult + calculateFmacProductSticky +
++// updateFmacFlags for all four lanes at once (findings/21 s.20): when every
++// written lane takes the per-lane fast paths there (result exponent 3..252;
++// for a product-sum also a product exponent of at most 253, at most
++// exponent + 20, and either 2 or more or a zero operand), the result is left
++// as it is, each lane's flags are just its sign, and the sticky flags of the
++// products are their zero-operand and sign bits. Then this appends the same
++// flag entry those three would and returns true; otherwise it changes
++// nothing and returns false, and the per-lane code runs as before.
++PS2_VU_FMAC_INLINE bool VU1Interpreter::fmacFlagsFast(const float *result, uint8_t dest, bool productSum,
++                                                      const float *productLeft, const float *productRight)
++{
++#if PS2_VU_FMAC_SIMD
++    if (dest == 0u)
++        return false; // no flag entry at all: left to the general code
++    const uint32_t destLanes = ps2_vu1_fmac_detail::kReverse4[dest & 0xFu];
++    const __m128i exponentLow = _mm_set1_epi32(0xFF);
++    const __m128 r = _mm_loadu_ps(result);
++    const __m128i e = _mm_and_si128(_mm_srli_epi32(_mm_castps_si128(r), 23), exponentLow);
++    // 3 <= e <= 252
++    __m128i fast = _mm_and_si128(_mm_cmpgt_epi32(e, _mm_set1_epi32(2)), _mm_cmplt_epi32(e, _mm_set1_epi32(253)));
++    uint32_t extraSticky = 0u;
++    if (productSum)
++    {
++        const __m128 left = _mm_loadu_ps(productLeft);
++        const __m128 right = _mm_loadu_ps(productRight);
++        const __m128 product = _mm_mul_ps(left, right);
++        const __m128i pe = _mm_and_si128(_mm_srli_epi32(_mm_castps_si128(product), 23), exponentLow);
++        // pe <= 253 and pe <= e + 20
++        const __m128i safe = _mm_and_si128(_mm_cmplt_epi32(pe, _mm_set1_epi32(254)),
++                                           _mm_cmplt_epi32(pe, _mm_add_epi32(e, _mm_set1_epi32(21))));
++        const __m128 zero = _mm_setzero_ps();
++        const __m128 zeroOperand = _mm_or_ps(_mm_cmpeq_ps(left, zero), _mm_cmpeq_ps(right, zero));
++        // the product's own flags without the exact model: a zero operand,
++        // or an exponent of 2 or more (253 at most is checked above)
++        const __m128i productFast = _mm_or_si128(_mm_castps_si128(zeroOperand), _mm_cmpgt_epi32(pe, _mm_set1_epi32(1)));
++        fast = _mm_and_si128(fast, _mm_and_si128(safe, productFast));
++        if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
++            return false;
++        if ((static_cast<uint32_t>(_mm_movemask_ps(zeroOperand)) & destLanes) != 0u)
++            extraSticky |= 0x1u;
++        if ((static_cast<uint32_t>(_mm_movemask_ps(product)) & destLanes) != 0u)
++            extraSticky |= 0x2u;
++    }
++    else if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
++        return false;
++
++    // Each lane's flags are its sign (S); MAC holds S in bits 7:4, x = bit 7.
++    const uint32_t signLanes = static_cast<uint32_t>(_mm_movemask_ps(r)) & destLanes;
++    FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFFu, true);
++    if (entry)
++    {
++        entry->mac = static_cast<uint32_t>(ps2_vu1_fmac_detail::kReverse4[signLanes]) << 4;
++        entry->status = signLanes != 0u ? 0x2u : 0u;
++        entry->extraSticky = extraSticky;
++        entry->writesMac = true;
++        entry->writesStatus = true;
++    }
++    return true;
++#else
++    (void)result;
++    (void)dest;
++    (void)productSum;
++    (void)productLeft;
++    (void)productRight;
++    return false;
++#endif
++}
++
+ PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
+ {
+     uint8_t laneFlags[4]{};
+@@ -492,6 +604,11 @@
+             if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+                 fmacProductOperands(component, left[component], right[component]);
+     }
++    if (fmacFlagsFast(result, dest, productSum, left, right))
++    {
++        applyDest(dst, result, dest);
++        return;
++    }
+     normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
+     updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDest(dst, result, dest);
+@@ -510,6 +627,11 @@
+             if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
+                 fmacProductOperands(component, left[component], right[component]);
+     }
++    if (fmacFlagsFast(result, dest, productSum, left, right))
++    {
++        applyDestAcc(result, dest);
++        return;
++    }
+     normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
+     updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDestAcc(result, dest);
+--- a/ps2xRuntime/include/runtime/ps2_vu1_upper_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_upper_inl.h
+@@ -98,13 +98,10 @@
+     float normalizedVs[4];
+     float normalizedVt[4];
+     float normalizedAcc[4];
+-    PS2_VU_UNROLL_LANES
+-    for (uint32_t component = 0; component < 4u; ++component)
+-    {
+-        normalizedVs[component] = normalizeOperand(m_state.vf[fs][component]);
+-        normalizedVt[component] = normalizeOperand(m_state.vf[ft][component]);
+-        normalizedAcc[component] = normalizeOperand(m_state.acc[component]);
+-    }
++    // The same as normalizeOperand per lane, four lanes at a time.
++    ps2_vu1_fmac_detail::normalizeOperands4(m_state.vf[fs], normalizedVs);
++    ps2_vu1_fmac_detail::normalizeOperands4(m_state.vf[ft], normalizedVt);
++    ps2_vu1_fmac_detail::normalizeOperands4(m_state.acc, normalizedAcc);
+     const float *vs = normalizedVs;
+     const float *vt = normalizedVt;
+     const float *acc = normalizedAcc;

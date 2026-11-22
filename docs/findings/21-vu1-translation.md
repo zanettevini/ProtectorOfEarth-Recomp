@@ -591,3 +591,67 @@ the timing model and is left for a decision of its own.
 - Open: the per-call overhead of a VU0 call (reset of the state and the
   scheduler, copies of the EE's VU0 registers in and out, the rounding
   mode switch) is now a visible share of each call.
+
+## 20. FMAC flags four lanes at a time (patch 0033)
+
+- Measured first: with `perf` now available on the Linux test machine
+  (`linux-tools`), a 60 s profile of the game thread in the first level
+  (patch 0032 build): translated VU code 48%, the VU interpreter's own
+  functions (run loop, commit, PATH1, VI queue...) 9%, recompiled game
+  code and its memory helpers about 15%, GS front end 6%, the IOP
+  kernel's thread list walk (`IopKernel::beginNextReady` and
+  `nextWakeCycle` iterating a `std::map` at every scheduler checkpoint)
+  about 5%, the rest spread out.
+- In the replay (callgrind, `--native`), one four-lane MADD upper
+  function cost about 370 host instructions per call: the operands
+  normalised lane by lane, then per lane the result classification, the
+  product operands and product classification, the flag packing, and a
+  flag entry.
+- Patch 0033: `fmacFlagsFast` checks the per-lane fast paths of s.10 for
+  all four lanes at once with SSE2 (exponent ranges by integer compares,
+  zero operands and signs by `movemask`) and, when every written lane
+  qualifies, appends the same flag entry directly; otherwise the per-lane
+  code runs as before. `normalizeOperands4` normalises four operand lanes
+  at once. Non-x86 builds keep the per-lane code.
+- Checked: same checksums and cycle counts on the 40 VU1 and the 60 VU0
+  workloads, interpreted and translated; ps2xTest 454/454; a throwaway
+  randomised comparison of the new path against the per-lane model (2
+  million FMAC operations over every opcode and dest mask, operands near
+  zero, near the range limits and in near-cancellation; 1.04 million
+  took the fast path; plus 8 million operand lanes) found no difference,
+  plain and with `-march=x86-64-v3 -ffp-contract=fast`.
+- Gain: replay, translated run 33.2 M -> 32.0 M instructions (-4%). The
+  plain MADD/ADD forms got about a third cheaper; OPMSUB (cross product)
+  got dearer, because its lanes often fail the product test (the result
+  is much smaller than the products) and then pay for both checks. In the
+  game the change is below the noise of the 2-core test machine (game
+  thread 75-79 ms per frame either way).
+
+## 21. VIF1 kicks and the EE work between them (measured)
+
+- The question left open in s.13: how much EE work lies between a VIF1
+  kick and the point where the EE next needs its result. Measured with a
+  temporary probe (thread CPU time around each `processPendingTransfers`
+  of a channel kick, and from the end of a VIF1 kick to the next read of
+  D1_CHCR; not committed), first level, Linux, patches 0001-0033:
+  every game frame has two VIF1 kicks of 23-26 ms of game-thread CPU
+  each (VIF1 unpacking, the VU1 programs, PATH1 to the GS), and after
+  each the EE runs 16-18 ms of its own before reading D1_CHCR again (the
+  three reads before the next kick); VIF0 transfers cost 0.003 ms.
+- So now that the VU code is faster, about two fifths of the game
+  thread's frame (2 x 17 of 76 ms) is EE work that could run while VU1
+  works, against a fifth in s.13. A VIF1/VU1 thread could bring the game
+  thread's critical path from about 76 to about 45 ms per frame on this
+  machine.
+- But completion cannot stay invisible to the EE: the game registers an
+  enabled DMAC handler for channel 1 (guest 0x12E670, read with gdb from
+  `EeScheduler::m_dmacHandlers`; the same function
+  `ben10::frame_rate_log::countedDmaEnd` wraps). The runtime dispatches
+  it right after the CHCR store, since the transfer is already done, and
+  the handler is what kicks the next VIF1 transfer. Running VU1 in
+  parallel means delivering that interrupt (and D_STAT, CHCR STR) later
+  in EE time, as the console does, at a deterministic point (the first
+  EE access that could observe the transfer, or a fixed number of EE
+  cycles after the kick, whichever comes first, the EE waiting for the
+  worker there). That is a change of the timing model, left to a
+  decision (NEXT_TASK).
