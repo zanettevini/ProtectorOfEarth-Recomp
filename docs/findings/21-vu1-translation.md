@@ -871,3 +871,32 @@ the timing model and is left for a decision of its own.
   submodule and reapply the patch files, which dropped runtime edits not
   yet written to a patch; they were redone from the snapshot. Noted in
   patches/ps2recomp/README.md: write the patch file first.
+
+## 26. Windows after patches 0037-0038: the VU1 worker is no longer the limit
+
+- Measured by the maintainer on Windows (MSVC Release build of commit
+  47420e0, the first MSVC build of the translated block files: 447
+  blocks, it built without errors; `BEN10_ASYNC_VU1=1`, 6 GS bands,
+  first level with enemies, about 2 minutes;
+  `tools/perf/cpu_per_frame_windows.ps1` every 10 s, the sampling
+  profiler on the game thread).
+- Game frames per second: 16.5-27.0 (per-second log: mostly 18-21, peaks
+  of 28-32 without enemies), against 12.7-23.9 after patch 0034 (s.22)
+  and 9-18 before it.
+- CPU per game frame, the 10-second samples with enemies on screen:
+  VIF1/VU1 worker 21-41 ms (it was 23-74 ms in s.22, and the limit); the
+  six GS band threads 30-48 ms each, the busiest at 77-82% of a core
+  (790-817 ms per second); game thread 11-25 ms; window thread 10-11 ms.
+- Game-thread profile (55,804 samples): 50.7% inclusive in
+  `PS2Memory::syncVif1`, nearly all of it waiting (`ntdll`): the EE
+  reaches the next VBlank start before the worker has finished the
+  transfer about once every two transfers ("the EE waited for the worker
+  255-348 times" per 600 transfers, 12.8-36.4 ms on average). Of the rest:
+  IOP 11.9% (`IopKernel::beginNextReady` 6.7%, `nextWakeCycle` 3.1%),
+  EE runtime 5.9%, recompiled game code 5.3%, VU0 and VU1 code on the game
+  thread 6%.
+- Reading: the worker, at about 40-70% of a core, waits for something
+  itself, and the only thing it waits for is the GS queue: its draws go to
+  the GS backend, which holds producers when 8192 commands are queued
+  (findings/20 s.21). The bands, at about 80% each, are the next limit;
+  findings/20 s.21 adds the counters that will show it on the next run.

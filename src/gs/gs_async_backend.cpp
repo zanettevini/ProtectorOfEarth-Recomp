@@ -11,10 +11,28 @@
 //
 // HOW IT HOOKS IN
 //   GS::setRasterBackend() (a public PS2Recomp API) swaps the backend; a game
-//   override installs this one when the ELF loads.
+//   override in gs_async_install.cpp installs this one when the ELF loads.
+//   This file only needs the GS backend headers, so the offline replay
+//   tool (tools/gs_replay) builds it too.
 //   BEN10_GS_SYNC=1    keep the original synchronous backend (comparisons).
 //   BEN10_GS_THREADS=N draw with N row bands (default: 6, or fewer on a
 //   machine with fewer than 8 hardware threads; 1 below 4).
+//
+// WHERE THE TIME GOES (the [gs-async] log line, every 10 s of drawing)
+//   To tell whether the rasteriser is what holds the rest of the port
+//   (findings/20 s.21), the dispatcher counts, per 10 seconds:
+//   - draws (primitive batches) and the parallel segments they ran in, and
+//     why each segment ended: a texture or CLUT read from a page written
+//     in the segment ("texture", "CLUT"), a transfer that runs on the
+//     main backend ("transfer"), the length limit ("length"), or the queue
+//     running empty ("idle");
+//   - how long band 0 (the dispatcher's own band) drew, and how long it
+//     then waited for the slowest other band (the cost of bands that
+//     finish at different times);
+//   - how often and how long producers (the game thread, the VIF1 worker)
+//     were held by the queue limit, and how long readers waited in
+//     drain() (clears, VRAM reads, resets, readback syncs).
+//   The counters cost two clock reads per segment.
 //
 // WHY THE PICTURE IS THE SAME
 //   - Everything that writes or changes GS state is queued and run in
@@ -41,6 +59,19 @@
 //     barrier ends the parallel segment first (all bands catch up). Pages
 //     are 8 KB; the page sets are over-estimates (frame and Z rows rounded
 //     to 32-row pages, the texture's whole page rectangle).
+//   - A row of pixels is one band's only while every draw of the segment
+//     sees that memory through the same layout (base page, FBW, pixel
+//     format): a draw whose frame or Z pages the segment already used
+//     through another layout (a Z buffer redrawn as a colour buffer; the
+//     PSMZ and PSMCT block orders differ) first lets every band finish
+//     (layoutConflict, findings/20 s.21).
+//   - Image transfers run on the main backend on the dispatcher thread,
+//     while no band is drawing. One that would write pages a draw or CLUT
+//     load of the unfinished segment reads or writes first lets every band
+//     finish; one that touches none of them (the usual texture upload into
+//     a free area) runs at once, ahead of those draws, which do not see
+//     its pages either way (findings/20 s.21). Local-to-host and
+//     local-to-local transfers always wait.
 //   - One difference remains with N > 1: each band has its own copy of the
 //     GS texture page buffer (GSCpuBackend's one-page TexturePageCache), so
 //     a game that samples a page it rendered to without a TEXFLUSH may see
@@ -49,14 +80,14 @@
 //   Nothing else reads GS memory: PS2Memory's VRAM buffer is only handed to
 //   the GS at start-up (checked in the runtime sources).
 
-#include "ps2_runtime.h"
-#include "game_overrides.h"
+#include "gs_async_backend.h"
+
 #include "runtime/gs/gs_backend.h"
 #include "runtime/gs/gs_cpu_backend.h"
-#include "runtime/gs/gs_frontend.h"
 
 #include <algorithm>
 #include <bitset>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -119,14 +150,116 @@ namespace ben10::gs_async
     }
 
     // Pages a primitive may write: its frame buffer and Z buffer rows
-    // inside the scissor (FBP and ZBP count pages).
-    PageSet writtenPages(const GSDrawState &state)
+    // inside the scissor (FBP and ZBP count pages). The first row is
+    // rounded down to a multiple of 64: addRows counts 32-row pages, and
+    // for a 16-bit frame or Z buffer (64x64-pixel pages) starting from
+    // row y0 / 32 would skip the page that holds rows 32-63 when the
+    // scissor starts there (findings/20 s.21).
+    // The frame and Z sets are kept apart for the layout rule below.
+    struct WriteSets
+    {
+        PageSet frame;   // frame buffer rows in the scissor
+        PageSet z;       // Z buffer rows in the scissor (whether or not Z is written)
+        PageSet written; // frame, plus Z unless ZMSK is set
+    };
+    WriteSets writtenPages(const GSDrawState &state)
+    {
+        WriteSets sets;
+        const GSContext &ctx = state.context;
+        const uint32_t y0 = static_cast<uint32_t>(ctx.scissor.y0) & ~63u;
+        addRows(sets.frame, ctx.frame.fbp, ctx.frame.fbw, y0, ctx.scissor.y1);
+        addRows(sets.z, ctx.zbuf.zbp, ctx.frame.fbw, y0, ctx.scissor.y1); // Z uses FRAME's FBW
+        sets.written = sets.frame;
+        if (!ctx.zbuf.zmask)
+            sets.written |= sets.z;
+        return sets;
+    }
+
+    // Whether a primitive touches its Z buffer at all: it writes Z (ZMSK
+    // clear) or tests it (TEST.ZTE, bit 16, with ZTST, bits 17-18, GEQUAL
+    // or GREATER; ALWAYS and NEVER read nothing).
+    bool touchesZ(const GSDrawState &state)
+    {
+        const GSContext &ctx = state.context;
+        if (!ctx.zbuf.zmask)
+            return true;
+        return ((ctx.test >> 16) & 1u) != 0u && ((ctx.test >> 17) & 3u) >= 2u;
+    }
+
+    // The memory layout of a frame or Z buffer: which pixel (x, y) each
+    // byte belongs to depends on the base page, the width (FBW) and the
+    // pixel format, whose swizzle differs between colour and Z formats even
+    // at the same depth. Two draws with the same layout put a pixel row in
+    // the same band; two with different layouts may not (findings/20 s.21).
+    uint32_t bufferLayout(uint32_t basePage, uint32_t fbw, uint32_t psm)
+    {
+        return (basePage & 0xFFFu) | ((fbw & 0xFFu) << 12) | ((psm & 0xFFu) << 20);
+    }
+
+    // Pages a CLUT load reads: the page of CBP, and the next one when the
+    // 1 KB of a 256-entry 32-bit CLUT (4 blocks) can run past its end.
+    PageSet clutPages(const GSTex0Reg &tex0)
     {
         PageSet pages;
-        const GSContext &ctx = state.context;
-        addRows(pages, ctx.frame.fbp, ctx.frame.fbw, ctx.scissor.y0, ctx.scissor.y1);
-        if (!ctx.zbuf.zmask)
-            addRows(pages, ctx.zbuf.zbp, ctx.frame.fbw, ctx.scissor.y0, ctx.scissor.y1);
+        const uint32_t cbp = static_cast<uint32_t>(tex0.cbp);
+        pages.set((cbp / kBlocksPerPage) % kPages);
+        if (cbp % kBlocksPerPage > kBlocksPerPage - 4u)
+            pages.set((cbp / kBlocksPerPage + 1u) % kPages);
+        return pages;
+    }
+
+    // Pages a host-to-local image transfer writes (BITBLTBUF DBP/DBW/DPSM,
+    // TRXPOS DSAX/DSAY, TRXREG RRW/RRH). Page sizes by pixel format (GS
+    // manual, "Page" tables): 64x32 for the 32-bit layouts (PSMCT32,
+    // PSMCT24, PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24), 64x64 for the
+    // 16-bit ones, 128x64 for PSMT8, 128x128 for PSMT4. The set runs from
+    // the first page of the first row of pages to the last page column
+    // the rectangle reaches in its last row of pages, plus one page when
+    // DBP is not page-aligned. Any other format, or a rectangle that
+    // wraps past row 2047, gives every page (the transfer then waits for
+    // all bands, as every transfer did before).
+    PageSet transferWritePages(const GSTransferCommand &command)
+    {
+        PageSet pages;
+        uint32_t pageW = 0, pageH = 0;
+        switch (command.bitbltbuf.dpsm)
+        {
+        case 0x00: case 0x01: case 0x1B: case 0x24: case 0x2C: case 0x30: case 0x31:
+            pageW = 64u; pageH = 32u; break;
+        case 0x02: case 0x0A: case 0x32: case 0x3A:
+            pageW = 64u; pageH = 64u; break;
+        case 0x13:
+            pageW = 128u; pageH = 64u; break;
+        case 0x14:
+            pageW = 128u; pageH = 128u; break;
+        default:
+            pages.set();
+            return pages;
+        }
+        const uint32_t rrw = command.trxreg.rrw, rrh = command.trxreg.rrh;
+        if (rrw == 0u || rrh == 0u)
+            return pages; // nothing is written
+        const uint32_t x0 = command.trxpos.dsax, y0 = command.trxpos.dsay;
+        const uint32_t x1 = x0 + rrw - 1u, y1 = y0 + rrh - 1u;
+        if (y1 >= 2048u)
+        {
+            pages.set();
+            return pages;
+        }
+        const uint32_t widthPixels = std::max<uint32_t>(command.bitbltbuf.dbw, 1u) * 64u;
+        const uint32_t perRow = (widthPixels + pageW - 1u) / pageW; // pages in one row of pages
+        const uint32_t firstPage = command.bitbltbuf.dbp / kBlocksPerPage;
+        const uint32_t from = firstPage + (y0 / pageH) * perRow;
+        uint32_t to = firstPage + (y1 / pageH) * perRow + x1 / pageW + 1u; // exclusive
+        if (command.bitbltbuf.dbp % kBlocksPerPage != 0u)
+            ++to;
+        if (to - from >= kPages)
+        {
+            pages.set();
+            return pages;
+        }
+        for (uint32_t page = from; page < to; ++page)
+            pages.set(page % kPages);
         return pages;
     }
 
@@ -145,6 +278,19 @@ namespace ben10::gs_async
         pages.set((firstPage + (height / 32u + 1u) * std::max<uint32_t>(ctx.tex0.tbw, 1u)) % kPages);
         return pages;
     }
+
+    using Clock = std::chrono::steady_clock;
+
+    // Why a parallel segment ended (the [gs-async] counts).
+    enum class Barrier : size_t
+    {
+        Texture,  // a texture read from a page written in the segment
+        Clut,     // a CLUT load from such a page
+        Transfer, // an image transfer, run on the main backend
+        Length,   // kSegmentLimit draws
+        Idle,     // the queue ran empty
+        Layout,   // frame or Z memory used through two layouts (layoutConflict)
+    };
 
     class AsyncBackend final : public GSRasterBackend
     {
@@ -272,8 +418,11 @@ namespace ben10::gs_async
                 {
                     if (m_workerIdle)
                         m_workAvailable.notify_one();
+                    const auto start = Clock::now();
                     m_drained.wait(lock, [this]()
                                    { return m_submitted - m_completed < kMaxPending; });
+                    ++m_heldCount; // under m_mutex, read by the dispatcher's report
+                    m_heldTime += Clock::now() - start;
                 }
                 m_queue.push_back(std::move(command));
                 ++m_submitted;
@@ -288,8 +437,13 @@ namespace ben10::gs_async
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             const uint64_t target = m_submitted;
+            if (m_completed >= target)
+                return;
+            const auto start = Clock::now();
             m_drained.wait(lock, [this, target]()
                            { return m_completed >= target; });
+            ++m_drainCount; // under m_mutex, like the producer counters
+            m_drainTime += Clock::now() - start;
         }
 
         void reportDone(uint64_t count)
@@ -315,14 +469,18 @@ namespace ben10::gs_async
         }
 
         // Every band draws the segment; returns when all are done.
-        void runSegment(std::vector<Command *> &segment)
+        void runSegment(std::vector<Command *> &segment, Barrier reason)
         {
             if (segment.empty())
                 return;
+            ++m_stats.segments;
+            ++m_stats.barriers[static_cast<size_t>(reason)];
+            const auto start = Clock::now();
             if (m_bands.size() == 1u)
             {
                 for (Command *command : segment)
                     runOnBand(*m_bands[0], *command);
+                m_stats.band0 += Clock::now() - start;
             }
             else
             {
@@ -335,14 +493,20 @@ namespace ben10::gs_async
                 m_bandWork.notify_all();
                 for (Command *command : segment)
                     runOnBand(*m_bands[0], *command);
+                const auto drawn = Clock::now();
+                m_stats.band0 += drawn - start;
                 std::unique_lock<std::mutex> lock(m_bandMutex);
                 m_bandDone.wait(lock, [this]()
                                 { return m_bandPending == 0u; });
                 m_bandSegment = nullptr;
+                m_stats.otherBands += Clock::now() - drawn;
             }
             reportDone(segment.size());
             segment.clear();
             m_segmentWrites.reset();
+            m_segmentReads.reset();
+            m_segmentLayouts.clear();
+            m_layoutMemoValid = false;
         }
 
         void bandLoop(uint32_t index)
@@ -397,16 +561,33 @@ namespace ben10::gs_async
                     if (auto *submit = std::get_if<SubmitCommand>(&command))
                     {
                         const GSDrawState &state = submit->batch.state;
-                        if (banded && state.prim.tme && (cachedTexturePages(state) & m_segmentWrites).any())
-                            runSegment(segment); // the texture may be in an unfinished band
+                        ++m_stats.draws;
+                        if (banded && state.prim.tme)
+                        {
+                            const PageSet &texture = cachedTexturePages(state);
+                            if ((texture & m_segmentWrites).any())
+                                runSegment(segment, Barrier::Texture); // the texture may be in an unfinished band
+                            m_segmentReads |= texture;
+                        }
                         if (banded)
-                            m_segmentWrites |= cachedWrittenPages(state);
+                        {
+                            const WriteSets &sets = cachedWrittenPages(state);
+                            if (layoutConflict(state, sets))
+                                runSegment(segment, Barrier::Layout);
+                            recordLayouts(state, sets);
+                            m_segmentWrites |= sets.written;
+                        }
                         segment.push_back(&command);
                     }
                     else if (auto *clut = std::get_if<LoadClutCommand>(&command))
                     {
-                        if (banded && m_segmentWrites.test((clut->tex0.cbp / kBlocksPerPage) % kPages))
-                            runSegment(segment);
+                        if (banded)
+                        {
+                            const PageSet pages = clutPages(clut->tex0);
+                            if ((pages & m_segmentWrites).any())
+                                runSegment(segment, Barrier::Clut);
+                            m_segmentReads |= pages;
+                        }
                         segment.push_back(&command);
                     }
                     else if (std::holds_alternative<TextureFlushCommand>(command))
@@ -415,8 +596,27 @@ namespace ben10::gs_async
                     }
                     else
                     {
-                        runSegment(segment);
-                        if (auto *transfer = std::get_if<BeginTransferCommand>(&command))
+                        // Transfers run on the main backend, on this thread,
+                        // while the bands are idle (a segment only runs inside
+                        // runSegment). A host-to-local transfer whose pages
+                        // no queued draw or CLUT load of the segment reads or
+                        // writes can run at once, ahead of those draws: they
+                        // see the same memory either way, and the draws after
+                        // it see its data. Anything else (local-to-host,
+                        // local-to-local, pages in use) first lets every band
+                        // finish the segment, as all transfers used to.
+                        auto *transfer = std::get_if<BeginTransferCommand>(&command);
+                        if (transfer)
+                        {
+                            m_transferPages = transfer->command.direction == 0u ? transferWritePages(transfer->command)
+                                              : transfer->command.direction == 3u ? PageSet{}
+                                                                                  : PageSet{}.set();
+                        }
+                        if (!banded || ((m_segmentWrites | m_segmentReads) & m_transferPages).any())
+                            runSegment(segment, Barrier::Transfer);
+                        else
+                            ++m_stats.transfersAhead;
+                        if (transfer)
                             m_main->BeginTransfer(transfer->command);
                         else if (auto *image = std::get_if<UploadImageCommand>(&command))
                             m_main->UploadImage(image->data.data(), static_cast<uint32_t>(image->data.size()));
@@ -425,11 +625,129 @@ namespace ben10::gs_async
                     // Long runs of draws: report progress so a producer held
                     // by the limit can go on.
                     if (segment.size() >= kSegmentLimit)
-                        runSegment(segment);
+                        runSegment(segment, Barrier::Length);
                 }
-                runSegment(segment);
+                runSegment(segment, Barrier::Idle);
                 batch.clear();
+                reportIfDue();
             }
+        }
+
+        // The band rule (each pixel row drawn by one band) keeps every byte
+        // of GS memory with one band only while all the segment's draws see
+        // that memory through the same layout (bufferLayout). The game also
+        // uses one area as a colour buffer and as a Z buffer in the same
+        // stretch of draws (seen in the first level: sprites drawn with
+        // FRAME at the page the triangles before them use as their 24-bit
+        // Z buffer). PSMZ swizzles blocks differently from PSMCT, so rows
+        // 0-15 of one are rows 16-31 of the other: two bands drew the same
+        // bytes, in an order that changed from run to run (findings/20
+        // s.21). So a draw whose frame or Z pages were already used in the
+        // segment through another layout first lets the bands finish.
+        // layoutConflict says whether this draw needs that barrier;
+        // recordLayouts then adds its pages to the segment's records
+        // (runSegment clears them).
+        bool layoutConflict(const GSDrawState &state, const WriteSets &sets)
+        {
+            const GSContext &ctx = state.context;
+            const uint32_t frameLayout = bufferLayout(ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm);
+            const bool z = touchesZ(state);
+            const uint32_t zLayout = z ? bufferLayout(ctx.zbuf.zbp, ctx.frame.fbw, ctx.zbuf.psm) : frameLayout;
+            // Same layouts and pages as the previous draw of the segment:
+            // already recorded and checked.
+            if (m_layoutMemoValid && m_layoutMemoVersion == m_writeSetsVersion &&
+                m_layoutMemoFrame == frameLayout && m_layoutMemoZ == zLayout && m_layoutMemoTouchesZ == z)
+                return false;
+            for (const SegmentLayout &used : m_segmentLayouts)
+            {
+                if ((used.layout != frameLayout && (used.pages & sets.frame).any()) ||
+                    (z && used.layout != zLayout && (used.pages & sets.z).any()))
+                    return true;
+            }
+            return false;
+        }
+        void recordLayouts(const GSDrawState &state, const WriteSets &sets)
+        {
+            const GSContext &ctx = state.context;
+            const uint32_t frameLayout = bufferLayout(ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm);
+            const bool z = touchesZ(state);
+            const uint32_t zLayout = z ? bufferLayout(ctx.zbuf.zbp, ctx.frame.fbw, ctx.zbuf.psm) : frameLayout;
+            if (m_layoutMemoValid && m_layoutMemoVersion == m_writeSetsVersion &&
+                m_layoutMemoFrame == frameLayout && m_layoutMemoZ == zLayout && m_layoutMemoTouchesZ == z)
+                return; // the previous draw recorded the same pages
+            recordLayout(frameLayout, sets.frame);
+            if (z)
+                recordLayout(zLayout, sets.z);
+            m_layoutMemoValid = true;
+            m_layoutMemoVersion = m_writeSetsVersion;
+            m_layoutMemoFrame = frameLayout;
+            m_layoutMemoZ = zLayout;
+            m_layoutMemoTouchesZ = z;
+        }
+        void recordLayout(uint32_t layout, const PageSet &pages)
+        {
+            for (SegmentLayout &used : m_segmentLayouts)
+            {
+                if (used.layout == layout)
+                {
+                    used.pages |= pages;
+                    return;
+                }
+            }
+            m_segmentLayouts.push_back({layout, pages});
+        }
+        struct SegmentLayout
+        {
+            uint32_t layout;
+            PageSet pages;
+        };
+        std::vector<SegmentLayout> m_segmentLayouts; // frame/Z layouts used since the last barrier
+        bool m_layoutMemoValid = false;
+        uint64_t m_layoutMemoVersion = 0;
+        uint32_t m_layoutMemoFrame = 0, m_layoutMemoZ = 0;
+        bool m_layoutMemoTouchesZ = false;
+
+        // Prints the [gs-async] line (see the header) once 10 seconds have
+        // passed since the last one, then starts the counts again. Called by
+        // the dispatcher between batches, so the log has no line while
+        // nothing is drawn.
+        void reportIfDue()
+        {
+            const auto now = Clock::now();
+            if (m_statsStart == Clock::time_point{})
+                m_statsStart = now;
+            const auto elapsed = now - m_statsStart;
+            if (elapsed < std::chrono::seconds(10))
+                return;
+            uint64_t held = 0, drains = 0;
+            Clock::duration heldTime{}, drainTime{};
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                held = m_heldCount;
+                drains = m_drainCount;
+                heldTime = m_heldTime;
+                drainTime = m_drainTime;
+                m_heldCount = m_drainCount = 0;
+                m_heldTime = m_drainTime = {};
+            }
+            const auto seconds = [](Clock::duration d)
+            { return std::chrono::duration<double>(d).count(); };
+            const auto &b = m_stats.barriers;
+            std::fprintf(stderr,
+                         "[gs-async] last %.1f s: %llu draws in %llu segments (ended by texture %llu, CLUT %llu, "
+                         "transfer %llu, length %llu, idle %llu, layout %llu; %llu transfer commands ran ahead of the segment); band 0 drew %.2f s and waited %.2f s for the "
+                         "other bands; producers held by the queue limit %llu times (%.2f s), drains %llu (%.2f s)\n",
+                         seconds(elapsed), static_cast<unsigned long long>(m_stats.draws),
+                         static_cast<unsigned long long>(m_stats.segments),
+                         static_cast<unsigned long long>(b[0]), static_cast<unsigned long long>(b[1]),
+                         static_cast<unsigned long long>(b[2]), static_cast<unsigned long long>(b[3]),
+                         static_cast<unsigned long long>(b[4]), static_cast<unsigned long long>(b[5]),
+                         static_cast<unsigned long long>(m_stats.transfersAhead),
+                         seconds(m_stats.band0), seconds(m_stats.otherBands),
+                         static_cast<unsigned long long>(held), seconds(heldTime),
+                         static_cast<unsigned long long>(drains), seconds(drainTime));
+            m_stats = {};
+            m_statsStart = now;
         }
 
         // writtenPages/texturePages for the last inputs seen: nearly every
@@ -447,7 +765,7 @@ namespace ben10::gs_async
             uint32_t tbp0, tbw, height, wrapV;
             bool operator==(const TextureKey &) const = default;
         };
-        const PageSet &cachedWrittenPages(const GSDrawState &state)
+        const WriteSets &cachedWrittenPages(const GSDrawState &state)
         {
             const GSContext &ctx = state.context;
             const WriteKey key{static_cast<uint32_t>(ctx.frame.fbp), static_cast<uint32_t>(ctx.frame.fbw),
@@ -458,6 +776,7 @@ namespace ben10::gs_async
                 m_writePages = writtenPages(state);
                 m_writeKey = key;
                 m_writeCacheValid = true;
+                ++m_writeSetsVersion;
             }
             return m_writePages;
         }
@@ -476,10 +795,25 @@ namespace ben10::gs_async
         }
         WriteKey m_writeKey{};
         TextureKey m_textureKey{};
-        PageSet m_writePages;
+        WriteSets m_writePages;
+        uint64_t m_writeSetsVersion = 0; // changes whenever m_writePages is rebuilt
         PageSet m_texturePages;
         bool m_writeCacheValid = false;
         bool m_textureCacheValid = false;
+
+        // Dispatcher-only counters for the [gs-async] line; the producer
+        // and drain counters below them are guarded by m_mutex.
+        struct DispatchStats
+        {
+            uint64_t draws = 0;
+            uint64_t segments = 0;
+            uint64_t barriers[6] = {}; // indexed by Barrier
+            uint64_t transfersAhead = 0; // transfer commands run without a barrier
+            Clock::duration band0{};
+            Clock::duration otherBands{};
+        };
+        DispatchStats m_stats;
+        Clock::time_point m_statsStart{};
 
         // About half a frame's worth of the first level's primitives.
         static constexpr uint64_t kMaxPending = 8192;
@@ -488,6 +822,8 @@ namespace ben10::gs_async
         std::unique_ptr<GSCpuBackend> m_main;               // transfers, clears, readers
         std::vector<std::unique_ptr<GSCpuBackend>> m_bands; // drawing, one per row band
         PageSet m_segmentWrites;                            // pages written since the last barrier
+        PageSet m_segmentReads;                             // texture and CLUT pages read since then
+        PageSet m_transferPages;                            // pages the current transfer writes
 
         mutable std::mutex m_mutex;
         std::condition_variable m_workAvailable;
@@ -497,6 +833,10 @@ namespace ben10::gs_async
         uint64_t m_completed = 0;
         bool m_workerIdle = false;
         bool m_stop = false;
+        uint64_t m_heldCount = 0;                // producers held by kMaxPending
+        Clock::duration m_heldTime{};
+        mutable uint64_t m_drainCount = 0;       // drain() calls that waited
+        mutable Clock::duration m_drainTime{};
 
         std::mutex m_bandMutex;
         std::condition_variable m_bandWork;
@@ -510,25 +850,8 @@ namespace ben10::gs_async
         std::thread m_worker; // started last, in the constructor body
     };
 
-    void apply(PS2Runtime &runtime)
+    std::unique_ptr<GSRasterBackend> makeAsyncBackend(uint32_t bandCount)
     {
-        if (const char *sync = std::getenv("BEN10_GS_SYNC"); sync && *sync && *sync != '0')
-        {
-            std::fprintf(stderr, "[gs] BEN10_GS_SYNC set: the rasteriser stays on the submitting thread\n");
-            return;
-        }
-        // Default: 6 bands when the machine has the threads for them, keeping
-        // two for the game thread and the window (findings/20 s.18: on an
-        // 8-core desktop 6 bands drew the menus about 4 times as fast as 1,
-        // and 4 or 6 gave the same frame rate in the first level); one band
-        // on machines with fewer than 4 hardware threads.
-        const unsigned hw = std::thread::hardware_concurrency();
-        uint32_t bands = hw >= 4u ? std::min(6u, hw - 2u) : 1u;
-        if (const char *threads = std::getenv("BEN10_GS_THREADS"); threads && *threads)
-            bands = static_cast<uint32_t>(std::clamp(std::atoi(threads), 1, 16));
-        runtime.gs().setRasterBackend(std::make_unique<AsyncBackend>(bands));
-        std::fprintf(stderr, "[gs] rasteriser off the game thread, %u row band(s) (BEN10_GS_THREADS; BEN10_GS_SYNC=1 turns it off)\n", bands);
+        return std::make_unique<AsyncBackend>(bandCount);
     }
 }
-
-PS2_REGISTER_GAME_OVERRIDE("GS rasteriser off the game thread", "SLUS_216.61", 0x00100008u, 0u, &ben10::gs_async::apply);

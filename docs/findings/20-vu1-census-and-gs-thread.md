@@ -521,3 +521,79 @@ per second in one-minute averages in the first level.
   remainder compared with 0.5). Checked equal to `std::lround` for every
   float in [-300, 300] in all four rounding modes (9.07 billion values,
   throwaway test); ps2xTest 454/454.
+
+## 21. GS bands: counters, a recorded command stream, transfers without a barrier, and a race between bands
+
+- Seen: on Windows with the async VIF1/VU1 option the VIF1 worker uses
+  only 40-70% of a core and the game thread waits for it at every other
+  VBlank (findings/21 s.26), while each of the six GS bands is busy about
+  80% of the time. Nothing said what the worker or the bands were
+  waiting for.
+- Counters (`src/gs/gs_async_backend.cpp`, a `[gs-async]` line every 10 s
+  of drawing): draws and parallel segments, why each segment ended
+  (texture, CLUT, transfer, length, idle, layout), how long band 0 drew
+  and then waited for the other bands, how often producers were held by
+  the queue limit and how long readers waited in `drain()`. First level on
+  the 2-core Linux test machine (1 band by default there; with
+  `BEN10_ASYNC_VU1=1`, about 5 game frames per second): about 40,000
+  draws per second, ending about 200 segments per second at transfers;
+  the dispatcher drew 98% of the time and producers were held 85% of the
+  time (there the GS is the limit by far). With 6 bands forced on the same
+  machine: about 250 texture and 210 transfer barriers per second.
+- A recording of the backend's input, to compare backends exactly and
+  time them on the same work (the game's frames are not reproducible run
+  to run): `BEN10_GS_RECORD=<file>` (`BEN10_GS_RECORD_AFTER=S`,
+  `BEN10_GS_RECORD_SECONDS=S`; `src/gs/gs_record.h`) writes GS memory and
+  then every backend call; `ben10_gs_replay FILE --sync | --bands N`
+  (`tools/gs_replay`) replays it and prints a hash of GS memory every N
+  records (`--dump N F` and `--list A B` to look closer). The recording
+  is game data and stays in `user/`. First level, 15 s, 6 bands: 695,840
+  records (658,549 draws), 257 MB.
+- What the replay showed first: with more than one band the result was
+  **not** the one PS2Recomp's GSCpuBackend draws (`--sync`), and not the
+  same from one run to the next (6 bands: a different hash after 1,250
+  records on each run, the pre-existing code too). `--dump` at that point
+  and a page-by-page diff: 8-9 pages differed, inside the area at page
+  220, and `--list` showed the cause: triangles drawn to the frame at
+  page 80 with their 24-bit Z buffer (PSMZ24) at page 220, then sprites
+  drawn with FRAME at page 220 (PSMCT32), in the same segment. The band
+  rule (band k draws the pixel rows with `(y >> 4) % N == k`) assumes
+  that a byte of GS memory always belongs to the same pixel row, but the
+  PSMZ formats order the blocks of a page differently from the PSMCT
+  ones (rows 0-15 of one hold the bytes of rows 16-31 of the other), so
+  two bands wrote the same bytes, in whatever order the threads ran.
+- Fix: the dispatcher records, for the current segment, the pages each
+  buffer layout (base page, FBW, pixel format) has used for frames and
+  Z buffers; a draw whose frame or Z pages were already used through
+  another layout first lets every band finish (`layoutConflict`; Z
+  counts when it is written or tested). About 20 such barriers per second
+  in the first level.
+- Also in this step:
+  - Transfers: an image transfer used to end the segment, always (it
+    runs on the main backend). Now a host-to-local transfer whose pages
+    (`transferWritePages`: by pixel format, the page rows of the
+    rectangle, one more page when DBP is not page-aligned; any other
+    format or a rectangle past row 2047 gives every page) are not read or
+    written by any draw or CLUT load of the unfinished segment runs at
+    once, ahead of those draws, while no band is drawing. On the
+    recording about 78% of transfer commands run this way; the others
+    still wait.
+  - The written-page sets started at row `y0 / 32` of the scissor; for a
+    16-bit frame or Z buffer (64x64-pixel pages) a scissor starting at
+    row 32 missed the page that holds rows 32-63. The first row is now
+    rounded down to 64. CLUT loads read one more page when the CLUT can
+    run past the end of the page of CBP.
+- Checked: the recording replayed with 2, 3, 4, 6 and 16 bands gives the
+  same GS memory as `--sync` at the end, and with 6 bands at all 35
+  intermediate points too, on two runs; with 1 band, the same at every
+  point. The game, with all of this and 6 bands, goes from New Game to
+  the first level on Linux and draws it (with `BEN10_ASYNC_VU1=1`: about
+  15 layout, 200 transfer and 240 texture barriers per second, and about
+  700 transfer commands per second ran ahead of the segment). Not measured yet: the frame rate on a machine with the cores
+  for 6 bands (the Linux test machine has 2).
+- Seen and not done yet: about half of the remaining barriers are
+  texture barriers from full-screen effects that sample the frame just
+  drawn at page 80 in strips. The texture page set covers the whole
+  texture height given by TEX0 (1024 rows here), so each strip written at
+  page 371 also looks like a texture read of the next strip; the rows the
+  primitive's texture coordinates can reach would be much fewer.

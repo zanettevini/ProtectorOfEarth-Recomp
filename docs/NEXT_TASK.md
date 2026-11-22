@@ -27,11 +27,23 @@
    dispatcher's page sets memoised (the busiest band), `lround` inline in
    the bilinear filter (patch 0036). Translated blocks (s.24, patch
    0037): VU work 20.0 M host instructions on the replay, -30% since
-   s.20; patch 0038 (s.25): 16.95 M, -40%. Next: the maintainer builds
-   and measures on Windows (first MSVC build of the block files); then
-   the upper words (about 50 per VU cycle), PATH1 in batches (s.11 item
-   3) and more static scheduling in blocks; the maintainer decides later
-   whether the async option becomes the default. Profile the game thread with
+   s.20; patch 0038 (s.25): 16.95 M, -40%. On Windows (s.26): 16.5-27
+   game frames per second; the worker no longer limits, the game thread
+   waits for it at every other VBlank because it waits for the GS queue;
+   the six GS bands run at about 80% each. GS (findings/20 s.21): a
+   `[gs-async]` line every 10 s says what the bands and producers wait
+   for; `BEN10_GS_RECORD` and `tools/gs_replay` record and replay the GS
+   command stream (every GS change must give the same hashes as `--sync`);
+   a race between bands fixed (one area used as Z buffer and colour
+   buffer in the same segment); transfers that touch no page in use no
+   longer end the segment. Next: the maintainer runs `run-async.bat` again
+   and sends the `[gs-async]` lines; then fewer texture barriers (the
+   rows a primitive's texture coordinates reach instead of the whole
+   texture height, findings/20 s.21 last point), the bands' own drawing
+   cost, and on the VU side the upper words (about 50 per VU cycle),
+   PATH1 in batches (s.11 item 3) and more static scheduling in blocks;
+   the maintainer decides later whether the async option becomes the
+   default. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
    `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same

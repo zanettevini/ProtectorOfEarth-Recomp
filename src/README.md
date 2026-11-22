@@ -12,7 +12,8 @@ Today:
 |---|---|
 | `src/iop/cdarb_native.cpp` | the EE's disc reads through CDARB, done natively from `GAME.WAD` (findings/17 s.7) |
 | `src/audio/spu2_memory.cpp` | the SPU2's 2 MB sound RAM, filled by the native CDARB |
-| `src/gs/gs_async_backend.cpp` | runs PS2Recomp's CPU rasteriser off the game thread, in order, behind a bounded queue, optionally in N row bands (`BEN10_GS_THREADS=N`); readers of GS memory wait for it (findings/20 s.4, s.7); `BEN10_GS_SYNC=1` turns it off |
+| `src/gs/gs_async_backend.cpp`, `gs_async_backend.h`, `gs_async_install.cpp` | runs PS2Recomp's CPU rasteriser off the game thread, in order, behind a bounded queue, optionally in N row bands (`BEN10_GS_THREADS=N`); readers of GS memory wait for it (findings/20 s.4, s.7); a `[gs-async]` line every 10 s says where its time goes (s.21); `BEN10_GS_SYNC=1` turns it off |
+| `src/gs/gs_record.h`, `gs_record.cpp` | with `BEN10_GS_RECORD=<file>`, records GS memory and every GS backend call for `tools/gs_replay` (findings/20 s.21); off by default |
 | `src/overrides/draw_wait.cpp` | the game's frame wait loop (`FUN_0012e580`) natively, with a 1024-cycle time step per turn instead of 32 (findings/20 s.8); `BEN10_DRAW_WAIT_STEP` |
 | `src/saves/save_location.cpp` | memory cards in `game/saves/` (or `BEN10_SAVE_DIR`) instead of directly next to the ELF, copying old cards there on first run (findings/18 s.14) |
 | `src/vu/async_vu1_install.cpp` | `BEN10_ASYNC_VU1=1` (off by default): VIF1 and the VU1 programs run on a worker thread beside the game thread (patch 0034, findings/21 s.22); `BEN10_ASYNC_VU1_CYCLES=N` adds an EE-cycle limit for completion |

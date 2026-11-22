@@ -206,6 +206,19 @@ if(TARGET ps2_runtime)
     endif()
 endif()
 
+# Offline replay of recorded GS command streams (tools/gs_replay,
+# findings/20 s.21): checks that GS backend changes draw the same thing,
+# and times them on the same work. Not part of "build all": build it with
+# --target ben10_gs_replay.
+if(TARGET ps2_runtime)
+    add_executable(ben10_gs_replay EXCLUDE_FROM_ALL
+        tools/gs_replay/gs_replay.cpp
+        src/gs/gs_async_backend.cpp
+        src/gs/gs_record.cpp)
+    target_include_directories(ben10_gs_replay PRIVATE "${CMAKE_SOURCE_DIR}/src/gs")
+    target_link_libraries(ben10_gs_replay PRIVATE ps2_runtime)
+endif()
+
 # PS2Recomp also defines the generic ps2EntryRunner executable (no game).
 # We do not use it: it stays out of "build all".
 if(TARGET ps2EntryRunner)
