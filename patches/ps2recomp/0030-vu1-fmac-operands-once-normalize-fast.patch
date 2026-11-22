@@ -1,0 +1,152 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: product operands read once per FMAC instruction; quicker operand normalisation
+
+What it is for:
+  For product-sum instructions (MADD, MSUB, OPMSUB forms) the fast-path
+  check of normalizeFmacResult and the sticky pass each re-read and
+  re-normalised the product operands of every lane from the registers,
+  which the compiler could not share (stores in between). And
+  normalizeOperand, run a dozen times or more per FMAC instruction, did its
+  full exponent tests even for the common normal number.
+
+The change:
+  - applyFmacDest/applyFmacDestAcc read the product operands once
+    (fmacProductOperands) and pass them to normalizeFmacResult and
+    calculateFmacProductSticky (new optional arguments; without them both
+    read the operands themselves, as before). The registers do not change
+    between those calls.
+  - normalizeOperand returns at once when ((bits >> 23) + 1) & 0xFE is
+    nonzero, which holds exactly for exponents 1..254 (checked for every
+    sign and exponent); otherwise the previous code runs.
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code; translated code 184 M -> 169 M instructions.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -427,10 +427,14 @@
+     void applyDestAcc(const float *result, uint8_t dest);
+     void applyFmacDest(float *dst, float *result, uint8_t dest);
+     void applyFmacDestAcc(float *result, uint8_t dest);
+-    void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4]);
++    // productLeft/productRight: the product operands of a product-sum
++    // instruction, read once by applyFmacDest (nullptr: read here).
++    void normalizeFmacResult(float *result, uint8_t dest, uint8_t laneFlags[4],
++                             const float *productLeft = nullptr, const float *productRight = nullptr);
+     bool calculateFmacExactResult(uint32_t component, long double &result) const;
+     uint8_t normalizeFmacExactResult(float &value, long double exactResult) const;
+-    uint32_t calculateFmacProductSticky(uint8_t dest) const;
++    uint32_t calculateFmacProductSticky(uint8_t dest, const float *productLeft = nullptr,
++                                        const float *productRight = nullptr) const;
+     void fmacProductOperands(uint32_t component, float &left, float &right) const;
+     void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
+     void queueFsset(uint16_t immediate);
+@@ -530,6 +534,12 @@
+     {
+         uint32_t bits = 0;
+         std::memcpy(&bits, &value, sizeof(bits));
++        // Common case first: an exponent of 1..254 leaves the value as it
++        // is. (bits >> 23) is the sign bit above the 8 exponent bits; adding
++        // 1 makes its low 8 bits 0 or 1 only for exponent 255 or 0, so the
++        // test is nonzero exactly for 1..254 (findings/21 s.17).
++        if ((((bits >> 23) + 1u) & 0xFEu) != 0u) [[likely]]
++            return value;
+         const uint32_t exponent = (bits >> 23) & 0xFFu;
+         if (exponent == 0u)
+         {
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -87,7 +87,8 @@
+ }
+ 
+ PS2_VU_FMAC_INLINE void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
+-                                         uint8_t laneFlags[4])
++                                         uint8_t laneFlags[4],
++                                         const float *productLeft, const float *productRight)
+ {
+     PS2_VU_UNROLL_LANES
+     for (uint32_t component = 0; component < 4u; ++component)
+@@ -114,7 +115,13 @@
+             {
+                 float left = 0.0f;
+                 float right = 0.0f;
+-                fmacProductOperands(component, left, right);
++                if (productLeft)
++                {
++                    left = productLeft[component];
++                    right = productRight[component];
++                }
++                else
++                    fmacProductOperands(component, left, right);
+                 const uint32_t productExponent = ps2_vu1_fmac_detail::exponentOf(left * right);
+                 safe = productExponent <= 253u && productExponent <= exponent + 20u;
+             }
+@@ -386,7 +393,8 @@
+     }
+ }
+ 
+-PS2_VU_FMAC_INLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
++PS2_VU_FMAC_INLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest, const float *productLeft,
++                                                                      const float *productRight) const
+ {
+     if (!ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction))
+         return 0u;
+@@ -399,7 +407,13 @@
+             continue;
+         float left = 0.0f;
+         float right = 0.0f;
+-        fmacProductOperands(component, left, right);
++        if (productLeft)
++        {
++            left = productLeft[component];
++            right = productRight[component];
++        }
++        else
++            fmacProductOperands(component, left, right);
+ 
+         float product = left * right;
+         uint8_t productFlags = 0u;
+@@ -465,16 +479,39 @@
+ PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDest(float *dst, float *result, uint8_t dest)
+ {
+     uint8_t laneFlags[4]{};
+-    normalizeFmacResult(result, dest, laneFlags);
+-    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest));
++    // The product operands of a product-sum instruction, read once for the
++    // fast-path check and the sticky flags (the registers do not change in
++    // between; findings/21 s.17).
++    float left[4]{};
++    float right[4]{};
++    const bool productSum = ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction);
++    if (productSum)
++    {
++        PS2_VU_UNROLL_LANES
++        for (uint32_t component = 0; component < 4u; ++component)
++            if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++                fmacProductOperands(component, left[component], right[component]);
++    }
++    normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
++    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDest(dst, result, dest);
+ }
+ 
+ PS2_VU_FMAC_INLINE void VU1Interpreter::applyFmacDestAcc(float *result, uint8_t dest)
+ {
+     uint8_t laneFlags[4]{};
+-    normalizeFmacResult(result, dest, laneFlags);
+-    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest));
++    float left[4]{};
++    float right[4]{};
++    const bool productSum = ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction);
++    if (productSum)
++    {
++        PS2_VU_UNROLL_LANES
++        for (uint32_t component = 0; component < 4u; ++component)
++            if ((dest & static_cast<uint8_t>(1u << (3u - component))) != 0u)
++                fmacProductOperands(component, left[component], right[component]);
++    }
++    normalizeFmacResult(result, dest, laneFlags, productSum ? left : nullptr, productSum ? right : nullptr);
++    updateFmacFlags(laneFlags, dest, calculateFmacProductSticky(dest, productSum ? left : nullptr, productSum ? right : nullptr));
+     applyDestAcc(result, dest);
+ }
+ 

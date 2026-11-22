@@ -508,3 +508,20 @@ the timing model and is left for a decision of its own.
   119 -> 99 ms of CPU per game frame (126 ms before patch 0024); same
   picture, no `missing-target`. The frame rate there stays at the single
   GS band's limit (267 ms of CPU per game frame on that 2-core machine).
+
+## 17. FMAC operands read once, quicker normalisation (patch 0030)
+
+- A hot MADDbc upper function still cost about 600 instructions per call
+  with every lane on the fast path (no exact computations ran in the
+  replay at all). Most of it was operand handling: each normalisation
+  about 10 instructions, and for product-sum instructions the fast-path
+  check and the sticky pass each re-read and re-normalised both product
+  operands per lane (the compiler cannot share them across the stores in
+  between). `applyFmacDest` now reads them once and passes them on:
+  184 M -> 178 M.
+- `normalizeOperand` first tests `((bits >> 23) + 1) & 0xFE`, nonzero
+  exactly for exponents 1..254 (checked for all 512 sign/exponent
+  combinations), and returns the value unchanged then: 178 M -> 169 M.
+- Same checksums and cycle count on the 40 workloads with and without
+  `--native`; ps2xTest 454/454; the randomised FMAC comparison of s.10
+  still finds no difference.
