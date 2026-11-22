@@ -318,3 +318,44 @@ Each step must keep `--sum` identical to the interpreter.
   MSVC: not built yet. The Windows build script now stops any compiler
   process above 6 GB, so a repeat of s.6 fails the build instead of
   freezing the machine.
+
+## 10. An exact fast path for the FMAC flags (patch 0026)
+
+- What the FMAC model does per lane: the float result is computed as the
+  interpreter always did, then the same operation is recomputed exactly
+  (`long double`: 80-bit x87 with GCC on x86-64, the same as `double` with
+  MSVC) only to classify it; the float result is replaced only when the
+  exact value is zero, above `FLT_MAX` or below `FLT_MIN`. Product-sum
+  instructions also classify the exact product for the sticky flags.
+- Patch 0026: when the float result's exponent is 3..252 the lane's flags
+  are its sign and the value stays, without the exact computation. Why
+  that is exact: for one operation the exact value is within one ulp of
+  the float result; for ACC +/- product the rounded product is also off by
+  at most one ulp of itself, and requiring it not to have overflowed and to
+  be at most 2^20 times the result keeps the exact value within a quarter
+  of the result, so nonzero, of the same sign and in range. The argument
+  holds for any rounding mode and with fused multiply-adds. Products for
+  the sticky flags: a zero operand gives an exact signed zero; otherwise
+  exponent 2..253 gives the sign. Everything else goes through the exact
+  model as before.
+- Checked: same checksums and cycle count on the 40 workloads with and
+  without `--native`; ps2xTest 454/454; and a throwaway randomised test
+  (1.6 million lanes over every FMAC opcode, operands drawn near zero,
+  near the range limits and in near-cancellation of ACC and the product,
+  1.1 million of them on the fast path) found no difference against the
+  exact model, compiled plainly and with `-march=x86-64-v3
+  -ffp-contract=fast` (fused multiply-adds, as `/fp:fast /arch:AVX2` may
+  produce on Windows).
+- Gain: translated VU code 336 M -> 321 M instructions on the replay
+  (-4.5%). The x87 work was not the bulk of the model's cost: the lane
+  loops, the flag packing and the flag pipeline entry per instruction are.
+  Building the translated library with `-O3` instead of `-O2` (loops
+  unrolled) gave about 8% more on the replay for a 40% longer build: not
+  kept.
+- Found on the way: on MSVC Release, PS2Recomp's runtime (the VU
+  interpreter with it) is compiled with `/fp:fast /arch:AVX2`, the
+  translated code with the default `/fp:precise` (KNOWN_ISSUES).
+- Where this leaves the plan: about 550 instructions per translated pair
+  remain (step bookkeeping, flag pipeline, per-cycle commit). Small
+  changes inside this model give a few percent each; the next gains need a
+  different execution model for translated code (s.11, to come).

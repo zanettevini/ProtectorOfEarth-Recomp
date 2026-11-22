@@ -1,0 +1,218 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU1 interpreter: exact fast path for the FMAC flag model
+
+What it is for:
+  For every lane of every FMAC instruction the model recomputes the result
+  in long double (80-bit x87 with GCC/Clang on x86-64) to classify it
+  (zero, sign, underflow, overflow), and does the same for the product of
+  product-sum instructions (sticky flags). The float result is only
+  replaced when the exact value is zero, above FLT_MAX or below FLT_MIN.
+
+The change:
+  - normalizeFmacResult: when the float result's exponent is 3..252 the
+    lane's flags are its sign and the value is kept, without the exact
+    computation. For one operation (ADD, SUB, MUL and their forms) the
+    exact value is within one ulp of the result; for ACC +/- product the
+    rounded product must also not have overflowed (exponent <= 253) and be
+    at most 2^20 times the result, which keeps the exact value within a
+    quarter of the result. Both hold for any rounding mode and with a fused
+    multiply-add. Otherwise the exact model runs as before.
+  - calculateFmacProductSticky: a zero operand gives an exact signed zero
+    (flags Z and the product's sign); a float product with exponent
+    2..253 gives the sign only; otherwise the exact model.
+  - fmacProductOperands(): the product operands of a lane, shared by both.
+  Same results. Tested: ps2xTest 454/454; the Ben 10 port's 40 captured
+  VU1 workloads give the same checksums and cycle count with and without
+  its translated code; a randomised comparison (millions of lanes, many
+  near zero, the range limits and in cancellation) against the exact model
+  found no difference.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -397,6 +397,7 @@
+     bool calculateFmacExactResult(uint32_t component, long double &result) const;
+     uint8_t normalizeFmacExactResult(float &value, long double exactResult) const;
+     uint32_t calculateFmacProductSticky(uint8_t dest) const;
++    void fmacProductOperands(uint32_t component, float &left, float &right) const;
+     void updateFmacFlags(const uint8_t laneFlags[4], uint8_t dest, uint32_t extraSticky);
+     void queueFsset(uint16_t immediate);
+     void queueClip(uint32_t clip);
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -11,6 +11,31 @@
+ #include <cstring>
+ #include <limits>
+ 
++namespace ps2_vu1_fmac_detail
++{
++    inline uint32_t exponentOf(float value)
++    {
++        uint32_t bits = 0;
++        std::memcpy(&bits, &value, sizeof(bits));
++        return (bits >> 23) & 0xFFu;
++    }
++
++    // Whether the upper word computes ACC +/- a product (MADD, MSUB,
++    // OPMSUB and their ACC/bc/q/i forms): their result is rounded twice in
++    // float (product, then sum), once in the exact model.
++    inline bool isProductSum(uint32_t upper)
++    {
++        const uint32_t op = upper & 0x3Fu;
++        const uint32_t special = op >= 0x3Cu ? ((upper & 3u) | ((upper >> 4) & 0x7Cu)) : 0xFFu;
++        return (op >= 0x08u && op <= 0x0Fu) ||
++               op == 0x21u || op == 0x23u || op == 0x25u || op == 0x27u ||
++               op == 0x29u || op == 0x2Du || op == 0x2Eu ||
++               (special >= 0x08u && special <= 0x0Fu) ||
++               special == 0x21u || special == 0x23u || special == 0x25u ||
++               special == 0x27u || special == 0x29u || special == 0x2Du;
++    }
++}
++
+ PS2_VU_FORCEINLINE float VU1Interpreter::broadcast(const float *vf, uint8_t bc)
+ {
+     return normalizeOperand(vf[bc & 3u]);
+@@ -70,6 +95,35 @@
+         if ((dest & static_cast<uint8_t>(1u << (3u - component))) == 0u)
+             continue;
+ 
++        // Fast path, exact (findings/21 s.10). The exact model only changes
++        // the float result when the exact value is zero, above FLT_MAX or
++        // below FLT_MIN; otherwise the flags are just its sign. With the
++        // float result's exponent in 3..252 (|r| in [2^-124, 2^126)):
++        // - one operation (ADD, SUB, MUL...): the exact value is within one
++        //   ulp of r, so it is nonzero, has r's sign and is in range;
++        // - ACC +/- product: also the rounded product p is off by at most
++        //   one ulp(p); with p not overflowed (exponent <= 253) and at most
++        //   2^20 times |r|, the exact value is within |r|/4 of r.
++        // This holds for any rounding mode and with a fused multiply-add.
++        if (const uint32_t exponent = ps2_vu1_fmac_detail::exponentOf(result[component]);
++            exponent >= 3u && exponent <= 252u)
++        {
++            bool safe = true;
++            if (ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction))
++            {
++                float left = 0.0f;
++                float right = 0.0f;
++                fmacProductOperands(component, left, right);
++                const uint32_t productExponent = ps2_vu1_fmac_detail::exponentOf(left * right);
++                safe = productExponent <= 253u && productExponent <= exponent + 20u;
++            }
++            if (safe)
++            {
++                laneFlags[component] = std::signbit(result[component]) ? 0x2u : 0u;
++                continue;
++            }
++        }
++
+         long double exactResult = 0.0L;
+         if (calculateFmacExactResult(component, exactResult))
+         {
+@@ -296,57 +350,71 @@
+     return flags;
+ }
+ 
+-PS2_VU_FMAC_INLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
++// The two operands of lane `component`'s product, normalised, for a
++// product-sum upper instruction (MADD/MSUB/OPMSUB forms).
++PS2_VU_FMAC_INLINE void VU1Interpreter::fmacProductOperands(uint32_t component, float &left, float &right) const
+ {
+-    uint32_t extraSticky = 0u;
+     const uint32_t upper = m_currentUpperInstruction;
+     const uint8_t op = static_cast<uint8_t>(upper & 0x3Fu);
+     const uint8_t special = op >= 0x3Cu ? static_cast<uint8_t>((upper & 3u) | ((upper >> 4) & 0x7Cu)) : 0xFFu;
+-    const bool productSum =
+-        (op >= 0x08u && op <= 0x0Fu) ||
+-        op == 0x21u || op == 0x23u || op == 0x25u || op == 0x27u ||
+-        op == 0x29u || op == 0x2Du || op == 0x2Eu ||
+-        (special >= 0x08u && special <= 0x0Fu) ||
+-        special == 0x21u || special == 0x23u || special == 0x25u ||
+-        special == 0x27u || special == 0x29u || special == 0x2Du;
+-    if (!productSum)
+-        return 0u;
+-
+     const uint8_t fs = static_cast<uint8_t>((upper >> 11) & 0x1Fu);
+     const uint8_t ft = static_cast<uint8_t>((upper >> 16) & 0x1Fu);
++    static constexpr uint8_t crossLeft[4] = {1u, 2u, 0u, 3u};
++    static constexpr uint8_t crossRight[4] = {2u, 0u, 1u, 3u};
++    const uint8_t leftComponent = op == 0x2Eu ? crossLeft[component] : static_cast<uint8_t>(component);
++    left = normalizeOperand(m_state.vf[fs][leftComponent]);
++    if ((op >= 0x08u && op <= 0x0Fu) || (special >= 0x08u && special <= 0x0Fu))
++    {
++        right = normalizeOperand(m_state.vf[ft][(op >= 0x08u && op <= 0x0Fu ? op : special) & 3u]);
++    }
++    else if (op == 0x21u || op == 0x25u || special == 0x21u || special == 0x25u)
++    {
++        right = normalizeOperand(m_state.q);
++    }
++    else if (op == 0x23u || op == 0x27u || special == 0x23u || special == 0x27u)
++    {
++        right = normalizeOperand(m_state.i);
++    }
++    else if (op == 0x2Eu)
++    {
++        right = normalizeOperand(m_state.vf[ft][crossRight[component]]);
++    }
++    else
++    {
++        right = normalizeOperand(m_state.vf[ft][component]);
++    }
++}
++
++PS2_VU_FMAC_INLINE uint32_t VU1Interpreter::calculateFmacProductSticky(uint8_t dest) const
++{
++    if (!ps2_vu1_fmac_detail::isProductSum(m_currentUpperInstruction))
++        return 0u;
++
++    uint32_t extraSticky = 0u;
+     for (uint32_t component = 0; component < 4u; ++component)
+     {
+         if ((dest & static_cast<uint8_t>(1u << (3u - component))) == 0u)
+             continue;
+-        static constexpr uint8_t crossLeft[4] = {1u, 2u, 0u, 3u};
+-        static constexpr uint8_t crossRight[4] = {2u, 0u, 1u, 3u};
+-        const uint8_t leftComponent = op == 0x2Eu ? crossLeft[component] : static_cast<uint8_t>(component);
+-        const float left = normalizeOperand(m_state.vf[fs][leftComponent]);
++        float left = 0.0f;
+         float right = 0.0f;
+-        if ((op >= 0x08u && op <= 0x0Fu) || (special >= 0x08u && special <= 0x0Fu))
+-        {
+-            right = normalizeOperand(m_state.vf[ft][(op >= 0x08u && op <= 0x0Fu ? op : special) & 3u]);
+-        }
+-        else if (op == 0x21u || op == 0x25u || special == 0x21u || special == 0x25u)
+-        {
+-            right = normalizeOperand(m_state.q);
+-        }
+-        else if (op == 0x23u || op == 0x27u || special == 0x23u || special == 0x27u)
+-        {
+-            right = normalizeOperand(m_state.i);
+-        }
+-        else if (op == 0x2Eu)
+-        {
+-            right = normalizeOperand(m_state.vf[ft][crossRight[component]]);
+-        }
++        fmacProductOperands(component, left, right);
++
++        float product = left * right;
++        uint8_t productFlags = 0u;
++        // Fast path, exact (findings/21 s.10): a zero operand makes the exact
++        // product a signed zero, which the float product is too; a float
++        // product with exponent 2..253 is within one ulp of the exact one,
++        // so that is nonzero, has its sign and is in range.
++        const uint32_t productExponent = ps2_vu1_fmac_detail::exponentOf(product);
++        if (left == 0.0f || right == 0.0f)
++            productFlags = static_cast<uint8_t>(0x1u | (std::signbit(product) ? 0x2u : 0u));
++        else if (productExponent >= 2u && productExponent <= 253u)
++            productFlags = std::signbit(product) ? 0x2u : 0u;
+         else
+         {
+-            right = normalizeOperand(m_state.vf[ft][component]);
++            const long double exactProduct = static_cast<long double>(left) * static_cast<long double>(right);
++            productFlags = normalizeFmacExactResult(product, exactProduct);
+         }
+-
+-        float product = left * right;
+-        const long double exactProduct = static_cast<long double>(left) * static_cast<long double>(right);
+-        const uint8_t productFlags = normalizeFmacExactResult(product, exactProduct);
+         // Product-sum instructions report Z/S/U/O from the add/subtract result
+         // as current flags, while every product condition accumulates into the
+         // corresponding sticky flag.

@@ -31,7 +31,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0025 upstream to PS2Recomp.
+5. Send patches 0002-0026 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
