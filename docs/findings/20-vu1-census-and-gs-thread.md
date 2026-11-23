@@ -643,3 +643,13 @@ per second in one-minute averages in the first level.
   other bands (fewer barriers: texture rows from the texture coordinates
   instead of the whole TEX0 height, s.21 last point), or the dispatcher
   could stop drawing a band of its own.
+- Windows after patch 0039 (maintainer, commit a0ff5da, same settings;
+  2 min 40 s of the first level with nearly continuous fighting, and a
+  screen recording of it): 15.7-22.8 game frames per second, mostly
+  17-20 (the recording shows 16-20 distinct pictures per second); 1.4-2.4
+  million draws per 10 s; producers held by the GS queue 3.2-5.7 s of
+  every 10; band 0 drew 7.2-7.9 s and waited 1.6-2.1 s. About the same
+  as before 0039 in a scene with more fighting, so the gain is not
+  separable from the scene in this run; the GS is still the limit. The
+  recording shows the level drawn correctly (HUD, effects, tutorials, no
+  missing or flickering surfaces seen).
