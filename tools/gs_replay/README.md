@@ -44,6 +44,9 @@ Other options:
   so they also end segments; use `--every 0` to time a backend or to
   check it without those extra barriers.
 - `--reps N`: replay N times from the same start, for timing.
+- `--limit N`: stop after record N, e.g. to count instructions with
+  `valgrind --tool=callgrind` on a part of a recording (the machine's
+  wall times vary by about 10%).
 - `--row-band K N`: `GSCpuBackend` drawing only row band K of N on the
   replay's thread, to time one band's share of the work (its hashes
   differ by design).

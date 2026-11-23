@@ -776,3 +776,42 @@ per second in one-minute averages in the first level.
   Level replay on GSCpuBackend, best of 3, two rounds: 11.0-11.6 s ->
   9.95-10.4 s; same hashes on the level and random recordings;
   ps2xTest 454/454.
+
+## 25. Per-primitive setup and inlined pixel steps (patch 0042)
+
+- Measuring: wall times on the 2-core test machine vary by about 10%
+  between runs, too much for changes of a few percent. `ben10_gs_replay
+  --limit N` (new) stops after N records, so `valgrind --tool=callgrind`
+  can count instructions on a part of a recording: the first 60,000
+  commands of the level recording take 15.84 G instructions before this
+  step, 0.40 G of them the replay's own loading (`--limit 0`).
+- Where they went (callgrind, GSCpuBackend): WritePixel 20%, then
+  SampleTexture's two parts 23%, DrawTriangle 8%, combineTexture 5%,
+  ReadTexture4 7%, wrapTextureCoordinate 2.3%. WritePixel was spread
+  thin: its entry (11% of its own time in perf), the buffer bases and
+  formats worked out again for every pixel, VRAM accessors through the
+  per-format table, then the tests.
+- Patch 0042 (runtime, same results bit for bit), with the instruction
+  count after each part:
+  - PixelSetup, made once per primitive by DrawTriangle and DrawSprite:
+    buffer bases, FBW, formats and the frame and Z accessors (15.69 G);
+  - SamplerSetup the same way for SampleTexture (texture size, wrap modes
+    and region, indexed or not, palette key), the palette key checked
+    once per primitive (BeginSampling; the palette cache only memoises
+    LookupCLUT, so when it is emptied does not change a texel), and the
+    four bilinear texels converted with one format switch (14.51 G);
+  - WritePixelWith, SampleTextureWith and combineTexture forced inline
+    into the primitive loops (12.74 G);
+  - the Z test before the frame read (both are reads only; a failed Z or
+    destination alpha test ends the pixel either way) (12.59 G);
+  - wrapTextureCoordinate and classifyAlphaTest forced inline (12.36 G).
+  Drawing alone (less the 0.40 G of loading): 15.44 G -> 11.96 G, -22.5%.
+  Wall time on the level recording, best of 3, two rounds: 10.3-11.1 s
+  -> 9.2-9.3 s.
+- Checked: same hashes on the level recording (35 points and the end);
+  eight random recordings with draws sampling their own buffers
+  (`--any-texture 1`, seeds 1-8) give the same hashes as before the patch
+  (seeds 1-4 checked at the second part, 5-8 with all of it); 2 and 6
+  bands give the same GS memory as GSCpuBackend on eight more random
+  recordings; ps2xTest 454/454.
+  The game reaches and draws the first level on Linux with 6 bands.

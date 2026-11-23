@@ -20,6 +20,8 @@
 //                replay only (default 1)
 //     --dump N F write GS memory after record N to file F (raw 4 MB), to
 //                find which pixels two backends draw differently
+//     --limit N  stop after record N (as if the recording ended there), for
+//                quick runs and instruction counts under callgrind
 //     --list A B print records A to B (numbered from 1) on stderr: draws
 //                with their frame, Z, texture and scissor; transfers; CLUT
 //                loads
@@ -127,6 +129,7 @@ namespace
     long long g_dumpAt = -1;     // --dump
     const char *g_dumpPath = nullptr;
     long long g_listFrom = 0, g_listTo = -1; // --list
+    long long g_limit = -1;                  // --limit
 
     void listDraw(long long n, const GSPrimitiveBatch &batch)
     {
@@ -163,6 +166,8 @@ namespace
             uint8_t tag = 0;
             if (!reader.get(tag))
                 return -1;
+            if (g_limit >= 0 && count >= g_limit)
+                tag = static_cast<uint8_t>(Tag::End);
             bool ok = true;
             switch (static_cast<Tag>(tag))
             {
@@ -284,7 +289,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N] [--every N] [--reps N] [--row-band K N] [--dump N FILE] [--list A B]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N] [--every N] [--reps N] [--row-band K N] [--dump N FILE] [--list A B] [--limit N]\n", argv[0]);
         return 2;
     }
     bool sync = false;
@@ -313,6 +318,8 @@ int main(int argc, char **argv)
             g_dumpAt = std::atoll(argv[++i]);
             g_dumpPath = argv[++i];
         }
+        else if (arg == "--limit" && i + 1 < argc)
+            g_limit = std::atoll(argv[++i]);
         else if (arg == "--list" && i + 2 < argc)
         {
             g_listFrom = std::atoll(argv[++i]);

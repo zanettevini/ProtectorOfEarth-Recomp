@@ -47,9 +47,14 @@
    Windows: 22.9-25.7 fps with enemies. Random recordings
    (`ben10_gs_synth`, s.24) found four holes in the band rule, closed
    (draws that overlap themselves are made whole on the main backend);
-   patch 0041: triangle edges four pixels at a time (-10%). Next: the
-   maintainer measures on Windows; then `WritePixel` (the frame/Z
-   accesses), maybe a dispatcher that draws no band itself; check every
+   patch 0041: triangle edges four pixels at a time (-10%); patch 0042
+   (s.25): per-primitive setup, per-pixel steps inlined, -22.5% of the
+   drawing instructions. Next: the maintainer measures on Windows; then
+   the VRAM accesses (one address per pixel for the frame and one for Z,
+   in place of four), the remaining transfer barriers (uploads into
+   pages queued draws still read: copy those pages for the queued draws
+   instead of waiting), maybe a dispatcher that draws no band itself;
+   measure with `ben10_gs_replay --limit N` under callgrind; check every
    GS change with `ben10_gs_replay --sync` hashes on the level and on
    random recordings, and the band counts against it;
    and on the VU side the upper words (about 50 per VU cycle),
@@ -75,7 +80,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0041 upstream to PS2Recomp.
+5. Send patches 0002-0042 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

@@ -1,0 +1,542 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: per-primitive pixel and sampler setup, per-pixel steps inlined, Z test before the frame read
+
+What it is for:
+  In Ben 10: Protector of Earth's first level the GS is the limit. Under
+  callgrind, on the first 60,000 commands of a replay of the level's GS
+  commands, WritePixel was 20% of the instructions: for every pixel it
+  worked out the buffer bases, formats and VRAM accessors again, and it,
+  SampleTexture, combineTexture, wrapTextureCoordinate and
+  classifyAlphaTest were calls whose entry and exit cost a visible share.
+  SampleTexture also decoded CLAMP, the texture size and the palette key
+  for every sample, and converted each of the four bilinear texels with
+  its own format switch.
+
+The changes:
+  - PixelSetup (buffer bases, FBW, formats, the frame and Z read and
+    write accessors) and SamplerSetup (texture size, wrap modes and
+    region, whether the format is indexed, the palette cache key) are
+    made once per primitive by DrawTriangle and DrawSprite;
+    WritePixelWith and SampleTextureWith take them. WritePixel and
+    SampleTexture keep their signatures and make the setup per call.
+  - BeginSampling checks the palette cache key once per primitive. The
+    cache only memoises LookupCLUT, whose result depends on the CLUT
+    buffer (a CLUT load resets the key) and the key's own fields, so
+    emptying it at the start of a primitive instead of at its first
+    sample gives the same texels.
+  - The four bilinear texels are converted with one format switch.
+  - WritePixelWith, SampleTextureWith, combineTexture,
+    wrapTextureCoordinate and classifyAlphaTest are forced inline
+    (PS2_GS_FORCEINLINE).
+  - WritePixelWith tests Z before reading the frame: both reads only look
+    at memory, and a failed Z test or destination alpha test ends the
+    pixel either way.
+  Same results bit for bit.
+
+How it was checked:
+  The project's GS replay (tools/gs_replay, findings/20 s.25): the level
+  recording gives the same GS memory hashes at all 35 points and at the
+  end; four random recordings with draws sampling their own buffers give
+  the same hashes at 20 points each as before this patch; on four random
+  recordings 2 and 6 row bands give the same GS memory as GSCpuBackend.
+  callgrind, first 60,000 commands of the level recording: 15.84 G ->
+  12.36 G instructions (12.36 G includes 0.40 G of the replay's own
+  loading). ps2xTest 454/454.
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -12,6 +12,16 @@
+ // SSE2 (every x86-64 compiler): the four channels of a bilinear texture
+ // sample are filtered at once (bilinearFilter below). Other targets use
+ // the per-channel code.
++// The per-pixel steps (WritePixelWith, SampleTextureWith, combineTexture,
++// wrapTextureCoordinate, classifyAlphaTest) are inlined into the primitive
++// loops that call them: as calls, their entry and exit were a visible part
++// of each pixel's cost.
++#if defined(_MSC_VER)
++#define PS2_GS_FORCEINLINE __forceinline
++#else
++#define PS2_GS_FORCEINLINE inline __attribute__((always_inline))
++#endif
++
+ #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+ #define PS2_GS_BILINEAR_SIMD 1
+ #include <emmintrin.h>
+@@ -111,7 +121,7 @@
+     std::atomic<uint32_t> s_debugContext1PrimitiveCount{0};
+     std::atomic<uint32_t> s_debugFbp150PixelCount{0};
+ 
+-    int wrapTextureCoordinate(int coordinate,
++    PS2_GS_FORCEINLINE int wrapTextureCoordinate(int coordinate,
+                               int textureSize,
+                               uint8_t mode,
+                               uint16_t regionMin,
+@@ -180,7 +190,7 @@
+         }
+     };
+ 
+-    PixelWriteMask classifyAlphaTest(uint64_t testReg, uint8_t alpha, uint8_t framePsm)
++    PS2_GS_FORCEINLINE PixelWriteMask classifyAlphaTest(uint64_t testReg, uint8_t alpha, uint8_t framePsm)
+     {
+         const bool pass = passesAlphaTest(testReg, alpha);
+         if (pass)
+@@ -235,7 +245,7 @@
+         uint8_t a;
+     };
+ 
+-    TextureCombineResult combineTexture(const GSTex0Reg &tex,
++    PS2_GS_FORCEINLINE TextureCombineResult combineTexture(const GSTex0Reg &tex,
+                                         uint8_t vr,
+                                         uint8_t vg,
+                                         uint8_t vb,
+@@ -945,8 +955,42 @@
+     m_rowBandIndex = index % m_rowBandCount;
+ }
+ 
++// What WritePixel needs from the draw state that is the same for every
++// pixel of a primitive: buffer bases, formats and the VRAM accessors for
++// them. DrawTriangle and DrawSprite make it once per primitive.
++struct GSCpuBackend::PixelSetup
++{
++    u32 fbp, fbw, fpsm, zbp, zpsm;
++    ReadVramFunc readFrame, readZ;
++    WriteVramFunc writeFrame, writeZ;
++};
++
++GSCpuBackend::PixelSetup GSCpuBackend::MakePixelSetup(const GSDrawState &state) const
++{
++    const auto &ctx = state.context;
++    PixelSetup setup{};
++    setup.fbp = GSInternal::framePageBaseToBlock(ctx.frame.fbp);
++    setup.fbw = std::max<u32>(ctx.frame.fbw, 1u);
++    setup.fpsm = ctx.frame.psm;
++    setup.zbp = GSInternal::framePageBaseToBlock(ctx.zbuf.zbp);
++    setup.zpsm = ctx.zbuf.psm;
++    setup.readFrame = m_readVramFuncs[setup.fpsm & 0x3Fu];
++    setup.readZ = m_readVramFuncs[setup.zpsm & 0x3Fu];
++    setup.writeFrame = m_writeVramFuncs[setup.fpsm & 0x3Fu];
++    setup.writeZ = m_writeVramFuncs[setup.zpsm & 0x3Fu];
++    return setup;
++}
++
+ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
+ {
++    WritePixelWith(MakePixelSetup(state), state, x, y, z, r, g, b, a, fog);
++}
++
++// The same steps as before the setup was split out; the frame and Z reads
++// and writes call the accessors ReadVramUnlocked/WriteVramUnlocked picked.
++PS2_GS_FORCEINLINE void GSCpuBackend::WritePixelWith(const PixelSetup &setup, const GSDrawState &state, int x, int y, int z,
++                                         uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
++{
+     const auto &ctx = state.context;
+     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+         return;
+@@ -966,11 +1010,10 @@
+         b = applyFog(b, state.fogB);
+     }
+ 
+-    const u32 fbp = GSInternal::framePageBaseToBlock(ctx.frame.fbp);
+-    const u32 fbw = std::max<u32>(ctx.frame.fbw, 1u);
+-    const u32 fpsm = ctx.frame.psm;
+-    const u32 zbp = GSInternal::framePageBaseToBlock(ctx.zbuf.zbp);
+-    const u32 zpsm = ctx.zbuf.psm;
++    const u32 fbp = setup.fbp;
++    const u32 fbw = setup.fbw;
++    const u32 fpsm = setup.fpsm;
++    const u32 zbp = setup.zbp;
+ 
+     const PixelWriteMask writeMask = classifyAlphaTest(ctx.test, a, static_cast<uint8_t>(fpsm));
+     if (!writeMask.writesAnything())
+@@ -983,6 +1026,35 @@
+     const bool preserveDestinationAlpha = writeMask.writeRgb && !writeMask.writeAlpha && fpsm == GS_PSM_CT32;
+     const bool destinationAlphaTestNeedsRead = ((ctx.test >> 14) & 0x1u) != 0u && (fpsm == GS_PSM_CT32 || fpsm == GS_PSM_CT16 || fpsm == GS_PSM_CT16S);
+ 
++    // The Z test before the frame read: both reads only look at memory and
++    // a failed Z test or destination alpha test ends the pixel either way,
++    // so testing Z first gives the same writes and skips the frame read of
++    // pixels behind others.
++    bool zpass = false;
++    uint32_t storedZ = 0u;
++    switch (ztestMethod)
++    {
++    case 0:
++        zpass = false;
++        break;
++    case 1:
++        zpass = true;
++        break;
++    case 2:
++        storedZ = m_vram ? setup.readZ(m_vram, zbp, fbw, x, y) : 0u;
++        zpass = static_cast<uint32_t>(z) >= storedZ;
++        break;
++    case 3:
++        storedZ = m_vram ? setup.readZ(m_vram, zbp, fbw, x, y) : 0u;
++        zpass = static_cast<uint32_t>(z) > storedZ;
++        break;
++    }
++
++    if (!zpass)
++    {
++        return;
++    }
++
+     // small optimization, avoid reading the framebuffer for simple draws
+     // TODO: only one address lookup for rmw
+     const bool frmw = destinationAlphaTestNeedsRead || (writeMask.writesFramebuffer() && ((ctx.frame.fbmsk != 0) || alphaBlendEnabled || preserveDestinationAlpha));
+@@ -991,7 +1063,7 @@
+     u32 fbrgba = 0;
+     if (frmw)
+     {
+-        rawFramebufferPixel = ReadVramUnlocked(fpsm, fbp, fbw, x, y);
++        rawFramebufferPixel = m_vram ? setup.readFrame(m_vram, fbp, fbw, x, y) : 0u;
+         fbrgba = rawFramebufferPixel;
+ 
+         if (bitsPerPixel(fpsm) == 16)
+@@ -1010,31 +1082,6 @@
+         return;
+     }
+ 
+-    bool zpass = false;
+-    uint32_t storedZ = 0u;
+-    switch (ztestMethod)
+-    {
+-    case 0:
+-        zpass = false;
+-        break;
+-    case 1:
+-        zpass = true;
+-        break;
+-    case 2:
+-        storedZ = ReadVramUnlocked(zpsm, zbp, fbw, x, y);
+-        zpass = static_cast<uint32_t>(z) >= storedZ;
+-        break;
+-    case 3:
+-        storedZ = ReadVramUnlocked(zpsm, zbp, fbw, x, y);
+-        zpass = static_cast<uint32_t>(z) > storedZ;
+-        break;
+-    }
+-
+-    if (!zpass)
+-    {
+-        return;
+-    }
+-
+     if (writeMask.writesFramebuffer())
+     {
+         const u8 srcR = r;
+@@ -1104,12 +1151,14 @@
+             pixel = Rgba8888ToRgba5551(pixel);
+         }
+ 
+-        WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
++        if (m_vram)
++            setup.writeFrame(m_vram, fbp, fbw, x, y, pixel);
+     }
+ 
+     if (writeMask.writeDepth && !ctx.zbuf.zmask)
+     {
+-        WriteVramUnlocked(zpsm, zbp, fbw, x, y, z);
++        if (m_vram)
++            setup.writeZ(m_vram, zbp, fbw, x, y, z);
+     }
+ }
+ 
+@@ -1156,20 +1205,78 @@
+     return 0xFFFF00FFu;
+ }
+ 
++// The texture state SampleTexture decodes, once per primitive.
++struct GSCpuBackend::SamplerSetup
++{
++    int texW, texH;
++    uint8_t wrapU, wrapV;
++    uint16_t minU, maxU, minV, maxV;
++    bool indexed;         // T8, T8H, T4, T4HL, T4HH: through the palette cache
++    uint64_t paletteKey;  // the palette cache key of those (CLUT settings, TEXA)
++};
++
++GSCpuBackend::SamplerSetup GSCpuBackend::MakeSamplerSetup(const GSDrawState &state) const
++{
++    const auto &ctx = state.context;
++    const auto &tex = ctx.tex0;
++    SamplerSetup setup{};
++    setup.texW = state.textureWidth;
++    setup.texH = state.textureHeight;
++    const uint64_t clamp = ctx.clamp;
++    setup.wrapU = static_cast<uint8_t>(clamp & 0x3u);
++    setup.wrapV = static_cast<uint8_t>((clamp >> 2) & 0x3u);
++    setup.minU = static_cast<uint16_t>((clamp >> 4) & 0x3FFu);
++    setup.maxU = static_cast<uint16_t>((clamp >> 14) & 0x3FFu);
++    setup.minV = static_cast<uint16_t>((clamp >> 24) & 0x3FFu);
++    setup.maxV = static_cast<uint16_t>((clamp >> 34) & 0x3FFu);
++    setup.indexed = tex.psm == GS_PSM_T8 || tex.psm == GS_PSM_T8H || tex.psm == GS_PSM_T4 ||
++                    tex.psm == GS_PSM_T4HL || tex.psm == GS_PSM_T4HH;
++    setup.paletteKey = (static_cast<uint64_t>(tex.cpsm) << 35u) |
++                       (static_cast<uint64_t>(tex.csm) << 27u) |
++                       (static_cast<uint64_t>(tex.csa) << 19u) |
++                       (static_cast<uint64_t>(isFourBitIndexedPsm(tex.psm) ? 1u : 0u) << 18u) |
++                       (static_cast<uint64_t>(isEightBitIndexedPsm(tex.psm) ? 1u : 0u) << 17u) |
++                       (static_cast<uint64_t>(state.texa.aem ? 1u : 0u) << 16u) |
++                       (static_cast<uint64_t>(state.texa.ta1) << 8u) |
++                       static_cast<uint64_t>(state.texa.ta0);
++    return setup;
++}
++
++// The palette cache (m_palette, m_paletteValid) holds LookupCLUT results
++// for one key; a new key empties it. It only memoises LookupCLUT, whose
++// result depends on the CLUT buffer (a CLUT load resets the key) and the
++// key's fields, so emptying it once per primitive instead of at its first
++// sample gives the same texels.
++void GSCpuBackend::BeginSampling(const SamplerSetup &setup)
++{
++    if (setup.indexed && setup.paletteKey != m_paletteKey)
++    {
++        m_paletteKey = setup.paletteKey;
++        m_paletteValid.fill(0u);
++    }
++}
++
+ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
+ {
++    const SamplerSetup setup = MakeSamplerSetup(state);
++    BeginSampling(setup);
++    return SampleTextureWith(setup, state, s, t, q, u, v);
++}
++
++PS2_GS_FORCEINLINE uint32_t GSCpuBackend::SampleTextureWith(const SamplerSetup &setup, const GSDrawState &state, float s, float t, float q,
++                                         uint16_t u, uint16_t v)
++{
+     const auto &ctx = state.context;
+     const auto &tex = ctx.tex0;
+ 
+-    const int texW = state.textureWidth;
+-    const int texH = state.textureHeight;
+-    const uint64_t clamp = ctx.clamp;
+-    const uint8_t wrapU = static_cast<uint8_t>(clamp & 0x3u);
+-    const uint8_t wrapV = static_cast<uint8_t>((clamp >> 2) & 0x3u);
+-    const uint16_t minU = static_cast<uint16_t>((clamp >> 4) & 0x3FFu);
+-    const uint16_t maxU = static_cast<uint16_t>((clamp >> 14) & 0x3FFu);
+-    const uint16_t minV = static_cast<uint16_t>((clamp >> 24) & 0x3FFu);
+-    const uint16_t maxV = static_cast<uint16_t>((clamp >> 34) & 0x3FFu);
++    const int texW = setup.texW;
++    const int texH = setup.texH;
++    const uint8_t wrapU = setup.wrapU;
++    const uint8_t wrapV = setup.wrapV;
++    const uint16_t minU = setup.minU;
++    const uint16_t maxU = setup.maxU;
++    const uint16_t minV = setup.minV;
++    const uint16_t maxV = setup.maxV;
+ 
+     float texUf, texVf;
+     if (state.prim.fst)
+@@ -1184,30 +1291,10 @@
+         texVf = t * invQ * static_cast<float>(texH);
+     }
+ 
+-    // The texel formats: what each raw value read from GS memory becomes.
+-    // For the indexed formats the palette cache is keyed on the CLUT
+-    // settings; the key is the same for every texel of this call, so it is
+-    // checked once here (before, once per texel: the same resets).
+-    const bool indexed = tex.psm == GS_PSM_T8 || tex.psm == GS_PSM_T8H || tex.psm == GS_PSM_T4 ||
+-                         tex.psm == GS_PSM_T4HL || tex.psm == GS_PSM_T4HH;
+-    if (indexed)
+-    {
+-        const uint64_t key = (static_cast<uint64_t>(tex.cpsm) << 35u) |
+-                             (static_cast<uint64_t>(tex.csm) << 27u) |
+-                             (static_cast<uint64_t>(tex.csa) << 19u) |
+-                             (static_cast<uint64_t>(isFourBitIndexedPsm(tex.psm) ? 1u : 0u) << 18u) |
+-                             (static_cast<uint64_t>(isEightBitIndexedPsm(tex.psm) ? 1u : 0u) << 17u) |
+-                             (static_cast<uint64_t>(state.texa.aem ? 1u : 0u) << 16u) |
+-                             (static_cast<uint64_t>(state.texa.ta1) << 8u) |
+-                             static_cast<uint64_t>(state.texa.ta0);
+-        if (key != m_paletteKey)
+-        {
+-            m_paletteKey = key;
+-            m_paletteValid.fill(0u);
+-        }
+-    }
+-
+-    auto convertTexel = [&](u32 out) -> uint32_t
++    // What each raw value read from GS memory becomes, for `count` texels,
++    // with one format dispatch (the palette key was checked by
++    // BeginSampling).
++    auto convertTexels = [&](uint32_t *texels, int count)
+     {
+         switch (tex.psm)
+         {
+@@ -1215,38 +1302,49 @@
+         case GS_PSM_Z32:
+         case GS_PSM_CT24:
+         case GS_PSM_Z24:
+-            return applyTexa(state.texa, tex.psm, out);
++            for (int i = 0; i < count; ++i)
++                texels[i] = applyTexa(state.texa, tex.psm, texels[i]);
++            return;
+         case GS_PSM_CT16:
+         case GS_PSM_CT16S:
+         case GS_PSM_Z16:
+         case GS_PSM_Z16S:
+-            return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(out));
++            for (int i = 0; i < count; ++i)
++                texels[i] = applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(texels[i]));
++            return;
+         case GS_PSM_T8:
+         case GS_PSM_T8H:
+         case GS_PSM_T4:
+         case GS_PSM_T4HL:
+         case GS_PSM_T4HH:
+-        {
+-            const uint32_t index = out & 0xFFu;
+-            const uint64_t bit = 1ull << (index & 63u);
+-            uint64_t &valid = m_paletteValid[index >> 6u];
+-            if ((valid & bit) == 0u)
++            for (int i = 0; i < count; ++i)
+             {
+-                m_palette[index] = LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
+-                valid |= bit;
++                const uint32_t out = texels[i];
++                const uint32_t index = out & 0xFFu;
++                const uint64_t bit = 1ull << (index & 63u);
++                uint64_t &valid = m_paletteValid[index >> 6u];
++                if ((valid & bit) == 0u)
++                {
++                    m_palette[index] = LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
++                    valid |= bit;
++                }
++                texels[i] = m_palette[index];
+             }
+-            return m_palette[index];
+-        }
++            return;
++        default:
++            for (int i = 0; i < count; ++i)
++                texels[i] = 0xFFFF00FFu;
++            return;
+         }
+-
+-        return 0xFFFF00FFu;
+     };
+ 
+     if (!state.linearFilter)
+     {
+         const int sampleU = wrapTextureCoordinate(static_cast<int>(texUf), texW, wrapU, minU, maxU);
+         const int sampleV = wrapTextureCoordinate(static_cast<int>(texVf), texH, wrapV, minV, maxV);
+-        return convertTexel(ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV));
++        uint32_t texel = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
++        convertTexels(&texel, 1);
++        return texel;
+     }
+ 
+     const float sampleU = texUf - 0.5f;
+@@ -1269,13 +1367,8 @@
+     uint32_t raw[4] = {0u, 0u, 0u, 0u};
+     if (m_vram)
+         GSMem::ReadTexture4(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, xs, ys, raw);
+-
+-    const uint32_t c00 = convertTexel(raw[0]);
+-    const uint32_t c10 = convertTexel(raw[1]);
+-    const uint32_t c01 = convertTexel(raw[2]);
+-    const uint32_t c11 = convertTexel(raw[3]);
+-
+-    return bilinearFilter(c00, c10, c01, c11, fx, fy);
++    convertTexels(raw, 4);
++    return bilinearFilter(raw[0], raw[1], raw[2], raw[3], fx, fy);
+ }
+ 
+ namespace
+@@ -1353,6 +1446,10 @@
+ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+ {
+     const GSDrawState &state = batch.state;
++    const PixelSetup pixelSetup = MakePixelSetup(state);
++    const SamplerSetup samplerSetup = MakeSamplerSetup(state);
++    if (state.prim.tme)
++        BeginSampling(samplerSetup);
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+     const auto &ctx = state.context;
+@@ -1443,11 +1540,11 @@
+                     const int fixedV = static_cast<int>((texVf * 16.0f) + 0.5f);
+                     const uint16_t sampleU = static_cast<uint16_t>(clampInt(fixedU, 0, 0xFFFF));
+                     const uint16_t sampleV = static_cast<uint16_t>(clampInt(fixedV, 0, 0xFFFF));
+-                    texel = SampleTexture(state, 0.0f, 0.0f, 1.0f, sampleU, sampleV);
++                    texel = SampleTextureWith(samplerSetup, state, 0.0f, 0.0f, 1.0f, sampleU, sampleV);
+                 }
+                 else
+                 {
+-                    texel = SampleTexture(state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
++                    texel = SampleTextureWith(samplerSetup, state, texUf / static_cast<float>(texW), texVf / static_cast<float>(texH), 1.0f, 0u, 0u);
+                 }
+ 
+                 uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
+@@ -1456,7 +1553,7 @@
+                 uint8_t ta = static_cast<uint8_t>((texel >> 24) & 0xFF);
+ 
+                 const TextureCombineResult color = combineTexture(tex, r, g, b, a, tr, tg, tb, ta);
+-                WritePixel(state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
++                WritePixelWith(pixelSetup, state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
+             }
+         }
+     }
+@@ -1495,7 +1592,7 @@
+             if (!rowInBand(y))
+                 continue;
+             for (int x = drawX0; x <= drawX1; ++x)
+-                WritePixel(state, x, y, z1, r, g, b, a, v1.fog);
++                WritePixelWith(pixelSetup, state, x, y, z1, r, g, b, a, v1.fog);
+         }
+     }
+ }
+@@ -1503,6 +1600,10 @@
+ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+ {
+     const GSDrawState &state = batch.state;
++    const PixelSetup pixelSetup = MakePixelSetup(state);
++    const SamplerSetup samplerSetup = MakeSamplerSetup(state);
++    if (state.prim.tme)
++        BeginSampling(samplerSetup);
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+     const GSVertex &v2 = batch.vertices[2];
+@@ -1610,7 +1711,7 @@
+                 iv = 0;
+             }
+ 
+-            uint32_t texel = SampleTexture(state, is, it, iq, iu, iv);
++            uint32_t texel = SampleTextureWith(samplerSetup, state, is, it, iq, iu, iv);
+ 
+             uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
+             uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
+@@ -1631,7 +1732,7 @@
+         }
+ 
+         const uint8_t fog = clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2));
+-        WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
++        WritePixelWith(pixelSetup, state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
+     };
+ 
+ #if PS2_GS_BILINEAR_SIMD
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -62,7 +62,20 @@
+     void DrawTriangle(const GSPrimitiveBatch &batch);
+     void DrawLine(const GSPrimitiveBatch &batch);
+     void WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog);
++    // WritePixel with what depends only on the draw state worked out once
++    // per primitive (PixelSetup, defined in gs_cpu_backend.cpp).
++    struct PixelSetup;
++    PixelSetup MakePixelSetup(const GSDrawState &state) const;
++    void WritePixelWith(const PixelSetup &setup, const GSDrawState &state, int x, int y, int z,
++                        uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog);
+     uint32_t SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
++    // SampleTexture with what depends only on the draw state (TEX0, CLAMP,
++    // texture size) decoded once per primitive (SamplerSetup, defined in
++    // gs_cpu_backend.cpp). BeginSampling checks the palette cache key once.
++    struct SamplerSetup;
++    SamplerSetup MakeSamplerSetup(const GSDrawState &state) const;
++    void BeginSampling(const SamplerSetup &setup);
++    uint32_t SampleTextureWith(const SamplerSetup &setup, const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
+     uint32_t LookupCLUT(const GSDrawState &state, uint8_t index, uint8_t cpsm, uint8_t csm, uint8_t csa, uint8_t sourcePsm);
+ 
+     void PerformLocalToLocalTransfer();

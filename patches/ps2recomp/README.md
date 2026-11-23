@@ -49,8 +49,9 @@ fix and how it was found.
 | `0039-gs-bilinear-four-channels.patch` | GS CPU backend: the four channels of a bilinear texture sample filtered at once with SSE2; same results bit for bit | findings/20 s.22 |
 | `0040-gs-texel-reads-and-constant-fills.patch` | GS CPU backend: the four texels of a bilinear sample read with one format dispatch, the palette key checked once per sample, untextured sprites whose writes do not depend on memory written with values worked out once; same results bit for bit | findings/20 s.23 |
 | `0041-gs-triangle-four-pixels.patch` | GS CPU backend: triangle edge tests four pixels at a time with SSE2, colour and S/T/Q interpolated as vectors; same results bit for bit | findings/20 s.24 |
+| `0042-gs-per-primitive-setup-inline-pixel-steps.patch` | GS CPU backend: buffer and texture state decoded once per primitive, the palette key checked once per primitive, the per-pixel steps forced inline, Z tested before the frame is read; same results bit for bit | findings/20 s.25 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0041 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the
