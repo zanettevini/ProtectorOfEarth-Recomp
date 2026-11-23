@@ -36,11 +36,17 @@
    command stream (every GS change must give the same hashes as `--sync`);
    a race between bands fixed (one area used as Z buffer and colour
    buffer in the same segment); transfers that touch no page in use no
-   longer end the segment. Next: the maintainer runs `run-async.bat` again
-   and sends the `[gs-async]` lines; then fewer texture barriers (the
-   rows a primitive's texture coordinates reach instead of the whole
-   texture height, findings/20 s.21 last point), the bands' own drawing
-   cost, and on the VU side the upper words (about 50 per VU cycle),
+   longer end the segment. Windows with those counters (findings/20
+   s.22): the GS holds the producers 33-53% of the time in the level; the
+   dispatcher thread (band 0 plus dispatching) is the busiest; nearly all
+   GS work is per pixel. Patch 0039: the bilinear filter four channels at
+   once (same bits; -16% on the GS replay). Next: the maintainer measures
+   0039 on Windows; then more per-pixel GS work (`SampleTexture`, the texel
+   fetch, `DrawTriangle`, `WritePixel`; check every change with
+   `ben10_gs_replay --sync` hashes), fewer texture barriers (the rows a
+   primitive's texture coordinates reach instead of the whole texture
+   height, findings/20 s.21 last point), maybe a dispatcher that draws no
+   band itself; and on the VU side the upper words (about 50 per VU cycle),
    PATH1 in batches (s.11 item 3) and more static scheduling in blocks;
    the maintainer decides later whether the async option becomes the
    default. Profile the game thread with
@@ -63,7 +69,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0038 upstream to PS2Recomp.
+5. Send patches 0002-0039 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

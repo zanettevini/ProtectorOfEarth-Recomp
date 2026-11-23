@@ -597,3 +597,49 @@ per second in one-minute averages in the first level.
   texture height given by TEX0 (1024 rows here), so each strip written at
   page 371 also looks like a texture read of the next strip; the rows the
   primitive's texture coordinates can reach would be much fewer.
+
+## 22. Windows with the GS counters: the GS holds the producers half the time; the filter four channels at once (patch 0039)
+
+- Measured by the maintainer on Windows (MSVC Release build of commit
+  bc84156, `BEN10_ASYNC_VU1=1`, 6 bands; menus, then the first level
+  with enemies; `[gs-async]` lines and `cpu_per_frame_windows.ps1`).
+- Before the level (the title and menus): 30 game frames per second,
+  about 10,800 draws per second, 1,490 segments per second, nearly all
+  ended by texture barriers (1,170 per second); nobody held by the queue.
+- In the first level, per 10-second line: 1.2-2.2 million draws (about
+  8,000 per game frame), 20,000-30,000 segments, ended by texture
+  9,300-11,600, transfer 6,000-9,200, length 1,100-2,700, layout 520-700,
+  idle 220-9,100; 20,000-34,000 transfer commands ran ahead of their
+  segment. Band 0 (the dispatcher's thread) drew 7.3-7.6 s and waited
+  1.8-2.1 s for the other bands; **the producers (the VIF1 worker and the
+  game thread) were held by the queue limit 5,300-11,700 times, 3.3-5.3
+  s of every 10**; no drains.
+- CPU time in the level: the dispatcher thread 780-830 ms per
+  second (it draws band 0 and dispatches), the other five bands 580-770;
+  the VIF1 worker 370-630, game thread 360-430. Game frames per second:
+  18-20 with enemies (as in findings/21 s.26), 25-30 in quieter parts.
+- So the GS is the limit: the dispatcher thread is busy about 95% of the
+  time (drawing, then waiting for the slowest band at each barrier), the
+  queue fills, and the VIF1 worker and with it the game thread wait.
+- How the drawing cost splits (`ben10_gs_replay --row-band K N`, new: one
+  band's share drawn alone on GSCpuBackend; the 15 s recording of s.21):
+  the whole picture 16.4 s, band 0 of 6 3.19 s, band 3 of 6 2.86 s, band
+  0 of 2 7.99 s. One sixth would be 2.74 s: the per-primitive work every
+  band repeats is small, nearly all of it is per pixel. perf on the
+  replay: bilinear filtering per channel (`lerpChannel`) 24%, the texel
+  fetch (`SampleTexture` lambda, `ReadTexture`, wrap) 24%, the rest of
+  `SampleTexture` 10.5%, `DrawTriangle` 14%, `WritePixel` 12%.
+- Patch 0039: `bilinearFilter` filters the four channels in one SSE2
+  vector with the same single-precision operations in the same order,
+  then rounds and clamps per lane: the same bits. Checked on 345 million
+  inputs against the per-channel code (throwaway test, x86-64 and
+  x86-64-v2 builds), the replay's hashes at all 35 points and at the end
+  are the same, ps2xTest 454/454. Replay time on GSCpuBackend: 16.4 s ->
+  13.2-14.0 s (about -16%); each band draws its share with the same code.
+- Next places in the replay profile (after 0039): `SampleTexture` 21%
+  (now with the filter inlined), the texel fetch lambda 16%,
+  `DrawTriangle` 15%, `WritePixel` 15%, `ReadTexture` 11%. And on the
+  dispatcher's side: band 0 should not wait about 20% of the time for the
+  other bands (fewer barriers: texture rows from the texture coordinates
+  instead of the whole TEX0 height, s.21 last point), or the dispatcher
+  could stop drawing a band of its own.

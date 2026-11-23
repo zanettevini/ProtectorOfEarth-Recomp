@@ -11,6 +11,10 @@
 //   ben10_gs_replay FILE [--sync | --bands N] [--every N] [--reps N]
 //     --sync     PS2Recomp's GSCpuBackend, on this thread (the reference)
 //     --bands N  the port's async backend with N row bands (default 1)
+//     --row-band K N
+//                GSCpuBackend on this thread drawing only row band K of N
+//                (what one band thread does), to time one band's share:
+//                its hashes differ from the others by design
 //     --every N  a hash line every N records (default 20000)
 //     --reps N   replay N times, from the same start; hashes of the first
 //                replay only (default 1)
@@ -280,11 +284,13 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N] [--every N] [--reps N] [--dump N FILE] [--list A B]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N] [--every N] [--reps N] [--row-band K N] [--dump N FILE] [--list A B]\n", argv[0]);
         return 2;
     }
     bool sync = false;
     uint32_t bands = 1;
+    int rowBand = -1;
+    uint32_t rowBandCount = 1;
     long long every = 20000;
     int reps = 1;
     for (int i = 2; i < argc; ++i)
@@ -292,6 +298,12 @@ int main(int argc, char **argv)
         const std::string arg = argv[i];
         if (arg == "--sync")
             sync = true;
+        else if (arg == "--row-band" && i + 2 < argc)
+        {
+            sync = true;
+            rowBand = std::atoi(argv[++i]);
+            rowBandCount = static_cast<uint32_t>(std::max(1, std::atoi(argv[++i])));
+        }
         else if (arg == "--bands" && i + 1 < argc)
             bands = static_cast<uint32_t>(std::atoi(argv[++i]));
         else if (arg == "--every" && i + 1 < argc)
@@ -327,7 +339,12 @@ int main(int argc, char **argv)
         // A new backend each time: no CLUT or cache state carried over.
         std::unique_ptr<GSRasterBackend> backend;
         if (sync)
-            backend = std::make_unique<GSCpuBackend>();
+        {
+            auto cpu = std::make_unique<GSCpuBackend>();
+            if (rowBand >= 0)
+                cpu->SetRowBand(static_cast<uint32_t>(rowBand), rowBandCount);
+            backend = std::move(cpu);
+        }
         else
             backend = ben10::gs_async::makeAsyncBackend(bands);
         const auto start = std::chrono::steady_clock::now();
@@ -341,6 +358,9 @@ int main(int argc, char **argv)
     }
     std::printf("%lld records (%llu draws) x %d on %s in %.3f s\n", records,
                 static_cast<unsigned long long>(draws), reps,
-                sync ? "GSCpuBackend" : (std::to_string(bands) + " band(s)").c_str(), seconds);
+                rowBand >= 0 ? ("GSCpuBackend, row band " + std::to_string(rowBand) + " of " + std::to_string(rowBandCount)).c_str()
+                : sync     ? "GSCpuBackend"
+                           : (std::to_string(bands) + " band(s)").c_str(),
+                seconds);
     return 0;
 }

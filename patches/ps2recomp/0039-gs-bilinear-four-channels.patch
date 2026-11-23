@@ -1,0 +1,136 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: filter the four channels of a bilinear sample at once
+
+What it is for:
+  In Ben 10: Protector of Earth's first level the GS row bands are the
+  next limit on Windows. A replay of 15 s of the level's GS commands on
+  GSCpuBackend (perf, Linux) spent 24% of the time in lerpChannel, called
+  once per channel (four times) for every filtered texture sample.
+
+The change:
+  bilinearFilter: with SSE2 (every x86-64 compiler) the four channels are
+  widened to floats and filtered in one vector, with the same
+  single-precision operations in the same order as lerpChannel (no fused
+  multiply-add), then rounded half away from zero (truncate, compare the
+  exact remainder with +-0.5) and clamped to 0-255 by saturating packs.
+  The result is the same bit for bit. Other targets keep the per-channel
+  code.
+
+How it was checked:
+  A throwaway test compared bilinearFilter with four lerpChannel calls on
+  345 million inputs (random texels with random 12-bit and 24-bit
+  fractions, plus a grid of extreme colours and fractions): no
+  difference, built for x86-64 and x86-64-v2. The 15 s GS replay of the
+  first level (findings/20 s.21-22 of the project) gives the same GS
+  memory hashes at all 35 points and at the end, and takes 16.4 s ->
+  13.7 s on GSCpuBackend. ps2xTest 454/454.
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -8,6 +8,16 @@
+ #include "ps2_log.h"
+ #include <atomic>
+ #include <algorithm>
++
++// SSE2 (every x86-64 compiler): the four channels of a bilinear texture
++// sample are filtered at once (bilinearFilter below). Other targets use
++// the per-channel code.
++#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
++#define PS2_GS_BILINEAR_SIMD 1
++#include <emmintrin.h>
++#else
++#define PS2_GS_BILINEAR_SIMD 0
++#endif
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+@@ -304,12 +314,55 @@
+         return truncated + (remainder >= 0.5f ? 1 : (remainder <= -0.5f ? -1 : 0));
+     }
+ 
+-    uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
++    [[maybe_unused]] uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
+     {
+         const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
+         const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
+         return clampU8(roundHalfAwayFromZero(top + (bottom - top) * fy));
+     }
++
++    // The four texels' RGBA channels filtered together: lerpChannel on each
++    // byte, with the same single-precision operations in the same order
++    // (no fused multiply-add), so the same result bit for bit. The
++    // per-channel calls were about a quarter of a GS band's time.
++    inline uint32_t bilinearFilter(uint32_t c00, uint32_t c10, uint32_t c01, uint32_t c11, float fx, float fy)
++    {
++#if PS2_GS_BILINEAR_SIMD
++        const __m128i zero = _mm_setzero_si128();
++        auto widen = [&](uint32_t c) -> __m128
++        {
++            const __m128i bytes = _mm_cvtsi32_si128(static_cast<int>(c));
++            return _mm_cvtepi32_ps(_mm_unpacklo_epi16(_mm_unpacklo_epi8(bytes, zero), zero));
++        };
++        const __m128 f00 = widen(c00), f10 = widen(c10), f01 = widen(c01), f11 = widen(c11);
++        const __m128 vx = _mm_set1_ps(fx);
++        const __m128 vy = _mm_set1_ps(fy);
++        const __m128 top = _mm_add_ps(f00, _mm_mul_ps(_mm_sub_ps(f10, f00), vx));
++        const __m128 bottom = _mm_add_ps(f01, _mm_mul_ps(_mm_sub_ps(f11, f01), vx));
++        const __m128 value = _mm_add_ps(top, _mm_mul_ps(_mm_sub_ps(bottom, top), vy));
++        // roundHalfAwayFromZero per lane: truncate, then +1 / -1 from the
++        // exact remainder (the compare masks are -1 where true).
++        const __m128i truncated = _mm_cvttps_epi32(value);
++        const __m128 remainder = _mm_sub_ps(value, _mm_cvtepi32_ps(truncated));
++        const __m128i up = _mm_castps_si128(_mm_cmpge_ps(remainder, _mm_set1_ps(0.5f)));
++        const __m128i down = _mm_castps_si128(_mm_cmple_ps(remainder, _mm_set1_ps(-0.5f)));
++        const __m128i rounded = _mm_add_epi32(_mm_sub_epi32(truncated, up), down);
++        // clampU8: signed saturation to 16 bits, then unsigned to 8 bits,
++        // gives 0 below 0 and 255 above 255 for every 32-bit value.
++        const __m128i packed = _mm_packus_epi16(_mm_packs_epi32(rounded, zero), zero);
++        return static_cast<uint32_t>(_mm_cvtsi128_si32(packed));
++#else
++        uint32_t out = 0u;
++        for (uint32_t shift = 0u; shift < 32u; shift += 8u)
++        {
++            out |= static_cast<uint32_t>(lerpChannel(static_cast<uint8_t>(c00 >> shift), static_cast<uint8_t>(c10 >> shift),
++                                                     static_cast<uint8_t>(c01 >> shift), static_cast<uint8_t>(c11 >> shift),
++                                                     fx, fy))
++                   << shift;
++        }
++        return out;
++#endif
++    }
+ }
+ 
+ namespace
+@@ -1178,31 +1231,7 @@
+     const uint32_t c01 = samplePoint(u0, v1);
+     const uint32_t c11 = samplePoint(u1, v1);
+ 
+-    const uint8_t r = lerpChannel(static_cast<uint8_t>(c00 & 0xFFu),
+-                                  static_cast<uint8_t>(c10 & 0xFFu),
+-                                  static_cast<uint8_t>(c01 & 0xFFu),
+-                                  static_cast<uint8_t>(c11 & 0xFFu),
+-                                  fx, fy);
+-    const uint8_t g = lerpChannel(static_cast<uint8_t>((c00 >> 8) & 0xFFu),
+-                                  static_cast<uint8_t>((c10 >> 8) & 0xFFu),
+-                                  static_cast<uint8_t>((c01 >> 8) & 0xFFu),
+-                                  static_cast<uint8_t>((c11 >> 8) & 0xFFu),
+-                                  fx, fy);
+-    const uint8_t b = lerpChannel(static_cast<uint8_t>((c00 >> 16) & 0xFFu),
+-                                  static_cast<uint8_t>((c10 >> 16) & 0xFFu),
+-                                  static_cast<uint8_t>((c01 >> 16) & 0xFFu),
+-                                  static_cast<uint8_t>((c11 >> 16) & 0xFFu),
+-                                  fx, fy);
+-    const uint8_t a = lerpChannel(static_cast<uint8_t>((c00 >> 24) & 0xFFu),
+-                                  static_cast<uint8_t>((c10 >> 24) & 0xFFu),
+-                                  static_cast<uint8_t>((c01 >> 24) & 0xFFu),
+-                                  static_cast<uint8_t>((c11 >> 24) & 0xFFu),
+-                                  fx, fy);
+-
+-    return static_cast<uint32_t>(r) |
+-           (static_cast<uint32_t>(g) << 8) |
+-           (static_cast<uint32_t>(b) << 16) |
+-           (static_cast<uint32_t>(a) << 24);
++    return bilinearFilter(c00, c10, c01, c11, fx, fy);
+ }
+ 
+ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
