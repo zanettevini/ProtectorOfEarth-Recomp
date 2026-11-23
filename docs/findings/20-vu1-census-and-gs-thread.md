@@ -653,3 +653,63 @@ per second in one-minute averages in the first level.
   separable from the scene in this run; the GS is still the limit. The
   recording shows the level drawn correctly (HUD, effects, tutorials, no
   missing or flickering surfaces seen).
+
+## 23. GS per-pixel work and texture rows (patch 0040)
+
+- What the bands draw (throwaway counters on the 15 s replay of s.21,
+  GSCpuBackend): 75 million pixels of textured triangles (24-bit Z test
+  GEQUAL, alpha blending, mostly 8-bit and 4-bit indexed textures with
+  bilinear filtering and S/T/Q coordinates), 84 million of untextured
+  sprites with Z test ALWAYS (half without blending or masks: the game's
+  buffer clears), 42 million of textured full-screen sprites (the
+  effects; one of them into a PSMCT16S frame). Texture samples: 59 million
+  PSMT8 and 23 million PSMT4 bilinear, 21 million PSMCT32 point and 26
+  million PSMCT32 bilinear.
+- Patch 0040 (runtime, same results bit for bit):
+  - bilinear sampling wraps u0, u1, v0, v1 once each (8 calls before),
+    reads the four texels with `GSMem::ReadTexture4` (one format
+    dispatch, the same reads in the same order through the texture page
+    cache) and checks the palette key once per sample;
+  - untextured sprites whose writes cannot depend on memory (no frame
+    read, Z test NEVER or ALWAYS: `constantPixelWrites` follows
+    WritePixel for that case) work out the frame and Z values once and
+    write them pixel by pixel, frame then Z.
+  Replay on GSCpuBackend, best of 3, two rounds: 13.5-14.4 s -> 12.1-12.4
+  s (the test machine's times vary by about 10%); same hashes at all 35
+  points; ps2xTest 454/454.
+- Texture page sets (`src/gs/gs_async_backend.cpp`): the remaining
+  texture barriers were nearly all the full-screen effects. They draw
+  32-pixel-wide sprite strips into the frame at page 371 that read the
+  frame at page 80 (640x448) as a 1024x1024 texture, and a set covering
+  all 1024 texture rows contains page 371, so every strip ended the
+  segment of the strip before it. The dispatcher now works out the rows a
+  primitive can read (`textureRows`):
+  - sprites: DrawSprite's float arithmetic for the first and last drawn
+    rows, then SampleTexture's conversion to texel rows (FST: 1/16
+    steps; bilinear: floor(v - 0.5) and the next row; point: trunc),
+    with V nudged by 1/1000 texel each way so that a rounding difference
+    cannot move a bound;
+  - triangles: the range of T/Q x height (or V/16) over the vertices,
+    widened by 2 texels plus 1e-3 x (largest Q / smallest Q) x the range,
+    for DrawTriangle's edge weights down to -1e-4;
+  - then the vertical wrap mode (CLAMP and REGION_CLAMP clamp the range;
+    REPEAT keeps it only when it does not fold); anything else (points,
+    lines, Q of mixed sign or near 0, FST reaching below 0, REGION_REPEAT)
+    gives the whole height as before.
+  The page sets now also use each format's own page size (64x32, 64x64,
+  128x64, 128x128) and the columns the scissor or texture width reaches:
+  the earlier rounding of the first row to 64 (s.21) did not fix 16-bit
+  buffers whose scissor starts at row 64 or below, and wide textures on a
+  narrow TBW were not fully covered.
+- Result on the recording, per 658,549 draws, 6 bands: texture barriers
+  3,535 -> 730, segments 7,387 -> 3,935, transfer barriers 2,916 ->
+  2,119 (smaller read sets let more transfers run ahead). The rest of the
+  transfer barriers are real: texture uploads into pages that queued
+  draws of the segment still read. The replay gives the same GS memory as
+  `--sync` with 2, 3, 4, 6 and 16 bands, and with 6 bands at all 35
+  points. 6-band replay on the 2-core test machine, best of 3: 10.4-10.7
+  s -> 8.9-9.8 s (it cannot run 6 bands at once; the Windows run will
+  tell). The game reaches and draws the first level on Linux with 6
+  bands.
+- The `[gs-async]` line is now also printed when the backend is
+  destroyed (the last stretch of a run, and short replays).

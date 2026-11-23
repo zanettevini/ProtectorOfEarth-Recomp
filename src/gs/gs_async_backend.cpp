@@ -57,8 +57,12 @@
 //     GS memory that another band has not finished writing: a texture or
 //     CLUT read from a page written by a primitive queued since the last
 //     barrier ends the parallel segment first (all bands catch up). Pages
-//     are 8 KB; the page sets are over-estimates (frame and Z rows rounded
-//     to 32-row pages, the texture's whole page rectangle).
+//     are 8 KB; the page sets are over-estimates: whole rows of pages of
+//     each buffer's own page size (frame and Z rows in the scissor), and
+//     for a texture the rows its texture coordinates can reach
+//     (textureRows: exact for sprites, widened for triangles), or the
+//     whole height its wrap mode allows when that cannot be told
+//     (findings/20 s.23).
 //   - A row of pixels is one band's only while every draw of the segment
 //     sees that memory through the same layout (base page, FBW, pixel
 //     format): a draw whose frame or Z pages the segment already used
@@ -88,6 +92,7 @@
 #include <algorithm>
 #include <bitset>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -131,15 +136,53 @@ namespace ben10::gs_async
     constexpr uint32_t kBlocksPerPage = 32u; // TBP0/CBP count 256-byte blocks
     using PageSet = std::bitset<kPages>;
 
-    // Adds the rows y0..y1 of a buffer `widthUnits` x 64 pixels wide that
-    // starts at `firstPage`. Pages are taken as 64x32 pixels, the smallest
-    // page height of the formats a frame, Z buffer or texture can use
-    // (32-bit); taller pages only make the set larger.
-    void addRows(PageSet &set, uint32_t firstPage, uint32_t widthUnits, uint32_t y0, uint32_t y1)
+    // Page size in pixels by pixel format (GS manual, "Page" tables): 64x32
+    // for the 32-bit layouts (PSMCT32, PSMCT24, PSMT8H, PSMT4HL, PSMT4HH,
+    // PSMZ32, PSMZ24), 64x64 for the 16-bit ones, 128x64 for PSMT8,
+    // 128x128 for PSMT4; 0x0 for anything else.
+    struct PageShape
     {
-        const uint32_t width = std::max<uint32_t>(widthUnits, 1u);
-        const uint32_t from = firstPage + (y0 / 32u) * width;
-        const uint32_t to = firstPage + (y1 / 32u + 1u) * width; // exclusive
+        uint32_t width, height;
+    };
+    PageShape pageShape(uint32_t psm)
+    {
+        switch (psm)
+        {
+        case 0x00: case 0x01: case 0x1B: case 0x24: case 0x2C: case 0x30: case 0x31:
+            return {64u, 32u};
+        case 0x02: case 0x0A: case 0x32: case 0x3A:
+            return {64u, 64u};
+        case 0x13:
+            return {128u, 64u};
+        case 0x14:
+            return {128u, 128u};
+        default:
+            return {0u, 0u};
+        }
+    }
+
+    // Adds the pages that hold rows y0..y1, columns 0..xEnd-1, of a buffer
+    // in format `psm`, `widthUnits` x 64 pixels wide, starting at
+    // `firstPage`: whole rows of pages, from the first page of the first
+    // row to the last page the columns reach in the last row (columns past
+    // the buffer width run into the next pages, as GS addressing does),
+    // plus one page when the buffer does not start on a page boundary.
+    // An unknown format, or more than all of GS memory, gives every page.
+    void addRows(PageSet &set, uint32_t firstPage, uint32_t widthUnits, uint32_t psm,
+                 uint32_t y0, uint32_t y1, uint32_t xEnd, bool unaligned = false)
+    {
+        const PageShape shape = pageShape(psm);
+        if (shape.width == 0u || y1 < y0)
+        {
+            if (shape.width == 0u)
+                set.set();
+            return;
+        }
+        const uint32_t widthPixels = std::max<uint32_t>(widthUnits, 1u) * 64u;
+        const uint32_t perRow = (widthPixels + shape.width - 1u) / shape.width;
+        const uint32_t columns = std::max(perRow, (std::max(xEnd, 1u) + shape.width - 1u) / shape.width);
+        const uint32_t from = firstPage + (y0 / shape.height) * perRow;
+        const uint32_t to = firstPage + (y1 / shape.height) * perRow + columns + (unaligned ? 1u : 0u); // exclusive
         if (to - from >= kPages)
         {
             set.set();
@@ -150,11 +193,10 @@ namespace ben10::gs_async
     }
 
     // Pages a primitive may write: its frame buffer and Z buffer rows
-    // inside the scissor (FBP and ZBP count pages). The first row is
-    // rounded down to a multiple of 64: addRows counts 32-row pages, and
-    // for a 16-bit frame or Z buffer (64x64-pixel pages) starting from
-    // row y0 / 32 would skip the page that holds rows 32-63 when the
-    // scissor starts there (findings/20 s.21).
+    // inside the scissor (FBP and ZBP count pages), with each buffer's own
+    // page size (findings/20 s.21: counting 32-row pages for a 16-bit
+    // buffer, whose pages are 64 rows tall, missed pages when the scissor
+    // did not start at row 0).
     // The frame and Z sets are kept apart for the layout rule below.
     struct WriteSets
     {
@@ -166,9 +208,9 @@ namespace ben10::gs_async
     {
         WriteSets sets;
         const GSContext &ctx = state.context;
-        const uint32_t y0 = static_cast<uint32_t>(ctx.scissor.y0) & ~63u;
-        addRows(sets.frame, ctx.frame.fbp, ctx.frame.fbw, y0, ctx.scissor.y1);
-        addRows(sets.z, ctx.zbuf.zbp, ctx.frame.fbw, y0, ctx.scissor.y1); // Z uses FRAME's FBW
+        const uint32_t xEnd = static_cast<uint32_t>(ctx.scissor.x1) + 1u;
+        addRows(sets.frame, ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm, ctx.scissor.y0, ctx.scissor.y1, xEnd);
+        addRows(sets.z, ctx.zbuf.zbp, ctx.frame.fbw, ctx.zbuf.psm, ctx.scissor.y0, ctx.scissor.y1, xEnd); // Z uses FRAME's FBW
         sets.written = sets.frame;
         if (!ctx.zbuf.zmask)
             sets.written |= sets.z;
@@ -263,19 +305,209 @@ namespace ben10::gs_async
         return pages;
     }
 
-    // Pages a textured primitive may read: the texture's rows (all 1024
-    // when the vertical wrap mode is a region, which can reach beyond the
-    // texture height), plus one page for a start that is not page-aligned.
-    // GSCpuBackend reads only TEX0's base level (no mipmaps).
-    PageSet texturePages(const GSDrawState &state)
+    // The texture rows a primitive can read, worked out from its texture
+    // coordinates the way GSCpuBackend samples (findings/20 s.23): the
+    // range of V over the vertices (T/Q x height, or V/16 with FST), widened
+    // for the slightly negative edge weights DrawTriangle accepts (1e-4,
+    // which perspective can magnify by the ratio of the Q values) and by
+    // two texels for the bilinear neighbours and rounding, then put through
+    // the vertical wrap mode. Anything this does not cover (points, lines,
+    // Q values of mixed sign or near 0, a range that a REPEAT wrap or a
+    // negative FST value would fold, REGION_REPEAT) gives the whole height
+    // the wrap mode can reach, as before.
+    struct RowRange
+    {
+        uint32_t first, last;
+    };
+
+    // Sprites: GSCpuBackend::DrawSprite gives each drawn row y the texture
+    // coordinate V0 + (V1 - V0) * ((y - top + 0.5) / height), linear in y,
+    // so the first and last drawn rows bound it. This repeats that float
+    // arithmetic for those two rows, then turns the coordinates into texel
+    // rows the way SampleTexture does (FST: rounded to 1/16; bilinear: rows
+    // floor(v - 0.5) and the next; point: trunc(v)), with V nudged by
+    // 1/1000 of a texel each way so that a rounding difference cannot move
+    // a bound. The full-screen effects draw 32-pixel-wide strips that read
+    // the frame just drawn as a texture: with the rows a texture's full
+    // TEX0 height can reach (1024) every strip looked like a read of the
+    // strip before it. Returns false when it cannot tell.
+    bool spriteTextureRows(const GSPrimitiveBatch &batch, int &first, int &last)
+    {
+        const GSDrawState &state = batch.state;
+        const GSContext &ctx = state.context;
+        const GSVertex &a = batch.vertices[0];
+        const GSVertex &b = batch.vertices[1];
+        const int ofy = ctx.xyoffset.ofy >> 4;
+        int y0 = static_cast<int>(a.y) - ofy;
+        int y1 = static_cast<int>(b.y) - ofy;
+        if (y0 > y1)
+            std::swap(y0, y1);
+        const int spanY = std::max(1, y1 - y0);
+        const int top = y0;
+        const int bottom = top + spanY - 1;
+        if (bottom < ctx.scissor.y0 || top > ctx.scissor.y1)
+        {
+            first = 0; // nothing is drawn
+            last = -1;
+            return true;
+        }
+        const int drawTop = std::clamp<int>(top, ctx.scissor.y0, ctx.scissor.y1);
+        const int drawBottom = std::clamp<int>(bottom, ctx.scissor.y0, ctx.scissor.y1);
+        const float texH = static_cast<float>(std::max<int>(state.textureHeight, 1));
+        float v0f, v1f;
+        if (state.prim.fst)
+        {
+            v0f = static_cast<float>(a.v >> 4);
+            v1f = static_cast<float>(b.v >> 4);
+        }
+        else
+        {
+            auto safeQ = [](float q) { return std::fabs(q) > 1.0e-8f ? q : 1.0f; }; // fabsQ in GSCpuBackend
+            v0f = (a.t / safeQ(a.q)) * texH;
+            v1f = (b.t / safeQ(b.q)) * texH;
+        }
+        const float spriteH = static_cast<float>(spanY);
+        const float vTop = v0f + (v1f - v0f) * ((static_cast<float>(drawTop - top) + 0.5f) / spriteH);
+        const float vBottom = v0f + (v1f - v0f) * ((static_cast<float>(drawBottom - top) + 0.5f) / spriteH);
+        double lo = std::min(vTop, vBottom), hi = std::max(vTop, vBottom);
+        if (!std::isfinite(lo) || !std::isfinite(hi) || lo < -4096.0 || hi > 4096.0)
+            return false;
+        const double nudge = 1.0e-3;
+        lo -= nudge;
+        hi += nudge;
+        if (state.prim.fst)
+        {
+            // fixed = clamp(int(v * 16 + 0.5), 0, 0xFFFF); the sampler uses fixed / 16
+            auto fixed = [](double v) { return std::clamp(std::trunc(v * 16.0 + 0.5), 0.0, 65535.0) / 16.0; };
+            lo = fixed(lo);
+            hi = fixed(hi);
+        }
+        if (state.linearFilter)
+        {
+            first = static_cast<int>(std::floor(lo - 0.5));
+            last = static_cast<int>(std::floor(hi - 0.5)) + 1;
+        }
+        else
+        {
+            first = static_cast<int>(std::trunc(lo));
+            last = static_cast<int>(std::trunc(hi));
+        }
+        return true;
+    }
+
+    // Triangles: the texture coordinate of every pixel is a weighted mean
+    // of the vertices' (T/Q x height, or V/16 with FST), with weights down
+    // to -1e-4 at the edges (DrawTriangle's edge test), which perspective
+    // can magnify by the ratio of the Q values; plus two texels for the
+    // bilinear neighbour and rounding. Returns false when it cannot tell
+    // (Q values of mixed sign or near 0, an FST range reaching below 0,
+    // which the sampler turns into a large unsigned value).
+    bool triangleTextureRows(const GSPrimitiveBatch &batch, int &first, int &last)
+    {
+        const GSDrawState &state = batch.state;
+        const double height = static_cast<double>(std::max<int>(state.textureHeight, 1));
+        double lo = 0.0, hi = 0.0, slack = 2.0;
+        if (state.prim.fst)
+        {
+            for (uint32_t i = 0; i < 3u; ++i)
+            {
+                const double v = static_cast<double>(batch.vertices[i].v) / 16.0;
+                lo = i == 0u ? v : std::min(lo, v);
+                hi = i == 0u ? v : std::max(hi, v);
+            }
+            slack += 1.0e-3 * (hi - lo);
+            if (lo - slack < 0.0)
+                return false;
+        }
+        else
+        {
+            double qMin = 0.0, qMax = 0.0;
+            const bool positive = batch.vertices[0].q > 0.0f;
+            for (uint32_t i = 0; i < 3u; ++i)
+            {
+                const float q = batch.vertices[i].q;
+                const double aq = std::fabs(static_cast<double>(q));
+                if (!(aq >= 1.0e-6) || !std::isfinite(batch.vertices[i].t) || (q > 0.0f) != positive)
+                    return false;
+                const double v = static_cast<double>(batch.vertices[i].t) / static_cast<double>(q) * height;
+                lo = i == 0u ? v : std::min(lo, v);
+                hi = i == 0u ? v : std::max(hi, v);
+                qMin = i == 0u ? aq : std::min(qMin, aq);
+                qMax = i == 0u ? aq : std::max(qMax, aq);
+            }
+            slack += 1.0e-3 * (qMax / qMin) * (hi - lo) + 1.0e-5 * (std::fabs(lo) + std::fabs(hi));
+        }
+        if (!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(slack) || lo < -1.0e6 || hi > 1.0e6 ||
+            hi - lo > 4096.0)
+            return false;
+        // Bilinear reads rows floor(v - 0.5) and the one below; a point
+        // sample reads row trunc(v).
+        first = static_cast<int>(std::floor(lo - slack)) - 1;
+        last = static_cast<int>(std::ceil(hi + slack)) + 1;
+        return true;
+    }
+
+    RowRange textureRows(const GSPrimitiveBatch &batch)
+    {
+        const GSDrawState &state = batch.state;
+        const GSContext &ctx = state.context;
+        const uint32_t wrapV = static_cast<uint32_t>((ctx.clamp >> 2) & 3u);
+        const int height = std::max<int>(state.textureHeight, 1);
+        const int minV = static_cast<int>((ctx.clamp >> 24) & 0x3FFu);
+        const int maxV = static_cast<int>((ctx.clamp >> 34) & 0x3FFu);
+        const RowRange whole = wrapV >= 2u ? RowRange{0u, 1023u} : RowRange{0u, static_cast<uint32_t>(height - 1)};
+
+        const uint32_t type = static_cast<uint32_t>(state.prim.type);
+        uint32_t count = 0;
+        if (type >= 3u && type <= 5u)
+            count = 3; // triangles
+        else if (type == 6u)
+            count = 2; // sprites
+        if (count == 0u || wrapV == 3u || batch.vertexCount < count)
+            return whole;
+
+        int first = 0, last = -1;
+        if (count == 2u)
+        {
+            if (!spriteTextureRows(batch, first, last))
+                return whole;
+            if (last < first)
+                return {1u, 0u}; // no row
+        }
+        else if (!triangleTextureRows(batch, first, last))
+        {
+            return whole;
+        }
+        switch (wrapV)
+        {
+        case 0: // REPEAT: rows are V & (height - 1); only an unfolded range keeps its bounds
+            if (first < 0 || last > height - 1)
+                return whole;
+            break;
+        case 1: // CLAMP
+            first = std::clamp(first, 0, height - 1);
+            last = std::clamp(last, 0, height - 1);
+            break;
+        case 2: // REGION_CLAMP: min(max(v, MINV), MAXV), as GSCpuBackend wraps
+            first = std::min(std::max(first, minV), maxV);
+            last = std::min(std::max(last, minV), maxV);
+            break;
+        default:
+            return whole;
+        }
+        return {static_cast<uint32_t>(first), static_cast<uint32_t>(last)};
+    }
+
+    // Pages of those rows (every column the texture or its region can
+    // reach). GSCpuBackend reads only TEX0's base level (no mipmaps).
+    PageSet texturePages(const GSDrawState &state, RowRange rows)
     {
         PageSet pages;
         const GSContext &ctx = state.context;
-        const uint32_t wrapV = static_cast<uint32_t>((ctx.clamp >> 2) & 3u);
-        const uint32_t height = wrapV >= 2u ? 1024u : std::max<uint32_t>(state.textureHeight, 1u);
-        const uint32_t firstPage = ctx.tex0.tbp0 / kBlocksPerPage;
-        addRows(pages, firstPage, ctx.tex0.tbw, 0u, height - 1u);
-        pages.set((firstPage + (height / 32u + 1u) * std::max<uint32_t>(ctx.tex0.tbw, 1u)) % kPages);
+        const uint32_t wrapU = static_cast<uint32_t>(ctx.clamp & 3u);
+        const uint32_t xEnd = wrapU >= 2u ? 1024u : std::max<uint32_t>(state.textureWidth, 1u);
+        addRows(pages, ctx.tex0.tbp0 / kBlocksPerPage, ctx.tex0.tbw, ctx.tex0.psm, rows.first, rows.last, xEnd,
+                ctx.tex0.tbp0 % kBlocksPerPage != 0u);
         return pages;
     }
 
@@ -320,6 +552,7 @@ namespace ben10::gs_async
             }
             m_workAvailable.notify_one();
             m_worker.join();
+            reportIfDue(true); // the last stretch, however short (the dispatcher has stopped)
             {
                 std::lock_guard<std::mutex> lock(m_bandMutex);
                 m_bandStop = true;
@@ -564,7 +797,7 @@ namespace ben10::gs_async
                         ++m_stats.draws;
                         if (banded && state.prim.tme)
                         {
-                            const PageSet &texture = cachedTexturePages(state);
+                            const PageSet &texture = cachedTexturePages(submit->batch);
                             if ((texture & m_segmentWrites).any())
                                 runSegment(segment, Barrier::Texture); // the texture may be in an unfinished band
                             m_segmentReads |= texture;
@@ -711,13 +944,13 @@ namespace ben10::gs_async
         // passed since the last one, then starts the counts again. Called by
         // the dispatcher between batches, so the log has no line while
         // nothing is drawn.
-        void reportIfDue()
+        void reportIfDue(bool final = false)
         {
             const auto now = Clock::now();
             if (m_statsStart == Clock::time_point{})
                 m_statsStart = now;
             const auto elapsed = now - m_statsStart;
-            if (elapsed < std::chrono::seconds(10))
+            if (final ? m_stats.draws == 0u : elapsed < std::chrono::seconds(10))
                 return;
             uint64_t held = 0, drains = 0;
             Clock::duration heldTime{}, drainTime{};
@@ -762,7 +995,7 @@ namespace ben10::gs_async
         };
         struct TextureKey
         {
-            uint32_t tbp0, tbw, height, wrapV;
+            uint32_t tbp0, tbw, psm, pageRowFirst, pageRowLast, xEnd;
             bool operator==(const TextureKey &) const = default;
         };
         const WriteSets &cachedWrittenPages(const GSDrawState &state)
@@ -780,14 +1013,23 @@ namespace ben10::gs_async
             }
             return m_writePages;
         }
-        const PageSet &cachedTexturePages(const GSDrawState &state)
+        const PageSet &cachedTexturePages(const GSPrimitiveBatch &batch)
         {
+            // Keyed on the rows of pages the texture rows fall in: the
+            // triangles of one model usually stay within the same ones.
+            const GSDrawState &state = batch.state;
             const GSContext &ctx = state.context;
+            const RowRange rows = textureRows(batch);
+            const PageShape shape = pageShape(ctx.tex0.psm);
+            const uint32_t pageHeight = std::max<uint32_t>(shape.height, 1u);
+            const uint32_t wrapU = static_cast<uint32_t>(ctx.clamp & 3u);
             const TextureKey key{static_cast<uint32_t>(ctx.tex0.tbp0), static_cast<uint32_t>(ctx.tex0.tbw),
-                                 static_cast<uint32_t>(state.textureHeight), static_cast<uint32_t>((ctx.clamp >> 2) & 3u)};
+                                 static_cast<uint32_t>(ctx.tex0.psm), rows.first / pageHeight, rows.last / pageHeight,
+                                 wrapU >= 2u ? 1024u : std::max<uint32_t>(state.textureWidth, 1u)};
             if (!m_textureCacheValid || !(key == m_textureKey))
             {
-                m_texturePages = texturePages(state);
+                // Whole page rows, so that the set depends only on the key.
+                m_texturePages = texturePages(state, {key.pageRowFirst * pageHeight, key.pageRowLast * pageHeight + pageHeight - 1u});
                 m_textureKey = key;
                 m_textureCacheValid = true;
             }
