@@ -713,3 +713,66 @@ per second in one-minute averages in the first level.
   bands.
 - The `[gs-async]` line is now also printed when the backend is
   destroyed (the last stretch of a run, and short replays).
+- Windows after this step (maintainer, commit b753a19, same settings;
+  first level with enemies): **22.9-25.7 game frames per second** (per
+  second mostly 23-28; 16.3-22.8 in the run before, in a heavier fight),
+  texture barriers 2,300-2,700 per 10 s (9,300-14,000 before), 2.0-2.5
+  million draws per 10 s, producers held by the GS queue 2.5-4.1 s of
+  every 10 (3.2-5.7 before). The GS is still the limit, by less.
+
+## 24. Random GS recordings; four holes in the band rule closed; triangle edges four pixels at a time (patch 0041)
+
+- A recording from the game only covers the states the game used in
+  those seconds. `tools/gs_replay/gs_synth.cpp` (`ben10_gs_synth OUT
+  --seed N --records N`) writes a recording in the same format with
+  random GS memory and random records: triangles, strips, fans, sprites,
+  points and lines over every colour, Z and texture format, wrap mode,
+  filter, coordinate mode, alpha and destination alpha test, Z test,
+  blending, fog, FBMSK and FBA, plus CLUT loads (both CSM modes), image
+  uploads and TEXFLUSH. By default it puts a TEXFLUSH before every
+  textured draw and never lets a draw sample its own frame or Z pages
+  (undefined on the GS); `--any-texture 1` drops both, for comparing two
+  versions of GSCpuBackend alone.
+- GSCpuBackend: three recordings of 40,000 random records with
+  `--any-texture 1` give the same hashes (20 points each) before patch
+  0039, after 0039, after 0040 and with 0041 below.
+- The row bands did **not**: with 2 or 6 bands the random recordings
+  ended differently from GSCpuBackend, and differently from run to run.
+  Turning features off one at a time in the generator found:
+  1. A draw whose scissor reaches past its buffer's width: pixels past
+     the edge land in the pages of lower rows, so two rows of one draw,
+     in two bands, share bytes.
+  2. A draw whose frame and the Z buffer it touches share pages: a frame
+     row of one band and a Z row of another write (or read) the same
+     bytes.
+  3. Z read with TEST.ZTE clear: GSCpuBackend applies ZTST whatever ZTE
+     says, but `touchesZ` looked at ZTE, so such a Z read was not in the
+     layout rule of s.21.
+  4. CLUT loads in CSM2 read row COV from column COU x 16 of a buffer
+     CBW x 64 wide, not the 16x16 block at CBP that `clutPages` counted.
+  And one mistake of s.23: the memo of the written-page sets did not
+  have the formats and the scissor's right edge in its key, which the
+  page sets had come to depend on.
+- Fixes (`src/gs/gs_async_backend.cpp`): `touchesZ` ignores ZTE;
+  `clutPages` covers the CSM2 row; the memo key has every input; and a
+  draw that overlaps itself (1, 2, a buffer covering all of GS memory, or
+  a texture on pages the draw writes) is made whole, in order, by the
+  main backend once the bands have finished (`drawsOverItself`). The main
+  backend now also gets every CLUT load and TEXFLUSH, at dispatch time,
+  so its CLUT is the bands'. The check uses the scissor's page sets
+  first and, only when they overlap, redoes it with the pixels the
+  primitive can reach (DrawSprite's rectangle, DrawTriangle's box): the
+  first level's full-screen strips have a scissor 64 rows taller than
+  the frame, reaching the Z buffer's pages, but stay above those rows.
+  In the level recording: 0 such draws.
+- Checked: 2, 3, 4, 6 and 16 bands give the same GS memory as
+  GSCpuBackend on eight random recordings (30,000 records each, seeds 1,
+  2, 3, 11, 12, 13, 21, 22; 2, 6 and 16 bands on all, 3 and 4 on six)
+  and on the level recording.
+- Patch 0041 (runtime, same results bit for bit): DrawTriangle computes
+  the three edge weights and the edge test for four pixels of a row at
+  once with SSE2 (the scalar expressions' operations in the same order),
+  and interpolates the four colour channels and S, T, Q as vectors.
+  Level replay on GSCpuBackend, best of 3, two rounds: 11.0-11.6 s ->
+  9.95-10.4 s; same hashes on the level and random recordings;
+  ps2xTest 454/454.

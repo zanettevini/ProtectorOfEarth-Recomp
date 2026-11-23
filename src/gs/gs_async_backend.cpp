@@ -69,6 +69,11 @@
 //     through another layout (a Z buffer redrawn as a colour buffer; the
 //     PSMZ and PSMCT block orders differ) first lets every band finish
 //     (layoutConflict, findings/20 s.21).
+//   - A draw whose own rows share memory (past the buffer's width, frame
+//     and Z on the same pages, a texture on pages it writes) is made
+//     whole, in order, by the main backend after every band has finished
+//     (drawsOverItself, findings/20 s.24); the main backend gets every
+//     CLUT load and TEXFLUSH too, so it has the bands' CLUT.
 //   - Image transfers run on the main backend on the dispatcher thread,
 //     while no band is drawing. One that would write pages a draw or CLUT
 //     load of the unfinished segment reads or writes first lets every band
@@ -218,14 +223,16 @@ namespace ben10::gs_async
     }
 
     // Whether a primitive touches its Z buffer at all: it writes Z (ZMSK
-    // clear) or tests it (TEST.ZTE, bit 16, with ZTST, bits 17-18, GEQUAL
-    // or GREATER; ALWAYS and NEVER read nothing).
+    // clear) or tests it (ZTST, bits 17-18 of TEST, GEQUAL or GREATER;
+    // ALWAYS and NEVER read nothing). GSCpuBackend reads Z for those tests
+    // whatever TEST.ZTE says, so ZTE is not looked at (findings/20 s.24:
+    // looking at it let two bands race on a Z buffer read with ZTE clear).
     bool touchesZ(const GSDrawState &state)
     {
         const GSContext &ctx = state.context;
         if (!ctx.zbuf.zmask)
             return true;
-        return ((ctx.test >> 16) & 1u) != 0u && ((ctx.test >> 17) & 3u) >= 2u;
+        return ((ctx.test >> 17) & 3u) >= 2u;
     }
 
     // The memory layout of a frame or Z buffer: which pixel (x, y) each
@@ -238,15 +245,27 @@ namespace ben10::gs_async
         return (basePage & 0xFFFu) | ((fbw & 0xFFu) << 12) | ((psm & 0xFFu) << 20);
     }
 
-    // Pages a CLUT load reads: the page of CBP, and the next one when the
-    // 1 KB of a 256-entry 32-bit CLUT (4 blocks) can run past its end.
-    PageSet clutPages(const GSTex0Reg &tex0)
+    // Pages a CLUT load reads (GSCpuBackend::LoadClutUnlocked). CSM1: a
+    // 16x16 block of entries at CBP, the page of CBP and the next one when
+    // the 1 KB of a 256-entry 32-bit CLUT (4 blocks) can run past its end.
+    // CSM2: one row of entries, row TEXCLUT.COV from column COU x 16, in a
+    // buffer TEXCLUT.CBW x 64 pixels wide (findings/20 s.24: only the CSM1
+    // pages were counted before).
+    PageSet clutPages(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
     {
         PageSet pages;
         const uint32_t cbp = static_cast<uint32_t>(tex0.cbp);
-        pages.set((cbp / kBlocksPerPage) % kPages);
-        if (cbp % kBlocksPerPage > kBlocksPerPage - 4u)
-            pages.set((cbp / kBlocksPerPage + 1u) % kPages);
+        if (tex0.csm == 0u)
+        {
+            pages.set((cbp / kBlocksPerPage) % kPages);
+            if (cbp % kBlocksPerPage > kBlocksPerPage - 4u)
+                pages.set((cbp / kBlocksPerPage + 1u) % kPages);
+            return pages;
+        }
+        const uint32_t row = static_cast<uint32_t>(texclut.cov);
+        const uint32_t xEnd = (static_cast<uint32_t>(texclut.cou) << 4u) + 256u;
+        addRows(pages, cbp / kBlocksPerPage, std::max<uint32_t>(texclut.cbw, 1u), tex0.cpsm, row, row, xEnd,
+                cbp % kBlocksPerPage != 0u);
         return pages;
     }
 
@@ -416,8 +435,8 @@ namespace ben10::gs_async
                 hi = i == 0u ? v : std::max(hi, v);
             }
             slack += 1.0e-3 * (hi - lo);
-            if (lo - slack < 0.0)
-                return false;
+            if (lo - slack < 0.0 || hi + slack >= 4096.0)
+                return false; // below 0 or past 0xFFFF / 16 the unsigned 16-bit V wraps
         }
         else
         {
@@ -522,6 +541,7 @@ namespace ben10::gs_async
         Length,   // kSegmentLimit draws
         Idle,     // the queue ran empty
         Layout,   // frame or Z memory used through two layouts (layoutConflict)
+        Serial,   // a draw whose own rows share memory (drawsOverItself)
     };
 
     class AsyncBackend final : public GSRasterBackend
@@ -795,16 +815,26 @@ namespace ben10::gs_async
                     {
                         const GSDrawState &state = submit->batch.state;
                         ++m_stats.draws;
-                        if (banded && state.prim.tme)
-                        {
-                            const PageSet &texture = cachedTexturePages(submit->batch);
-                            if ((texture & m_segmentWrites).any())
-                                runSegment(segment, Barrier::Texture); // the texture may be in an unfinished band
-                            m_segmentReads |= texture;
-                        }
                         if (banded)
                         {
+                            const PageSet *texture = state.prim.tme ? &cachedTexturePages(submit->batch) : nullptr;
                             const WriteSets &sets = cachedWrittenPages(state);
+                            if (drawsOverItself(submit->batch, sets, texture))
+                            {
+                                // Rows of this one draw share memory: drawn
+                                // whole, in order, on the main backend.
+                                runSegment(segment, Barrier::Serial);
+                                m_main->Submit(submit->batch);
+                                ++m_stats.serialDraws;
+                                reportDone(1u);
+                                continue;
+                            }
+                            if (texture)
+                            {
+                                if ((*texture & m_segmentWrites).any())
+                                    runSegment(segment, Barrier::Texture); // the texture may be in an unfinished band
+                                m_segmentReads |= *texture;
+                            }
                             if (layoutConflict(state, sets))
                                 runSegment(segment, Barrier::Layout);
                             recordLayouts(state, sets);
@@ -816,15 +846,21 @@ namespace ben10::gs_async
                     {
                         if (banded)
                         {
-                            const PageSet pages = clutPages(clut->tex0);
+                            const PageSet pages = clutPages(clut->tex0, clut->texclut);
                             if ((pages & m_segmentWrites).any())
                                 runSegment(segment, Barrier::Clut);
                             m_segmentReads |= pages;
+                            // The main backend keeps the same CLUT for the
+                            // draws it makes itself (drawsOverItself). Its
+                            // pages are final here: no queued draw writes them.
+                            m_main->LoadClut(clut->tex0, clut->texclut);
                         }
                         segment.push_back(&command);
                     }
                     else if (std::holds_alternative<TextureFlushCommand>(command))
                     {
+                        if (banded)
+                            m_main->TextureFlush();
                         segment.push_back(&command);
                     }
                     else
@@ -864,6 +900,128 @@ namespace ben10::gs_async
                 batch.clear();
                 reportIfDue();
             }
+        }
+
+        // The pixels a draw can reach, inside the scissor: for a sprite the
+        // rectangle DrawSprite draws (truncated corners less the XYOFFSET,
+        // the far edge excluded), for a triangle DrawTriangle's box (floor
+        // and ceil of the vertices less the XYOFFSET), for anything else the
+        // vertices' box widened by a pixel each way.
+        struct PixelBox
+        {
+            int x0, y0, x1, y1;
+        };
+        static PixelBox drawBox(const GSPrimitiveBatch &batch)
+        {
+            const GSContext &ctx = batch.state.context;
+            PixelBox box{ctx.scissor.x0, ctx.scissor.y0, ctx.scissor.x1, ctx.scissor.y1};
+            const uint32_t count = std::min<uint32_t>(batch.vertexCount, 3u);
+            if (count == 0u)
+                return box;
+            const float ofx = static_cast<float>(ctx.xyoffset.ofx >> 4);
+            const float ofy = static_cast<float>(ctx.xyoffset.ofy >> 4);
+            float minX = batch.vertices[0].x, maxX = minX, minY = batch.vertices[0].y, maxY = minY;
+            for (uint32_t i = 1; i < count; ++i)
+            {
+                minX = std::min(minX, batch.vertices[i].x);
+                maxX = std::max(maxX, batch.vertices[i].x);
+                minY = std::min(minY, batch.vertices[i].y);
+                maxY = std::max(maxY, batch.vertices[i].y);
+            }
+            if (!std::isfinite(minX) || !std::isfinite(maxX) || !std::isfinite(minY) || !std::isfinite(maxY) ||
+                std::fabs(minX) > 1.0e6f || std::fabs(maxX) > 1.0e6f || std::fabs(minY) > 1.0e6f || std::fabs(maxY) > 1.0e6f)
+                return box;
+            const uint32_t type = static_cast<uint32_t>(batch.state.prim.type);
+            int x0, y0, x1, y1;
+            if (type == 6u && count >= 2u)
+            {
+                const int ox = ctx.xyoffset.ofx >> 4, oy = ctx.xyoffset.ofy >> 4;
+                int ax = static_cast<int>(batch.vertices[0].x) - ox, bx = static_cast<int>(batch.vertices[1].x) - ox;
+                int ay = static_cast<int>(batch.vertices[0].y) - oy, by = static_cast<int>(batch.vertices[1].y) - oy;
+                if (ax > bx)
+                    std::swap(ax, bx);
+                if (ay > by)
+                    std::swap(ay, by);
+                x0 = ax;
+                y0 = ay;
+                x1 = ax + std::max(1, bx - ax) - 1;
+                y1 = ay + std::max(1, by - ay) - 1;
+            }
+            else if (type >= 3u && type <= 5u && count >= 3u)
+            {
+                x0 = static_cast<int>(std::floor(minX - ofx));
+                x1 = static_cast<int>(std::ceil(maxX - ofx));
+                y0 = static_cast<int>(std::floor(minY - ofy));
+                y1 = static_cast<int>(std::ceil(maxY - ofy));
+            }
+            else
+            {
+                x0 = static_cast<int>(std::floor(minX - ofx)) - 1;
+                x1 = static_cast<int>(std::ceil(maxX - ofx)) + 1;
+                y0 = static_cast<int>(std::floor(minY - ofy)) - 1;
+                y1 = static_cast<int>(std::ceil(maxY - ofy)) + 1;
+            }
+            box.x0 = std::max(box.x0, x0);
+            box.x1 = std::min(box.x1, x1);
+            box.y0 = std::max(box.y0, y0);
+            box.y1 = std::min(box.y1, y1);
+            return box;
+        }
+
+        // The band rule also needs each byte of a draw's own frame and Z
+        // buffer to belong to one pixel row. Not so (findings/20 s.24, found
+        // with random draws, tools/gs_replay/gs_synth.cpp) when the draw
+        // reaches past the buffer's width (pixels past the edge land in the
+        // pages of lower rows), when its frame and the Z buffer it touches
+        // share pages, when a buffer covers all of GS memory, or when it
+        // samples pages it writes as a texture. Rows drawn by different
+        // bands could then write (or read) the same bytes; such a draw is
+        // made whole, in order, by the main backend after the bands finish.
+        // The scissor's page sets (the cached ones) are tried first; when
+        // they say no, that is the answer; when they say yes, the check is
+        // redone with the pixels the vertices can reach (the first level
+        // draws into a frame whose scissor runs 64 rows past its own Z
+        // buffer, but its primitives stay above them).
+        bool drawsOverItself(const GSPrimitiveBatch &batch, const WriteSets &sets, const PageSet *texture)
+        {
+            const GSDrawState &state = batch.state;
+            if (!overlapsItself(state, sets, texture, static_cast<uint32_t>(state.context.scissor.x1)))
+                return false;
+            const GSContext &ctx = state.context;
+            const PixelBox box = drawBox(batch);
+            if (box.x1 < box.x0 || box.y1 < box.y0)
+                return false; // nothing inside the scissor
+            WriteSets reached;
+            const uint32_t xEnd = static_cast<uint32_t>(box.x1) + 1u;
+            addRows(reached.frame, ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm, box.y0, box.y1, xEnd);
+            addRows(reached.z, ctx.zbuf.zbp, ctx.frame.fbw, ctx.zbuf.psm, box.y0, box.y1, xEnd);
+            reached.written = reached.frame;
+            if (!ctx.zbuf.zmask)
+                reached.written |= reached.z;
+            return overlapsItself(state, reached, texture, static_cast<uint32_t>(box.x1));
+        }
+        static bool overlapsItself(const GSDrawState &state, const WriteSets &sets, const PageSet *texture, uint32_t lastX)
+        {
+            const GSContext &ctx = state.context;
+            const bool z = touchesZ(state);
+            if (sets.frame.all() || (z && sets.z.all()))
+                return true;
+            auto spills = [&](uint32_t psm)
+            {
+                const PageShape shape = pageShape(psm);
+                if (shape.width == 0u)
+                    return true;
+                const uint32_t widthPixels = std::max<uint32_t>(ctx.frame.fbw, 1u) * 64u;
+                const uint32_t perRow = (widthPixels + shape.width - 1u) / shape.width;
+                return lastX >= perRow * shape.width;
+            };
+            if (spills(ctx.frame.psm) || (z && spills(ctx.zbuf.psm)))
+                return true;
+            if (z && (sets.frame & sets.z).any())
+                return true;
+            if (texture && (*texture & sets.written).any())
+                return true; // reading pages the draw only reads (a Z buffer under ZMSK) is fine
+            return false;
         }
 
         // The band rule (each pixel row drawn by one band) keeps every byte
@@ -968,13 +1126,14 @@ namespace ben10::gs_async
             const auto &b = m_stats.barriers;
             std::fprintf(stderr,
                          "[gs-async] last %.1f s: %llu draws in %llu segments (ended by texture %llu, CLUT %llu, "
-                         "transfer %llu, length %llu, idle %llu, layout %llu; %llu transfer commands ran ahead of the segment); band 0 drew %.2f s and waited %.2f s for the "
+                         "transfer %llu, length %llu, idle %llu, layout %llu, serial draw %llu; %llu serial draws; %llu transfer commands ran ahead of the segment); band 0 drew %.2f s and waited %.2f s for the "
                          "other bands; producers held by the queue limit %llu times (%.2f s), drains %llu (%.2f s)\n",
                          seconds(elapsed), static_cast<unsigned long long>(m_stats.draws),
                          static_cast<unsigned long long>(m_stats.segments),
                          static_cast<unsigned long long>(b[0]), static_cast<unsigned long long>(b[1]),
                          static_cast<unsigned long long>(b[2]), static_cast<unsigned long long>(b[3]),
                          static_cast<unsigned long long>(b[4]), static_cast<unsigned long long>(b[5]),
+                         static_cast<unsigned long long>(b[6]), static_cast<unsigned long long>(m_stats.serialDraws),
                          static_cast<unsigned long long>(m_stats.transfersAhead),
                          seconds(m_stats.band0), seconds(m_stats.otherBands),
                          static_cast<unsigned long long>(held), seconds(heldTime),
@@ -990,7 +1149,9 @@ namespace ben10::gs_async
         // thread uses these.
         struct WriteKey
         {
-            uint32_t fbp, fbw, zbp, zmask, y0, y1;
+            // Everything writtenPages reads: the page sizes come from the
+            // formats and the columns from the scissor's right edge.
+            uint32_t fbp, fbw, fpsm, zbp, zpsm, zmask, y0, y1, x1;
             bool operator==(const WriteKey &) const = default;
         };
         struct TextureKey
@@ -1002,8 +1163,10 @@ namespace ben10::gs_async
         {
             const GSContext &ctx = state.context;
             const WriteKey key{static_cast<uint32_t>(ctx.frame.fbp), static_cast<uint32_t>(ctx.frame.fbw),
-                               static_cast<uint32_t>(ctx.zbuf.zbp), static_cast<uint32_t>(ctx.zbuf.zmask ? 1u : 0u),
-                               static_cast<uint32_t>(ctx.scissor.y0), static_cast<uint32_t>(ctx.scissor.y1)};
+                               static_cast<uint32_t>(ctx.frame.psm), static_cast<uint32_t>(ctx.zbuf.zbp),
+                               static_cast<uint32_t>(ctx.zbuf.psm), static_cast<uint32_t>(ctx.zbuf.zmask ? 1u : 0u),
+                               static_cast<uint32_t>(ctx.scissor.y0), static_cast<uint32_t>(ctx.scissor.y1),
+                               static_cast<uint32_t>(ctx.scissor.x1)};
             if (!m_writeCacheValid || !(key == m_writeKey))
             {
                 m_writePages = writtenPages(state);
@@ -1049,7 +1212,8 @@ namespace ben10::gs_async
         {
             uint64_t draws = 0;
             uint64_t segments = 0;
-            uint64_t barriers[6] = {}; // indexed by Barrier
+            uint64_t barriers[7] = {}; // indexed by Barrier
+            uint64_t serialDraws = 0;  // draws made whole on the main backend
             uint64_t transfersAhead = 0; // transfer commands run without a barrier
             Clock::duration band0{};
             Clock::duration otherBands{};

@@ -217,6 +217,10 @@ if(TARGET ps2_runtime)
         src/gs/gs_record.cpp)
     target_include_directories(ben10_gs_replay PRIVATE "${CMAKE_SOURCE_DIR}/src/gs")
     target_link_libraries(ben10_gs_replay PRIVATE ps2_runtime)
+    # Synthetic recordings with random draws (findings/20 s.24).
+    add_executable(ben10_gs_synth EXCLUDE_FROM_ALL tools/gs_replay/gs_synth.cpp)
+    target_include_directories(ben10_gs_synth PRIVATE "${CMAKE_SOURCE_DIR}/src/gs")
+    target_link_libraries(ben10_gs_synth PRIVATE ps2_runtime)
 endif()
 
 # PS2Recomp also defines the generic ps2EntryRunner executable (no game).

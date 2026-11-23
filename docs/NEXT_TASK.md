@@ -43,11 +43,15 @@
    once (same bits; -16% on the GS replay); measured on Windows in a
    heavier fight: 15.7-22.8 fps, the GS still the limit. Patch 0040 and
    texture rows from texture coordinates (findings/20 s.23): about -10%
-   per pixel, texture barriers -79%, segments -47% on the replay. Next:
-   the maintainer measures on Windows; then `DrawTriangle` and
-   `WritePixel` (the per-pixel interpolation and the frame/Z accesses),
-   maybe a dispatcher that draws no band itself; check every GS change
-   with `ben10_gs_replay --sync` hashes and the band counts against it;
+   per pixel, texture barriers -79%, segments -47% on the replay;
+   Windows: 22.9-25.7 fps with enemies. Random recordings
+   (`ben10_gs_synth`, s.24) found four holes in the band rule, closed
+   (draws that overlap themselves are made whole on the main backend);
+   patch 0041: triangle edges four pixels at a time (-10%). Next: the
+   maintainer measures on Windows; then `WritePixel` (the frame/Z
+   accesses), maybe a dispatcher that draws no band itself; check every
+   GS change with `ben10_gs_replay --sync` hashes on the level and on
+   random recordings, and the band counts against it;
    and on the VU side the upper words (about 50 per VU cycle),
    PATH1 in batches (s.11 item 3) and more static scheduling in blocks;
    the maintainer decides later whether the async option becomes the
@@ -71,7 +75,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0040 upstream to PS2Recomp.
+5. Send patches 0002-0041 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

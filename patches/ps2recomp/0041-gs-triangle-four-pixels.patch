@@ -1,0 +1,292 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: triangle edge tests four pixels at a time, vector interpolation
+
+What it is for:
+  In Ben 10: Protector of Earth's first level the GS is the limit. On a
+  replay of the level's GS commands (perf), DrawTriangle's own code was
+  about 17% of the time: per pixel of the bounding box, the three edge
+  weights and the test, then per covered pixel the colour, S/T/Q and fog
+  interpolated channel by channel.
+
+The change:
+  - With SSE2 (every x86-64 compiler) the weights w0, w1, w2 and the edge
+    test are computed for four pixels of a row at once, with the scalar
+    expressions' single-precision operations in the same order; a pixel
+    is skipped exactly when one weight is below -kEdgeEpsilon (NaN
+    weights are not, as before). The covered pixels then go through the
+    same per-pixel code (now a lambda, shadePixel).
+  - In shadePixel the four colour channels and S, T, Q are interpolated
+    as vectors, a0 * w0 + a1 * w1 + a2 * w2 in that order; the colour is
+    truncated and clamped to 0-255 by saturating packs, the same as
+    clampU8(int(...)) (the truncating conversion gives INT_MIN for NaN and
+    out-of-range values, like the scalar cast on x86).
+  Other targets keep the scalar loop. Same results bit for bit.
+
+How it was checked:
+  The project's GS replay (tools/gs_replay, findings/20 s.24): the 15 s
+  recording of the first level gives the same GS memory hashes at all 35
+  points and at the end, and three synthetic recordings of 40,000 random
+  records each (every primitive type, colour, Z and texture format, wrap
+  mode, filter, blend and test state) give the same hashes at 20 points
+  each with this patch, without it, without 0040 and without 0039. Level
+  replay, best of 3, two rounds: 11.0-11.6 s -> 9.95-10.4 s. ps2xTest
+  454/454.
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -325,6 +325,31 @@
+     // byte, with the same single-precision operations in the same order
+     // (no fused multiply-add), so the same result bit for bit. The
+     // per-channel calls were about a quarter of a GS band's time.
++#if PS2_GS_BILINEAR_SIMD
++    // a0 * w0 + a1 * w1 + a2 * w2 per lane, in that order: DrawTriangle's
++    // interpolation of four values at once.
++    inline __m128 interpolate4(__m128 a0, __m128 a1, __m128 a2, float w0, float w1, float w2)
++    {
++        return _mm_add_ps(_mm_add_ps(_mm_mul_ps(a0, _mm_set1_ps(w0)), _mm_mul_ps(a1, _mm_set1_ps(w1))),
++                          _mm_mul_ps(a2, _mm_set1_ps(w2)));
++    }
++
++    // clampU8(int(...)) of each lane, packed as RGBA bytes: the truncating
++    // conversion gives INT_MIN for NaN and out-of-range values, like the
++    // scalar cast on x86, and the saturating packs clamp to 0-255.
++    inline uint32_t interpolateBytes4(__m128 a0, __m128 a1, __m128 a2, float w0, float w1, float w2)
++    {
++        const __m128i v = _mm_cvttps_epi32(interpolate4(a0, a1, a2, w0, w1, w2));
++        const __m128i zero = _mm_setzero_si128();
++        return static_cast<uint32_t>(_mm_cvtsi128_si32(_mm_packus_epi16(_mm_packs_epi32(v, zero), zero)));
++    }
++
++    inline void interpolateFloats4(__m128 a0, __m128 a1, __m128 a2, float w0, float w1, float w2, float (&out)[4])
++    {
++        _mm_storeu_ps(out, interpolate4(a0, a1, a2, w0, w1, w2));
++    }
++#endif
++
+     inline uint32_t bilinearFilter(uint32_t c00, uint32_t c10, uint32_t c01, uint32_t c11, float fx, float fy)
+     {
+ #if PS2_GS_BILINEAR_SIMD
+@@ -1511,6 +1536,148 @@
+     const float invAbsDenom = 1.0f / std::fabs(denom);
+     constexpr float kEdgeEpsilon = 1.0e-4f;
+ 
++#if PS2_GS_BILINEAR_SIMD
++    // Per-vertex colour (the bytes as four floats) and S, T, Q.
++    const __m128 colour0 = _mm_setr_ps(v0.r, v0.g, v0.b, v0.a);
++    const __m128 colour1 = _mm_setr_ps(v1.r, v1.g, v1.b, v1.a);
++    const __m128 colour2 = _mm_setr_ps(v2.r, v2.g, v2.b, v2.a);
++    const __m128 stqf0 = _mm_setr_ps(v0.s, v0.t, v0.q, 0.0f);
++    const __m128 stqf1 = _mm_setr_ps(v1.s, v1.t, v1.q, 0.0f);
++    const __m128 stqf2 = _mm_setr_ps(v2.s, v2.t, v2.q, 0.0f);
++#endif
++
++    // One covered pixel: interpolation, texturing, WritePixel. The scalar
++    // code is the reference; with SSE2 the four colour channels and S, T,
++    // Q and fog are interpolated as two vectors with the same
++    // single-precision operations in the same order (same results).
++    auto shadePixel = [&](int x, int y, float w0, float w1, float w2)
++    {
++        double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
++
++        uint8_t r, g, b, a;
++        if (state.prim.iip)
++        {
++#if PS2_GS_BILINEAR_SIMD
++            const uint32_t rgba = interpolateBytes4(colour0, colour1, colour2, w0, w1, w2);
++            r = static_cast<uint8_t>(rgba);
++            g = static_cast<uint8_t>(rgba >> 8);
++            b = static_cast<uint8_t>(rgba >> 16);
++            a = static_cast<uint8_t>(rgba >> 24);
++#else
++            r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
++            g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
++            b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
++            a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
++#endif
++        }
++        else
++        {
++            r = v2.r;
++            g = v2.g;
++            b = v2.b;
++            a = v2.a;
++        }
++
++        if (state.prim.tme)
++        {
++            float is, it, iq;
++            uint16_t iu, iv;
++            if (state.prim.fst)
++            {
++                iu = static_cast<uint16_t>(v0.u * w0 + v1.u * w1 + v2.u * w2);
++                iv = static_cast<uint16_t>(v0.v * w0 + v1.v * w1 + v2.v * w2);
++                is = 0.0f;
++                it = 0.0f;
++                iq = 1.0f;
++            }
++            else
++            {
++                // The GS DDA interpolates the homogeneous S, T and Q
++                // values. Texel coordinates are calculated from S/Q and
++                // T/Q only after interpolation.
++#if PS2_GS_BILINEAR_SIMD
++                float stq[4];
++                interpolateFloats4(stqf0, stqf1, stqf2, w0, w1, w2, stq);
++                is = stq[0];
++                it = stq[1];
++                iq = stq[2];
++#else
++                is = v0.s * w0 + v1.s * w1 + v2.s * w2;
++                it = v0.t * w0 + v1.t * w1 + v2.t * w2;
++                iq = v0.q * w0 + v1.q * w1 + v2.q * w2;
++#endif
++                iu = 0;
++                iv = 0;
++            }
++
++            uint32_t texel = SampleTexture(state, is, it, iq, iu, iv);
++
++            uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
++            uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
++            uint8_t tb = static_cast<uint8_t>((texel >> 16) & 0xFF);
++            uint8_t ta = static_cast<uint8_t>((texel >> 24) & 0xFF);
++
++            const auto &tex = ctx.tex0;
++            const uint8_t shadeR = r;
++            const uint8_t shadeG = g;
++            const uint8_t shadeB = b;
++            const uint8_t shadeA = a;
++            const TextureCombineResult color = combineTexture(tex, shadeR, shadeG, shadeB, shadeA, tr, tg, tb, ta);
++
++            r = color.r;
++            g = color.g;
++            b = color.b;
++            a = color.a;
++        }
++
++        const uint8_t fog = clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2));
++        WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
++    };
++
++#if PS2_GS_BILINEAR_SIMD
++    // The edge test four pixels at a time: w0, w1 and w2 per lane with the
++    // scalar expressions' operations in the same order, and a pixel is
++    // skipped exactly when one of them is below -kEdgeEpsilon (a NaN weight
++    // is not, as in the scalar test).
++    const __m128 e0a = _mm_set1_ps(fy1 - fy2), e0b = _mm_set1_ps(fx2 - fx1);
++    const __m128 e1a = _mm_set1_ps(fy2 - fy0), e1b = _mm_set1_ps(fx0 - fx2);
++    const __m128 vfx2 = _mm_set1_ps(fx2);
++    const __m128 vwinding = _mm_set1_ps(winding);
++    const __m128 vinv = _mm_set1_ps(invAbsDenom);
++    const __m128 vone = _mm_set1_ps(1.0f);
++    const __m128 vneg = _mm_set1_ps(-kEdgeEpsilon);
++    const __m128 vhalf = _mm_set1_ps(0.5f);
++    for (int y = minY; y <= maxY; ++y)
++    {
++        if (!rowInBand(y))
++            continue;
++        float py = static_cast<float>(y) + 0.5f;
++        const __m128 dy = _mm_set1_ps(py - fy2);
++        for (int x = minX; x <= maxX; x += 4)
++        {
++            const __m128 px = _mm_add_ps(_mm_cvtepi32_ps(_mm_setr_epi32(x, x + 1, x + 2, x + 3)), vhalf);
++            const __m128 dx = _mm_sub_ps(px, vfx2);
++            const __m128 w0v = _mm_mul_ps(_mm_mul_ps(_mm_add_ps(_mm_mul_ps(e0a, dx), _mm_mul_ps(e0b, dy)), vwinding), vinv);
++            const __m128 w1v = _mm_mul_ps(_mm_mul_ps(_mm_add_ps(_mm_mul_ps(e1a, dx), _mm_mul_ps(e1b, dy)), vwinding), vinv);
++            const __m128 w2v = _mm_sub_ps(_mm_sub_ps(vone, w0v), w1v);
++            const __m128 outside = _mm_or_ps(_mm_or_ps(_mm_cmplt_ps(w0v, vneg), _mm_cmplt_ps(w1v, vneg)), _mm_cmplt_ps(w2v, vneg));
++            int covered = (~_mm_movemask_ps(outside)) & 0xF;
++            if (maxX - x < 3)
++                covered &= (1 << (maxX - x + 1)) - 1;
++            if (covered == 0)
++                continue;
++            alignas(16) float w0s[4], w1s[4], w2s[4];
++            _mm_store_ps(w0s, w0v);
++            _mm_store_ps(w1s, w1v);
++            _mm_store_ps(w2s, w2v);
++            for (int lane = 0; lane < 4; ++lane)
++            {
++                if (covered & (1 << lane))
++                    shadePixel(x + lane, y, w0s[lane], w1s[lane], w2s[lane]);
++            }
++        }
++    }
++#else
+     for (int y = minY; y <= maxY; ++y)
+     {
+         if (!rowInBand(y))
+@@ -1527,72 +1694,10 @@
+             if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
+                 continue;
+ 
+-            double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
+-
+-            uint8_t r, g, b, a;
+-            if (state.prim.iip)
+-            {
+-                r = clampU8(static_cast<int>(v0.r * w0 + v1.r * w1 + v2.r * w2));
+-                g = clampU8(static_cast<int>(v0.g * w0 + v1.g * w1 + v2.g * w2));
+-                b = clampU8(static_cast<int>(v0.b * w0 + v1.b * w1 + v2.b * w2));
+-                a = clampU8(static_cast<int>(v0.a * w0 + v1.a * w1 + v2.a * w2));
+-            }
+-            else
+-            {
+-                r = v2.r;
+-                g = v2.g;
+-                b = v2.b;
+-                a = v2.a;
+-            }
+-
+-            if (state.prim.tme)
+-            {
+-                float is, it, iq;
+-                uint16_t iu, iv;
+-                if (state.prim.fst)
+-                {
+-                    iu = static_cast<uint16_t>(v0.u * w0 + v1.u * w1 + v2.u * w2);
+-                    iv = static_cast<uint16_t>(v0.v * w0 + v1.v * w1 + v2.v * w2);
+-                    is = 0.0f;
+-                    it = 0.0f;
+-                    iq = 1.0f;
+-                }
+-                else
+-                {
+-                    // The GS DDA interpolates the homogeneous S, T and Q
+-                    // values. Texel coordinates are calculated from S/Q and
+-                    // T/Q only after interpolation.
+-                    is = v0.s * w0 + v1.s * w1 + v2.s * w2;
+-                    it = v0.t * w0 + v1.t * w1 + v2.t * w2;
+-                    iq = v0.q * w0 + v1.q * w1 + v2.q * w2;
+-                    iu = 0;
+-                    iv = 0;
+-                }
+-
+-                uint32_t texel = SampleTexture(state, is, it, iq, iu, iv);
+-
+-                uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
+-                uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
+-                uint8_t tb = static_cast<uint8_t>((texel >> 16) & 0xFF);
+-                uint8_t ta = static_cast<uint8_t>((texel >> 24) & 0xFF);
+-
+-                const auto &tex = ctx.tex0;
+-                const uint8_t shadeR = r;
+-                const uint8_t shadeG = g;
+-                const uint8_t shadeB = b;
+-                const uint8_t shadeA = a;
+-                const TextureCombineResult color = combineTexture(tex, shadeR, shadeG, shadeB, shadeA, tr, tg, tb, ta);
+-
+-                r = color.r;
+-                g = color.g;
+-                b = color.b;
+-                a = color.a;
+-            }
+-
+-            const uint8_t fog = clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2));
+-            WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
++            shadePixel(x, y, w0, w1, w2);
+         }
+     }
++#endif
+ }
+ 
+ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)

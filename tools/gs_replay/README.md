@@ -4,6 +4,7 @@ Offline replay of a recorded GS command stream (findings/20 s.21).
 
 | File | What it does |
 |---|---|
+| `gs_synth.cpp` | the `ben10_gs_synth` target: writes a recording with random GS memory and random draws, CLUT loads, uploads and TEXFLUSH over every state the backends handle (`--seed N`, `--records N`; `--any-texture 1` also lets draws sample their own buffers, for GSCpuBackend-only comparisons); no game data (findings/20 s.24) |
 | `gs_replay.cpp` | the `ben10_gs_replay` target: loads a recording, makes every recorded backend call again on PS2Recomp's `GSCpuBackend` (`--sync`) or the port's async backend with N row bands (`--bands N`), and prints a hash of GS memory every N records (`--every N`, default 20000) and at the end; the last line is the time it took |
 
 The recording comes from the game: `src/gs/gs_record.h` describes the
@@ -26,6 +27,15 @@ BEN10_GS_THREADS=6 BEN10_GS_RECORD=$PWD/user/gs_rec/level.gsr \
 out/build/linux-debug/ben10_gs_replay user/gs_rec/level.gsr --sync > sync.txt
 out/build/linux-debug/ben10_gs_replay user/gs_rec/level.gsr --bands 6 > bands.txt
 diff sync.txt bands.txt   # only the last line (timing) may differ
+```
+
+Random recordings check states the game's recording does not reach:
+
+```bash
+cmake --build --preset linux-debug --target ben10_gs_synth
+out/build/linux-debug/ben10_gs_synth /tmp/r1.gsr --seed 1 --records 30000
+out/build/linux-debug/ben10_gs_replay /tmp/r1.gsr --sync --every 0     # reference
+out/build/linux-debug/ben10_gs_replay /tmp/r1.gsr --bands 6 --every 0  # same "end" line
 ```
 
 Other options:
