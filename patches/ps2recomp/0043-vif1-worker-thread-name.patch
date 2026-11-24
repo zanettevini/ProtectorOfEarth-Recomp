@@ -1,0 +1,43 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VIF1 worker thread: give it a name
+
+What it is for:
+  The optional VIF1/VU1 worker thread (patch 0034) had no name. On
+  Windows a sampling profiler that picks its thread by name
+  (SetThreadDescription) could not find it, and on Linux it inherited the
+  name "GameThread" from the thread that starts it, so per-thread tools
+  showed two "GameThread"s. In Ben 10: Protector of Earth's first level
+  this worker is the busiest thread when enemies are on screen.
+
+The change:
+  The worker names itself "VIF1Worker" with ThreadNaming (as the game
+  thread already names itself) before entering its loop. Nothing else
+  changes.
+
+How it was checked:
+  Linux build; the name shows in top -H. ps2xTest 454/454.
+
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -2,6 +2,7 @@
+ #include "runtime/ps2_address.h"
+ #include "runtime/gs/gs_frontend.h"
+ #include "ps2_log.h"
++#include "ThreadNaming.h"
+ #include <atomic>
+ #include <cstring>
+ #include <limits>
+@@ -2024,8 +2025,12 @@
+         if (!m_vif1Thread.joinable())
+         {
+             m_vif1Quit = false;
++            // Named so that profilers and thread lists can tell it apart
++            // from the game thread that starts it (on Linux it would
++            // otherwise inherit the name "GameThread").
+             m_vif1Thread = std::thread([this]()
+-                                       { vif1WorkerLoop(); });
++                                       { ThreadNaming::SetCurrentThreadName("VIF1Worker");
++                                         vif1WorkerLoop(); });
+         }
+     }
+     m_vif1Cv.notify_all();

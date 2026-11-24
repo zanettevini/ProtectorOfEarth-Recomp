@@ -50,6 +50,7 @@ fix and how it was found.
 | `0040-gs-texel-reads-and-constant-fills.patch` | GS CPU backend: the four texels of a bilinear sample read with one format dispatch, the palette key checked once per sample, untextured sprites whose writes do not depend on memory written with values worked out once; same results bit for bit | findings/20 s.23 |
 | `0041-gs-triangle-four-pixels.patch` | GS CPU backend: triangle edge tests four pixels at a time with SSE2, colour and S/T/Q interpolated as vectors; same results bit for bit | findings/20 s.24 |
 | `0042-gs-per-primitive-setup-inline-pixel-steps.patch` | GS CPU backend: buffer and texture state decoded once per primitive, the palette key checked once per primitive, the per-pixel steps forced inline, Z tested before the frame is read; same results bit for bit | findings/20 s.25 |
+| `0043-vif1-worker-thread-name.patch` | The optional VIF1/VU1 worker thread names itself `VIF1Worker`, for profilers and thread lists | findings/20 s.26 |
 
 Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
 PS2Recomp.

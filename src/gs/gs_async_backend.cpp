@@ -102,7 +102,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -550,6 +549,7 @@ namespace ben10::gs_async
         explicit AsyncBackend(uint32_t bandCount)
             : m_main(std::make_unique<GSCpuBackend>())
         {
+            m_queue.reserve(kMaxPending + kSegmentLimit);
             bandCount = std::clamp<uint32_t>(bandCount, 1u, 16u);
             for (uint32_t i = 0; i < bandCount; ++i)
             {
@@ -794,7 +794,14 @@ namespace ben10::gs_async
         // main backend once every band has caught up).
         void run()
         {
-            std::deque<Command> batch;
+            // Two vectors swapped between the producers and this thread,
+            // each with room for the whole queue limit: after the first
+            // frames no command costs an allocation. (A std::deque holds one
+            // command per block at this size, so it allocated and freed one
+            // block per command: about 4% of the VIF1 worker's time on
+            // Linux, findings/20 s.26.)
+            std::vector<Command> batch;
+            batch.reserve(kMaxPending + kSegmentLimit);
             std::vector<Command *> segment;
             const bool banded = m_bands.size() > 1u;
             for (;;)
@@ -1234,7 +1241,7 @@ namespace ben10::gs_async
         mutable std::mutex m_mutex;
         std::condition_variable m_workAvailable;
         mutable std::condition_variable m_drained;
-        std::deque<Command> m_queue;
+        std::vector<Command> m_queue; // reserved in the constructor (see run())
         uint64_t m_submitted = 0;
         uint64_t m_completed = 0;
         bool m_workerIdle = false;

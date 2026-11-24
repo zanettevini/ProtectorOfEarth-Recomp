@@ -49,7 +49,12 @@
    (draws that overlap themselves are made whole on the main backend);
    patch 0041: triangle edges four pixels at a time (-10%); patch 0042
    (s.25): per-primitive setup, per-pixel steps inlined, -22.5% of the
-   drawing instructions. Next: the maintainer measures on Windows; then
+   drawing instructions. Windows after 0042 (s.26): 28-32 fps when quiet,
+   19-26 with enemies: there the VIF1 worker (VU1) passes the 33 ms
+   budget again. Done: the GS queue no longer allocates per draw; the fps
+   log shows frame pacing; the worker is named (patch 0043). Next: the
+   maintainer runs `run-worker.bat` (profiler on `VIF1Worker`) in a
+   fight; then the VU work it shows; on the GS side
    the VRAM accesses (one address per pixel for the frame and one for Z,
    in place of four), the remaining transfer barriers (uploads into
    pages queued draws still read: copy those pages for the queued draws
@@ -80,7 +85,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0042 upstream to PS2Recomp.
+5. Send patches 0002-0043 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

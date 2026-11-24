@@ -815,3 +815,47 @@ per second in one-minute averages in the first level.
   bands give the same GS memory as GSCpuBackend on eight more random
   recordings; ps2xTest 454/454.
   The game reaches and draws the first level on Linux with 6 bands.
+
+## 26. Dips with enemies: the VIF1 worker is the limit again; frame pacing in the log; the GS queue without allocations
+
+- Measured by the maintainer on Windows (commit 99c53f0, patches up to
+  0042; `BEN10_ASYNC_VU1=1`, 6 bands; first level, about 2 minutes): the
+  game runs at 28-32 frames per second (per-second log) in quiet parts,
+  the cap of a game that shows a new picture every second VBlank, and
+  drops to 19-26 when enemies are on screen, which the maintainer sees
+  as stutter. 10-second averages 21.3-30.0.
+- In the dips the busiest thread is the VIF1/VU1 worker: 827-888 ms of
+  CPU per second (34-42 ms per game frame, against 33 ms for 30 per
+  second), ahead of the busiest GS band (760-800). The game thread waits
+  for it at VBlank (36.6% of the game thread's samples in
+  `PS2Memory::syncVif1`), and the GS queue holds the worker 0.6-4.1 s of
+  every 10. So with enemies (more models to transform and draw) the VU1
+  work per frame passes the 33 ms budget.
+- Where the worker's time goes (Linux, `perf record -t` on the worker,
+  40 s in the first level, `BEN10_GS_THREADS=2`; the port's own code is
+  built without optimisation in that build, which inflates its share):
+  VU code (translated blocks, pair and word functions, interpreter
+  helpers) 61%; pushing draws into the GS queue 12.6% (`Submit`, `push`,
+  the variant copies) plus 9% in malloc, mutex and memmove; kernel 5%;
+  VIF/DMA 4.9%; the GS frontend (GIF registers, vertex kicks, batches)
+  3.7%.
+- The queue: `std::deque<Command>` keeps one command per block at this
+  size (a primitive batch is 312 bytes), so every draw cost an allocation
+  on the producer and a free on the dispatcher, with libstdc++ and MSVC
+  alike. Now two `std::vector<Command>`, each reserved for the whole queue
+  limit, are swapped between the producers and the dispatcher: no
+  allocation per draw after start-up. Same commands in the same order
+  (the level recording gives the same GS memory with 1 and 6 bands).
+- Frame pacing: `[fps]` lines now also count the finished frames by host
+  time since the previous one (up to 34 ms, to 50, to 100, longer) and
+  give the slowest, so a lower average and a single stall can be told
+  apart. Not VBlanks: the port's VBlanks follow the EE's clock, which
+  slows down with the port (the Windows log shows 38 to 66 VBlanks in a
+  seconds), so a slow port makes the game run slower rather than skip
+  VBlanks; a first version counted VBlanks per frame and always saw 2.
+- Patch 0043: the worker names itself `VIF1Worker` (before, on Linux it
+  inherited "GameThread"), so `BEN10_PROFILE_THREAD=VIF1Worker` samples it
+  on Windows.
+- Next: a Windows profile of the worker in the dips (`run-worker.bat`),
+  then the VU work it shows (s.25 of findings/21 lists upper words,
+  block bodies and the run loop as the largest parts per VU cycle).

@@ -19,13 +19,21 @@
 //   it wraps those two handlers: each wrapper counts, then calls the
 //   original recompiled function unchanged. About once per second (host
 //   time) it prints to stderr:
-//     [fps] game frames 24 in 1.00 s, vblanks 60
+//     [fps] game frames 24 in 1.00 s, vblanks 48; frames up to 34 ms 20, to 50 ms 3, to 100 ms 1, longer 0 (longest 81 ms)
+//   The second part is the frame pacing (findings/20 s.26): the host time
+//   between two finished frames. The game shows a new picture at most
+//   every second VBlank (30 per second, 33.3 ms), so a frame up to 34 ms
+//   is on time, one to 50 ms a hitch, longer ones visible stalls. Host
+//   time, not VBlanks: the port's VBlanks follow the EE's clock, which
+//   slows down with the port, so when the port is slow the game runs
+//   slower (vblanks below 60 in a second) instead of skipping VBlanks.
 //   Without the variable nothing is installed and nothing changes.
 
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
 #include "game_overrides.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -47,6 +55,12 @@ namespace ben10::frame_rate_log
     std::atomic<uint32_t> g_vblanks{0};
     std::chrono::steady_clock::time_point g_lastReport{};
 
+    // Frame pacing. Both handlers run on the game thread, so plain
+    // variables do.
+    std::chrono::steady_clock::time_point g_lastFrameTime{};
+    uint32_t g_frameLengths[4] = {}; // finished frames of up to 34, 50, 100 ms, and longer
+    double g_longestMs = 0.0;
+
     // Prints and resets the counters once at least a second has passed.
     // Called from the game thread only (both handlers run there).
     void maybeReport()
@@ -60,8 +74,12 @@ namespace ben10::frame_rate_log
         const double seconds = std::chrono::duration<double>(now - g_lastReport).count();
         if (seconds < 1.0)
             return;
-        std::fprintf(stderr, "[fps] game frames %u in %.2f s, vblanks %u\n",
-                     g_frames.exchange(0), seconds, g_vblanks.exchange(0));
+        std::fprintf(stderr, "[fps] game frames %u in %.2f s, vblanks %u; frames up to 34 ms %u, to 50 ms %u, to 100 ms %u, longer %u (longest %.0f ms)\n",
+                     g_frames.exchange(0), seconds, g_vblanks.exchange(0), g_frameLengths[0], g_frameLengths[1],
+                     g_frameLengths[2], g_frameLengths[3], g_longestMs);
+        for (uint32_t &n : g_frameLengths)
+            n = 0u;
+        g_longestMs = 0.0;
         std::fflush(stderr);
         g_lastReport = now;
     }
@@ -70,7 +88,17 @@ namespace ben10::frame_rate_log
     {
         // Read the flags before the original handler clears them.
         if ((READ32(kGameState + 0x08u) & kFrameKickedBit) != 0u)
+        {
             g_frames.fetch_add(1, std::memory_order_relaxed);
+            const auto now = std::chrono::steady_clock::now();
+            if (g_lastFrameTime.time_since_epoch().count() != 0)
+            {
+                const double ms = std::chrono::duration<double, std::milli>(now - g_lastFrameTime).count();
+                ++g_frameLengths[ms <= 34.0 ? 0 : ms <= 50.0 ? 1 : ms <= 100.0 ? 2 : 3];
+                g_longestMs = std::max(g_longestMs, ms);
+            }
+            g_lastFrameTime = now;
+        }
         maybeReport();
         g_originalDmaEnd(rdram, ctx, runtime);
     }
