@@ -45,6 +45,13 @@ game) and the [README](../README.md#-going-native) board.
 - Main menu and the first level: memory card, menus, black models (patch
   0007), VF0 (0008), software skinning (0009-0010); the level renders
   ([findings/18](findings/18-memory-card-and-menus.md)).
+- Per-instruction tests for the R5900-specific instructions the game uses
+  (KNOWN_ISSUES R13): 109 cases, 104 passing, 5 disabled for documented
+  differences; three more translator bugs found and fixed (128-bit HI/LO
+  in MMI, FPU compare order, VU0 VDIV/VSQRT/VRSQRT; patches 0054-0056,
+  [findings/14](findings/14-repository-build-and-tests.md) s.8).
+- GS rasteriser per-pixel work -15.2% on the level recording since
+  findings/20 s.34 (patches 0053, 0057-0060).
 
 ## Tests run
 
