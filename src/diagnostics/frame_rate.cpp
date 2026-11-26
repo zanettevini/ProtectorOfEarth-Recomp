@@ -27,11 +27,14 @@
 //   time, not VBlanks: the port's VBlanks follow the EE's clock, which
 //   slows down with the port, so when the port is slow the game runs
 //   slower (vblanks below 60 in a second) instead of skipping VBlanks.
+//   Every ten reports it also prints a [vu-native] line: how much VU1 and
+//   VU0 work ran as translated code (src/vu/vu_coverage.cpp).
 //   Without the variable nothing is installed and nothing changes.
 
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
 #include "game_overrides.h"
+#include "vu/vu_coverage.h"
 
 #include <algorithm>
 #include <atomic>
@@ -61,9 +64,14 @@ namespace ben10::frame_rate_log
     uint32_t g_frameLengths[4] = {}; // finished frames of up to 34, 50, 100 ms, and longer
     double g_longestMs = 0.0;
 
+    // Every tenth report also prints how much VU work ran translated
+    // (src/vu/vu_coverage.cpp).
+    uint32_t g_reports = 0;
+    double g_coverageSeconds = 0.0;
+
     // Prints and resets the counters once at least a second has passed.
     // Called from the game thread only (both handlers run there).
-    void maybeReport()
+    void maybeReport(PS2Runtime *runtime)
     {
         const auto now = std::chrono::steady_clock::now();
         if (g_lastReport.time_since_epoch().count() == 0)
@@ -80,6 +88,12 @@ namespace ben10::frame_rate_log
         for (uint32_t &n : g_frameLengths)
             n = 0u;
         g_longestMs = 0.0;
+        g_coverageSeconds += seconds;
+        if (++g_reports % 10u == 0u && runtime != nullptr)
+        {
+            ben10::vu_coverage::report(*runtime, g_coverageSeconds);
+            g_coverageSeconds = 0.0;
+        }
         std::fflush(stderr);
         g_lastReport = now;
     }
@@ -99,7 +113,7 @@ namespace ben10::frame_rate_log
             }
             g_lastFrameTime = now;
         }
-        maybeReport();
+        maybeReport(runtime);
         g_originalDmaEnd(rdram, ctx, runtime);
     }
 

@@ -900,3 +900,28 @@ the timing model and is left for a decision of its own.
   the GS backend, which holds producers when 8192 commands are queued
   (findings/20 s.21). The bands, at about 80% each, are the next limit;
   findings/20 s.21 adds the counters that will show it on the next run.
+
+## 27. Counting the VU pairs that still run in the interpreter (patch 0048)
+
+- The README board counts a VU microprogram as the port's own code only
+  when it no longer needs PS2Recomp's VU interpreter (KNOWN_ISSUES T2;
+  the maintainer's decision: translated code still on the interpreter's
+  timing model is not counted yet). The first piece of evidence for that
+  is a count of the pairs the run loop still hands to the interpreter.
+- Patch 0048: `VU1Interpreter::nativeCoverage()` counts, per unit, the
+  calls into translated code (a pair or a whole block each) and the pairs
+  run by the interpreter, split by reason ("no table": no translated code
+  for this code memory at all; "no pair": none for this pair, which also
+  covers a PC that is not a multiple of 8), and those pairs per slot
+  (PC / 8). Only the unit's own thread writes them (relaxed atomic loads
+  and stores, no locked add); other threads read them.
+- The port prints the difference every 10 seconds with the frame-rate log
+  (`BEN10_FPS_LOG`, src/vu/vu_coverage.cpp):
+  `[vu-native] 10.0 s: VU1 N translated calls, M pairs interpreted (no
+  table A, no pair B); VU0 ...`, followed by the four busiest interpreted
+  PCs of each unit when there are any. `ben10_vu1_replay` prints the same
+  totals after its run.
+- On the captured workloads with translated code: 0 pairs interpreted
+  for the 40 VU1 workloads (29,574 translated calls; 108,397 pair by pair
+  with `--no-blocks`) and the 60 VU0 ones (120 calls); without it, every
+  pair counts as "no table". Same `--sum` checksums; ps2xTest 454/454.

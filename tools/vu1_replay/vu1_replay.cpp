@@ -23,7 +23,8 @@
 //   data memory and the GS memory (XGKICK packets are drawn by the
 //   runtime's GS into a private 4 MB VRAM). Two builds that print the same
 //   lines computed the same thing.
-//   Always: total VU cycles, wall time, VU cycles per second.
+//   Always: total VU cycles, wall time, VU cycles per second, and how many
+//   calls went to translated code and how many pairs to the interpreter.
 //   --native: the translated VU1 code (src/vu/vu1_native.h, findings/21)
 //   runs every pair it has; the sums must not change. Translated blocks
 //   (findings/21 s.24) are on with it; --no-blocks runs pair by pair.
@@ -242,5 +243,13 @@ int main(int argc, char **argv)
     std::printf("workloads %zu x %d, VU cycles %llu, %.3f s, %.2f M VU cycles/s\n",
                 workloads.size(), reps, static_cast<unsigned long long>(totalCycles), seconds,
                 seconds > 0.0 ? static_cast<double>(totalCycles) / seconds / 1e6 : 0.0);
+    // How much ran translated (VU1Interpreter::nativeCoverage, findings/21
+    // s.27): with --native every pair of the game's programs should.
+    const auto &coverage = vu.nativeCoverage();
+    std::printf("translated calls %llu, pairs interpreted %llu (no table %llu, no pair %llu)\n",
+                static_cast<unsigned long long>(coverage.nativeCalls.load()),
+                static_cast<unsigned long long>(coverage.interpretedNoTable.load() + coverage.interpretedNoPair.load()),
+                static_cast<unsigned long long>(coverage.interpretedNoTable.load()),
+                static_cast<unsigned long long>(coverage.interpretedNoPair.load()));
     return 0;
 }

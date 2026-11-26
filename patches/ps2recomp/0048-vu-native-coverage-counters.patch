@@ -1,0 +1,120 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU: count the pairs the run loop hands to the interpreter
+
+What it is for:
+  Protector of Earth Recomp translates the game's VU1 and VU0
+  microprograms to C++ and installs them through the native resolver.
+  To show that a program no longer needs the interpreter, the port has to
+  know how many pairs still run there, and where.
+
+The changes:
+  - VU1Interpreter::nativeCoverage(): per unit, the calls into translated
+    code (a pair or a whole block each), the pairs the run loop handed to
+    the interpreter (split into "no translated code for this code memory"
+    and "none for this pair"), and those pairs per slot (PC / 8).
+  - Written only by the thread that runs the unit, as relaxed atomic loads
+    and stores (no locked add); any thread may read them. The calls into
+    translated code are added up in a plain member during a run and stored
+    once when it ends.
+  Nothing else changes.
+
+How it was checked:
+  tools/vu1_replay: with translated code, 0 pairs interpreted for the 40
+  VU1 and 60 VU0 workloads (29,574 and 120 translated calls; 108,397
+  calls pair by pair without blocks); without it, every pair counted as
+  "no table". Same --sum checksums as before. ps2xTest 454/454.
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -3,6 +3,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <bit>
+ #include <cstdint>
+ #include <cstring>
+@@ -194,6 +195,24 @@
+     static void setNativeResolver(NativeResolver resolver);
+     static void setNativeResolverVu0(NativeResolver resolver);
+ 
++    // How much of this unit's code ran translated (findings/21 s.27): the
++    // pairs the run loop handed to the interpreter, per pair slot (PC / 8)
++    // and in total, and the calls into translated code (a pair or a whole
++    // block each). Counted by the thread that runs the unit and readable
++    // from any other thread at any time (relaxed atomics, one writer); a
++    // reader takes differences between two reads.
++    struct NativeCoverage
++    {
++        // why a pair was interpreted: no translated code for this code
++        // memory at all, or none for this pair (another program, data run
++        // as code, a PC that is not a multiple of 8)
++        std::atomic<uint64_t> interpretedNoTable{0};
++        std::atomic<uint64_t> interpretedNoPair{0};
++        std::atomic<uint64_t> nativeCalls{0};
++        std::array<std::atomic<uint32_t>, 0x4000u / 8u> interpretedAt{};
++    };
++    const NativeCoverage &nativeCoverage() const { return m_coverage; }
++
+ private:
+     friend struct VU1NativeAccess;
+     friend struct VU1NativeLowerAccess;
+@@ -462,6 +481,11 @@
+     uint64_t m_nativeGeneration = 0;
+     bool m_nativeValid = false;
+     bool m_nativeActive = false;
++    NativeCoverage m_coverage;
++    // Calls into translated code in the current run, added to
++    // m_coverage.nativeCalls when the run ends (one atomic store per run).
++    uint64_t m_runNativeCalls = 0;
++    void noteInterpretedPair(bool noPair) noexcept;
+ 
+     InstructionUsage decodeUpperUsage(uint32_t upper) const;
+     InstructionUsage decodeLowerUsage(uint32_t lower) const;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -1230,6 +1230,17 @@
+     m_nativeValid = tracked;
+ }
+ 
++// One pair run by the interpreter: counted for nativeCoverage(). Only this
++// unit's thread writes the counters, so a load and a store (not a locked
++// add) is enough; readers on other threads see whole values.
++void VU1Interpreter::noteInterpretedPair(bool noPair) noexcept
++{
++    auto add = [](auto &counter)
++    { counter.store(counter.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed); };
++    add(noPair ? m_coverage.interpretedNoPair : m_coverage.interpretedNoTable);
++    add(m_coverage.interpretedAt[(m_state.pc >> 3) & (m_coverage.interpretedAt.size() - 1u)]);
++}
++
+ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
+                          uint8_t *vuData, uint32_t dataSize,
+                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
+@@ -1263,11 +1274,13 @@
+         {
+             if (const NativePairFn native = m_nativeTable[m_state.pc >> 3]; native != nullptr)
+             {
++                ++m_runNativeCalls;
+                 if (native(*this, frame) == StepResult::Break)
+                     break;
+                 continue;
+             }
+         }
++        noteInterpretedPair(m_nativeActive);
+         const DecodedInstructionPair &decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
+         if (execPair(decoded, frame) == StepResult::Break)
+             break;
+@@ -1286,6 +1299,12 @@
+     // entry due by now applied (callers and the next run read them).
+     materializeFlags();
+     m_state.cycles = m_cycle;
++    if (m_runNativeCalls != 0u)
++    {
++        m_coverage.nativeCalls.store(m_coverage.nativeCalls.load(std::memory_order_relaxed) + m_runNativeCalls,
++                                     std::memory_order_relaxed);
++        m_runNativeCalls = 0u;
++    }
+     if (useVuRounding && previousRoundingMode != -1)
+         std::fesetround(previousRoundingMode);
+ }
