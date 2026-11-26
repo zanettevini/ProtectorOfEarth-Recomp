@@ -1177,3 +1177,15 @@ per second in one-minute averages in the first level.
   per-pixel code costs more than the calls it saves. With the address
   part taken out, the wrap part alone gave the 10.41 G above.
 
+## 39. Indexed texture quads read inline too (patch 0061)
+
+- s.37 assumed C32 was most of the bilinear samples. The profile after
+  patch 0060 says otherwise: the sampler still called `ReadTextureQuad`
+  8.05 million times (1.36 G inclusive, about 13% of the measure) for the
+  other formats; the indexed ones (T8, T4) are the game's usual textures.
+- Patch 0061: `ReadTextureQuadInline` reads C32, P8, P4, P8H, P4HL and
+  P4HH quads inline and leaves the rest to `ReadTextureQuad`:
+  10.41 G -> 10.30 G, -1.0%. Same hashes on the level and six random
+  recordings, 6 bands match `--sync`; ps2xTest 454/454.
+- Since s.34 (12.27 G): 10.30 G, -16.0% (patches 0053, 0057-0061).
+

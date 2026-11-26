@@ -1,0 +1,94 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: indexed texture quads read inline too
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - After patch 0059 the sampler still called ReadTextureQuad 8 million
+    times in the first 60,000 records of the level recording: most
+    bilinear samples are of indexed textures, not C32.
+  - ReadTextureQuadInline (ps2_gs_memory.h) replaces ReadTextureQuadC32:
+    C32, P8, P4, P8H, P4HL and P4HH quads are read inline (PageTableP8 and
+    PageTableP4 lose `static`), and it returns false for the other formats,
+    which still call ReadTextureQuad. The same reads in the same order.
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and the six random recordings; 6
+  bands give the same hashes. ps2xTest 454/454. Instructions for the
+  first 60,000 records of the level recording: 10.41 G -> 10.30 G
+  (findings/20 s.39).
+
+--- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+@@ -620,16 +620,30 @@
+         }
+     }
+ 
+-    // The C32 page lookup table (ps2_gs_memory.cpp), for the inline quad read.
++    // The page lookup tables of the formats the inline quad read handles
++    // (ps2_gs_memory.cpp).
+     extern PixelStorageTraits<C32>::PageLookupTableT PageTableC32;
++    extern PixelStorageTraits<P8>::PageLookupTableT PageTableP8;
++    extern PixelStorageTraits<P4>::PageLookupTableT PageTableP4;
+ 
+-    // ReadTextureQuad for a C32 texture, inline in the caller: the same reads
+-    // in the same order, without the call and the format dispatch
+-    // (findings/20 s.37). C32 is most of the game's bilinear samples.
+-    PS2_GS_MEMORY_INLINE void ReadTextureQuadC32(TexturePageCache& cache, const u8* data, u32 bp, u32 bw,
+-                                                 u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
++    // ReadTextureQuad inline in the caller for C32 and the indexed formats
++    // (P8, P4, P8H, P4HL, P4HH), the game's usual textures: the same reads in
++    // the same order, without the call (findings/20 s.37 and s.39). Returns
++    // false, having read nothing, for the other formats, which go through
++    // ReadTextureQuad.
++    PS2_GS_MEMORY_INLINE bool ReadTextureQuadInline(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
++                                                    u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
+     {
+-        detail::readQuad<C32>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out);
++        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
++        {
++        case C32: detail::readQuad<C32>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        case P8: detail::readQuad<P8>(PageTableP8, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        case P4: detail::readQuad<P4>(PageTableP4, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        case P8H: detail::readQuad<P8H>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        case P4HL: detail::readQuad<P4HL>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        case P4HH: detail::readQuad<P4HH>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return true;
++        default: return false;
++        }
+     }
+ 
+ 	// The byte address in GS memory of pixel (x, y) of a buffer, the same
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -200,8 +200,9 @@
+     static C16SPageLookupTable PageTableC16S{ };
+     static Z16PageLookupTable  PageTableZ16{ };
+     static Z16SPageLookupTable PageTableZ16S{ };
+-    static P8PageLookupTable   PageTableP8{ };
+-    static P4PageLookupTable   PageTableP4{ };
++    // Not static: ReadTextureQuadInline (ps2_gs_memory.h) reads them inline.
++    P8PageLookupTable   PageTableP8{ };
++    P4PageLookupTable   PageTableP4{ };
+ 
+     void InitLookupTables()
+     {
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -1526,10 +1526,9 @@
+     uint32_t raw[4] = {0u, 0u, 0u, 0u};
+     if (m_vram)
+     {
+-        // C32, most of the bilinear samples, is read inline (findings/20 s.37).
+-        if (tex.psm == GS_PSM_CT32)
+-            GSMem::ReadTextureQuadC32(m_texturePageCache, m_vram, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
+-        else
++        // C32 and the indexed formats, most of the bilinear samples, are read
++        // inline (findings/20 s.37, s.39).
++        if (!GSMem::ReadTextureQuadInline(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw))
+             GSMem::ReadTextureQuad(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
+     }
+     convertTexels(raw, 4);
