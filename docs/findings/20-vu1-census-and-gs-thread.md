@@ -1189,3 +1189,14 @@ per second in one-minute averages in the first level.
   recordings, 6 bands match `--sync`; ps2xTest 454/454.
 - Since s.34 (12.27 G): 10.30 G, -16.0% (patches 0053, 0057-0061).
 
+## 40. bitsPerPixel as a table (patch 0062)
+
+- After patch 0061 (10.30 G), the single most expensive source line of
+  the measure was the `switch (psm)` of `GSInternal::bitsPerPixel`
+  (0.23 G): WritePixelWith asks it for every pixel, to know whether the
+  frame needs the 16-bit conversions.
+- Patch 0062: the same mapping as a 256-entry constexpr table:
+  10.30 G -> 10.13 G, -1.7%. Same hashes on the level and six random
+  recordings, 6 bands match `--sync`; ps2xTest 454/454.
+- Since s.34 (12.27 G): 10.13 G, -17.4% (patches 0053, 0057-0062).
+
