@@ -1,0 +1,256 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: one address per pixel for the frame and one for Z
+
+What it is for:
+  WritePixelWith read the Z buffer, read the frame buffer, wrote the frame
+  buffer and wrote the Z buffer through the per-format accessors, and each
+  accessor worked out the swizzled address of the pixel again.
+
+The changes:
+  - GSMem::ByteAddress{CT32,CT24,CT16,CT16S,Z32,Z24,Z16,Z16S}: the byte
+    address of a pixel, computed as PixelStorageTraits::Read/Write compute
+    it.
+  - PixelSetup holds, for those formats, the address function and how the
+    pixel word is read and written (32 bits; 24 bits, the write keeping
+    the top byte; 16 bits). WritePixelWith computes the Z address and the
+    frame address at most once per pixel and reads and writes the word
+    there. Other formats go through the accessors as before.
+  Same reads and writes, in the same order.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and on six random recordings; 6 row
+  bands give the same hashes. Instructions for the first 60,000 records
+  of the level recording: 13.32 G -> 13.20 G (findings/20 s.30).
+  ps2xTest 454/454.
+
+--- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+@@ -548,6 +548,20 @@
+     void ReadTexture4(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
+                       const u32 (&x)[4], const u32 (&y)[4], u32 (&out)[4]);
+ 
++	// The byte address in GS memory of pixel (x, y) of a buffer, the same
++	// one Read*/Write* below compute, for the frame and Z formats: a pixel
++	// read and then written computes it once (findings/20 s.30). C32/Z32 and
++	// C24/Z24 hold a 32-bit word there (C24/Z24 use its low 24 bits), the
++	// 16-bit formats a 16-bit one.
++	u32 ByteAddressCT32(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressCT24(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressCT16(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressCT16S(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressZ32(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressZ24(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressZ16(u32 bp, u32 bw, u32 x, u32 y);
++	u32 ByteAddressZ16S(u32 bp, u32 bw, u32 x, u32 y);
++
+ 	void WriteCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value);
+ 	void WriteZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value);
+ 
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -963,8 +963,75 @@
+     u32 fbp, fbw, fpsm, zbp, zpsm;
+     ReadVramFunc readFrame, readZ;
+     WriteVramFunc writeFrame, writeZ;
++    // For the formats whose pixel is one 32- or 16-bit word: the function
++    // that gives its byte address, so a pixel read and then written computes
++    // it once (findings/20 s.30), and how the word is read and written.
++    // kWordNone: another format, read and written through the accessors.
++    enum WordKind : uint8_t
++    {
++        kWordNone,
++        kWord32, // C32, Z32
++        kWord24, // C24, Z24: the low 24 bits; a write keeps the top byte
++        kWord16, // C16, C16S, Z16, Z16S
++    };
++    using AddressFunc = u32 (*)(u32, u32, u32, u32);
++    AddressFunc frameAddress, zAddress;
++    WordKind frameWord, zWord;
+ };
+ 
++namespace
++{
++    // The byte-address function and word kind of a frame or Z format.
++    void pixelWordFor(u32 psm, u32 (*&address)(u32, u32, u32, u32), uint8_t &kind)
++    {
++        using namespace GSMem;
++        switch (psm)
++        {
++        case GS_PSM_CT32: address = ByteAddressCT32; kind = 1u; return;
++        case GS_PSM_CT24: address = ByteAddressCT24; kind = 2u; return;
++        case GS_PSM_CT16: address = ByteAddressCT16; kind = 3u; return;
++        case GS_PSM_CT16S: address = ByteAddressCT16S; kind = 3u; return;
++        case GS_PSM_Z32: address = ByteAddressZ32; kind = 1u; return;
++        case GS_PSM_Z24: address = ByteAddressZ24; kind = 2u; return;
++        case GS_PSM_Z16: address = ByteAddressZ16; kind = 3u; return;
++        case GS_PSM_Z16S: address = ByteAddressZ16S; kind = 3u; return;
++        default: address = nullptr; kind = 0u; return;
++        }
++    }
++
++    // The pixel word at a byte address, as the Read accessor of its format
++    // returns it, and its write, as the Write accessor makes it.
++    PS2_GS_FORCEINLINE u32 loadPixelWord(const uint8_t *vram, u32 address, uint8_t kind)
++    {
++        if (kind == 3u)
++        {
++            uint16_t v;
++            std::memcpy(&v, vram + address, sizeof(v));
++            return v;
++        }
++        u32 v;
++        std::memcpy(&v, vram + address, sizeof(v));
++        return kind == 2u ? (v & 0x00FFFFFFu) : v;
++    }
++
++    PS2_GS_FORCEINLINE void storePixelWord(uint8_t *vram, u32 address, uint8_t kind, u32 value)
++    {
++        if (kind == 3u)
++        {
++            const uint16_t v = static_cast<uint16_t>(value);
++            std::memcpy(vram + address, &v, sizeof(v));
++            return;
++        }
++        if (kind == 2u)
++        {
++            u32 old;
++            std::memcpy(&old, vram + address, sizeof(old));
++            value = (old & 0xFF000000u) | (value & 0x00FFFFFFu);
++        }
++        std::memcpy(vram + address, &value, sizeof(value));
++    }
++}
++
+ GSCpuBackend::PixelSetup GSCpuBackend::MakePixelSetup(const GSDrawState &state) const
+ {
+     const auto &ctx = state.context;
+@@ -978,6 +1045,11 @@
+     setup.readZ = m_readVramFuncs[setup.zpsm & 0x3Fu];
+     setup.writeFrame = m_writeVramFuncs[setup.fpsm & 0x3Fu];
+     setup.writeZ = m_writeVramFuncs[setup.zpsm & 0x3Fu];
++    uint8_t frameKind = 0u, zKind = 0u;
++    pixelWordFor(setup.fpsm, setup.frameAddress, frameKind);
++    pixelWordFor(setup.zpsm, setup.zAddress, zKind);
++    setup.frameWord = static_cast<PixelSetup::WordKind>(frameKind);
++    setup.zWord = static_cast<PixelSetup::WordKind>(zKind);
+     return setup;
+ }
+ 
+@@ -1030,6 +1102,20 @@
+     // a failed Z test or destination alpha test ends the pixel either way,
+     // so testing Z first gives the same writes and skips the frame read of
+     // pixels behind others.
++    // The Z and frame word addresses, each computed at most once
++    // (findings/20 s.30); UINT32_MAX = not computed yet.
++    u32 zAddress = UINT32_MAX;
++    u32 frameAddress = UINT32_MAX;
++    auto readZ = [&]() -> u32
++    {
++        if (!m_vram)
++            return 0u;
++        if (setup.zWord == PixelSetup::kWordNone)
++            return setup.readZ(m_vram, zbp, fbw, x, y);
++        zAddress = setup.zAddress(zbp, fbw, static_cast<u32>(x), static_cast<u32>(y));
++        return loadPixelWord(m_vram, zAddress, setup.zWord);
++    };
++
+     bool zpass = false;
+     uint32_t storedZ = 0u;
+     switch (ztestMethod)
+@@ -1041,11 +1127,11 @@
+         zpass = true;
+         break;
+     case 2:
+-        storedZ = m_vram ? setup.readZ(m_vram, zbp, fbw, x, y) : 0u;
++        storedZ = readZ();
+         zpass = static_cast<uint32_t>(z) >= storedZ;
+         break;
+     case 3:
+-        storedZ = m_vram ? setup.readZ(m_vram, zbp, fbw, x, y) : 0u;
++        storedZ = readZ();
+         zpass = static_cast<uint32_t>(z) > storedZ;
+         break;
+     }
+@@ -1063,7 +1149,15 @@
+     u32 fbrgba = 0;
+     if (frmw)
+     {
+-        rawFramebufferPixel = m_vram ? setup.readFrame(m_vram, fbp, fbw, x, y) : 0u;
++        if (!m_vram)
++            rawFramebufferPixel = 0u;
++        else if (setup.frameWord == PixelSetup::kWordNone)
++            rawFramebufferPixel = setup.readFrame(m_vram, fbp, fbw, x, y);
++        else
++        {
++            frameAddress = setup.frameAddress(fbp, fbw, static_cast<u32>(x), static_cast<u32>(y));
++            rawFramebufferPixel = loadPixelWord(m_vram, frameAddress, setup.frameWord);
++        }
+         fbrgba = rawFramebufferPixel;
+ 
+         if (bitsPerPixel(fpsm) == 16)
+@@ -1152,13 +1246,31 @@
+         }
+ 
+         if (m_vram)
+-            setup.writeFrame(m_vram, fbp, fbw, x, y, pixel);
++        {
++            if (setup.frameWord == PixelSetup::kWordNone)
++                setup.writeFrame(m_vram, fbp, fbw, x, y, pixel);
++            else
++            {
++                if (frameAddress == UINT32_MAX)
++                    frameAddress = setup.frameAddress(fbp, fbw, static_cast<u32>(x), static_cast<u32>(y));
++                storePixelWord(m_vram, frameAddress, setup.frameWord, pixel);
++            }
++        }
+     }
+ 
+     if (writeMask.writeDepth && !ctx.zbuf.zmask)
+     {
+         if (m_vram)
+-            setup.writeZ(m_vram, zbp, fbw, x, y, z);
++        {
++            if (setup.zWord == PixelSetup::kWordNone)
++                setup.writeZ(m_vram, zbp, fbw, x, y, z);
++            else
++            {
++                if (zAddress == UINT32_MAX)
++                    zAddress = setup.zAddress(zbp, fbw, static_cast<u32>(x), static_cast<u32>(y));
++                storePixelWord(m_vram, zAddress, setup.zWord, static_cast<u32>(z));
++            }
++        }
+     }
+ }
+ 
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -291,6 +291,28 @@
+         }
+     }
+ 
++    namespace
++    {
++        // As PixelStorageTraits<psm>::Read/Write compute it.
++        template <PixelStorageMode psm, class Table>
++        u32 ByteAddressOf(const Table& table, u32 bp, u32 bw, u32 x, u32 y)
++        {
++            using Traits = PixelStorageTraits<psm>;
++            const u32 pixel_addr = Traits::Address(table, bp, bw, x, y);
++            const u32 bits = pixel_addr * UnpackedBitWidth(psm) + Traits::BitOffset();
++            return (bits / 8) & (MEMORY_SIZE - sizeof(typename Traits::PackedT));
++        }
++    }
++
++    u32 ByteAddressCT32(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<C32>(PageTableC32, bp, bw, x, y); }
++    u32 ByteAddressCT24(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<C24>(PageTableC32, bp, bw, x, y); }
++    u32 ByteAddressCT16(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<C16>(PageTableC16, bp, bw, x, y); }
++    u32 ByteAddressCT16S(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<C16S>(PageTableC16S, bp, bw, x, y); }
++    u32 ByteAddressZ32(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<Z32>(PageTableZ32, bp, bw, x, y); }
++    u32 ByteAddressZ24(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<Z24>(PageTableZ32, bp, bw, x, y); }
++    u32 ByteAddressZ16(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<Z16>(PageTableZ16, bp, bw, x, y); }
++    u32 ByteAddressZ16S(u32 bp, u32 bw, u32 x, u32 y) { return ByteAddressOf<Z16S>(PageTableZ16S, bp, bw, x, y); }
++
+     void WriteCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value)
+     {
+         PixelStorageTraits<C32>::Write(PageTableC32, data, bp, bw, x, y, value);

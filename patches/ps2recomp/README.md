@@ -56,8 +56,9 @@ fix and how it was found.
 | `0046-vu-flag-results-left-out-in-blocks.patch` | VU: translated blocks may mark upper instructions whose MAC and status no flag instruction reads; their flag entry is left out when it would set only sticky bits already set; such blocks start only when they cannot run out of cycles | findings/20 s.28 |
 | `0047-vu-block-bodies-without-budget-checks.patch` | VU: translated block bodies skip the cycle-budget checks (blocks start only when the body fits in the budget); no per-cycle copy of the cycle count; same results | findings/20 s.29 |
 | `0048-vu-native-coverage-counters.patch` | VU: counts, per unit, the calls into translated code and the pairs the run loop hands to the interpreter (in total, by reason and per PC), readable from any thread | findings/21 s.27 |
+| `0049-gs-one-address-per-pixel.patch` | GS CPU backend: the frame and Z addresses of a pixel computed once each (32-, 24- and 16-bit formats), the word read and written in place; same results | findings/20 s.30 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045 and 0047 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047 and 0049 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

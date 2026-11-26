@@ -925,3 +925,10 @@ the timing model and is left for a decision of its own.
   for the 40 VU1 workloads (29,574 translated calls; 108,397 pair by pair
   with `--no-blocks`) and the 60 VU0 ones (120 calls); without it, every
   pair counts as "no table". Same `--sum` checksums; ps2xTest 454/454.
+- In the game (Linux, `BEN10_ASYNC_VU1=1`, boot, menus and the first
+  level, two runs of about 6 and 10 minutes): every `[vu-native]` line
+  shows 0 pairs interpreted on both units, for about 10 million VU1
+  calls into translated code per 10 seconds in the level and, in the
+  second run, about 0.6 million VU0 calls per 10 seconds (the first run
+  started no VU0 program at all). Not yet seen on Windows or past the
+  first level.

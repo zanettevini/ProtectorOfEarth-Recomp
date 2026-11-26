@@ -971,3 +971,25 @@ per second in one-minute averages in the first level.
   checks). Each is a few instructions; a larger cut needs the translated
   code to keep its own state and schedule instead of the interpreter's
   (the native VU step of the roadmap).
+
+## 30. One address per pixel for the frame and one for Z (patch 0049)
+
+- WritePixelWith (s.25) read Z, read the frame, wrote the frame and wrote
+  Z through the per-format accessors, each working out the pixel's
+  swizzled address again.
+- Patch 0049: `GSMem::ByteAddress*` gives the byte address of a pixel for
+  the 32-, 24- and 16-bit frame and Z formats, computed exactly as the
+  accessors compute it; PixelSetup keeps the address function and the
+  word kind (32 bits; 24 bits, a write keeping the top byte; 16 bits), and
+  WritePixelWith computes each address at most once per pixel and reads
+  and writes the word itself. Other formats still use the accessors.
+- Checked: `ben10_gs_replay --sync` gives the same hashes as before on the
+  level recording (35 points and the end) and on six random recordings;
+  6 row bands give the same hashes too; ps2xTest 454/454; the game draws
+  the first level on Linux.
+- Gain: small. The first 60,000 records of the level recording take
+  13.32 G instructions before and 13.20 G after (-0.9%; both measured on
+  today's tree: the 12.36 G of s.25 came from an older build of the
+  replay, so only the pair is comparable). The address functions are
+  still calls (3% of the instructions); the per-pixel work is dominated
+  by DrawTriangle's interpolation, texture sampling and blending.
