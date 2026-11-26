@@ -1054,3 +1054,23 @@ per second in one-minute averages in the first level.
 - In the game (Linux, 6 bands, the first level): about 135-145 transfer
   barriers and 810-865 uploads run ahead with page copies per 10 s,
   1,000 segments per 10 s; the level draws as before.
+
+## 33. No VF0/VI0 reset after block pairs that cannot write them (patch 0052)
+
+- After every pair the step stores VF0 = (0, 0, 0, 1) and VI0 = 0 again
+  (the hardware ignores writes to them; the executors write whatever
+  register a word names). On the replay that was about 7.6 M of the
+  instructions left in s.29.
+- The decoded usage cannot tell: `addVfWrite` drops writes to register
+  0. So the translator asks the interpreter's executors themselves
+  (`VU1NativeAccess::upperLowerMayWriteZeroRegs`): it runs the pair's
+  upper word and lower word twice from a reset state, with VF0 and VI0
+  set to two other values, and checks that both are unchanged. An
+  executor writes the register its word's fields name whatever the
+  operands (addresses are wrapped into VU memory), so a word either
+  always writes VF0/VI0 or never does. Body pairs that never do run with
+  kZeroWrite = false and skip the reset (patch 0052).
+- 5,421 of the 5,922 block pairs skip it. Same `--sum` checksums for the
+  40 VU1 and 60 VU0 workloads (interpreted, translated, without blocks);
+  ps2xTest 454/454. VU1 replay: 410.2 M -> 406.8 M instructions in
+  `VU1::run` (with the coverage counters of patch 0048 in between).

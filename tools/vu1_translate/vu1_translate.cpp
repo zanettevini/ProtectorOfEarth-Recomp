@@ -40,8 +40,10 @@
 //      instruction can read before the next FMAC result replaces it
 //      (findings/20 s.28): they run with kElide, and their flag entry is
 //      left out when it could change nothing (its only sticky bits, Z and
-//      S, already set). Such a block starts only when its body cannot run
-//      out of the run's cycle budget (blockCanEnterWithin).
+//      S, already set). Every block starts only when its body cannot run
+//      out of the run's cycle budget (blockCanEnterWithin, findings/20
+//      s.29). Body pairs that never write VF0 or VI0 skip the step's reset
+//      of those two registers (findings/20 s.33).
 //
 // USAGE
 //   ben10_vu1_translate <game ELF> <output folder>
@@ -49,6 +51,7 @@
 //   is the game's code, translated: never versioned.
 
 #include "runtime/ps2_vu1.h"
+#include "runtime/gs/gs_frontend.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -447,6 +450,23 @@ int main(int argc, char **argv)
     std::vector<size_t> blockCounts(kFileCount, 0);
     size_t blockPairs = 0;
     size_t elidedPairs = 0;
+    size_t noZeroResetPairs = 0;
+    // Whether a pair can write VF0 or VI0, asked of the interpreter's own
+    // executors (VU1NativeAccess::upperLowerMayWriteZeroRegs).
+    GS probeGs;
+    std::vector<uint8_t> probeData(16384u, 0u);
+    VU1Interpreter zeroProbe(VU1Interpreter::Unit::VU1);
+    std::map<std::pair<uint32_t, uint32_t>, bool> zeroMemo;
+    const auto mayWriteZero = [&](uint32_t lower, uint32_t upper)
+    {
+        auto it = zeroMemo.find({lower, upper});
+        if (it == zeroMemo.end())
+            it = zeroMemo.emplace(std::make_pair(lower, upper),
+                                  VU1NativeAccess::upperLowerMayWriteZeroRegs(zeroProbe, probeGs, probeData.data(),
+                                                                              static_cast<uint32_t>(probeData.size()), lower, upper))
+                     .first;
+        return it->second;
+    };
     // Whether an upper word queues an FMAC flag entry, asked once per word
     // of the interpreter itself (VU1NativeAccess::upperQueuesFmacFlags).
     VU1Interpreter probe(VU1Interpreter::Unit::VU1);
@@ -639,9 +659,14 @@ int main(int argc, char **argv)
             for (uint32_t bit = 0; bit < 4u; ++bit)
                 if ((d.upperUsage.accWrite & (1u << bit)) != 0u)
                     accLast[3u - bit] = {true, i, 1u}; // kAccForwardLatency
-            char masks[112];
-            std::snprintf(masks, sizeof(masks), ", 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu%s", u0, u1, l0, l1, vi, acc,
-                          elide[i] ? ", true" : "");
+            // Whether the pair can write VF0 or VI0 (the step resets them
+            // after such a pair only; findings/20 s.33).
+            const bool zeroWrite = mayWriteZero(lower, upper);
+            if (!zeroWrite)
+                ++noZeroResetPairs;
+            char masks[128];
+            std::snprintf(masks, sizeof(masks), ", 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu%s%s", u0, u1, l0, l1, vi, acc,
+                          elide[i] || !zeroWrite ? (elide[i] ? ", true" : ", false") : "", zeroWrite ? "" : ", false");
             if ((upper & 0x80000000u) != 0u)
                 o << "        if (!VU1NativeAccess::blockPairUpper<&ben10::vu1_native::upper::" << un << ", k_" << bid << "_" << i
                   << ", 0x" << std::hex << pc << std::dec << "u, " << (i == 0 ? "true" : "false") << masks << ">(vu, frame))\n";
@@ -734,8 +759,8 @@ int main(int argc, char **argv)
     std::ofstream(outDir / "vu1_native_index.cpp") << index.str();
 
     std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs (%zu also valid on VU0), %zu upper and %zu lower words, "
-                "%zu blocks of %zu pairs (%zu with flag results left out) -> %s\n",
+                "%zu blocks of %zu pairs (%zu with flag results left out, %zu body pairs without the VF0/VI0 reset) -> %s\n",
                 entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), blocks.size(), blockPairs, elidedPairs,
-                outDir.string().c_str());
+                noZeroResetPairs, outDir.string().c_str());
     return 0;
 }

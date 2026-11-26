@@ -1,0 +1,143 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU: translated block pairs that never write VF0 or VI0 skip their reset
+
+What it is for:
+  After every pair the step stores VF0 = (0, 0, 0, 1) and VI0 = 0 again,
+  undoing whatever an instruction wrote there: five stores per pair, for
+  nearly all pairs needlessly.
+
+The changes:
+  - execPairWith takes mayWriteZeroRegs (default true); false leaves out
+    the reset.
+  - VU1NativeAccess::blockPairUpper/blockPairUpperLower take kZeroWrite
+    (default true) and pass it.
+  - VU1NativeAccess::upperLowerMayWriteZeroRegs: for the translator,
+    whether a pair's upper and lower words can change VF0 or VI0, found by
+    running them twice from a reset state with VF0 and VI0 set to other
+    values. An executor writes the register its word's fields name,
+    whatever the operands (addresses are wrapped into VU memory), so a
+    word either always writes VF0/VI0 or never does.
+  Same results.
+
+How it was checked:
+  tools/vu1_replay --sum: the same checksums for the 40 VU1 and 60 VU0
+  workloads, interpreted, translated and without blocks. ps2xTest
+  454/454. 5,421 of the 5,922 block pairs skip the reset; instructions in
+  VU1::run on the replay 410.2 M -> 406.8 M (findings/20 s.33).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -432,7 +432,8 @@
+     // out.
+     template <class UpperExec, class LowerExec, class Timing>
+     StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower,
+-                            Timing timing, bool immediateWrites = false, bool blockBody = false, bool inBudget = false);
++                            Timing timing, bool immediateWrites = false, bool blockBody = false, bool inBudget = false,
++                            bool mayWriteZeroRegs = true);
+     struct DynamicTiming
+     {
+         const DecodedInstructionPair &decoded;
+@@ -980,7 +981,8 @@
+ 
+ template <class UpperExec, class LowerExec, class Timing>
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
+-                                                                           Timing timing, bool immediateWrites, bool blockBody, bool inBudget)
++                                                                           Timing timing, bool immediateWrites, bool blockBody, bool inBudget,
++                                                                           bool mayWriteZeroRegs)
+ {
+     if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+     {
+@@ -1171,11 +1173,17 @@
+     if (writtenVi != 0u && decoded.lowerUsage.delaysNextBranchRead)
+         recordViWriteForBranch(writtenVi, oldVi);
+ 
+-    m_state.vf[0][0] = 0.0f;
+-    m_state.vf[0][1] = 0.0f;
+-    m_state.vf[0][2] = 0.0f;
+-    m_state.vf[0][3] = 1.0f;
+-    m_state.vi[0] = 0;
++    // VF0 and VI0 are constant: whatever an instruction wrote there is
++    // undone. mayWriteZeroRegs = false: the translator found that this
++    // pair's instructions never write them (upperLowerMayWriteZeroRegs).
++    if (mayWriteZeroRegs)
++    {
++        m_state.vf[0][0] = 0.0f;
++        m_state.vf[0][1] = 0.0f;
++        m_state.vf[0][2] = 0.0f;
++        m_state.vf[0][3] = 1.0f;
++        m_state.vi[0] = 0;
++    }
+ 
+     // A pair in the body of a translated block (VU1NativeAccess::blockPair):
+     // no branch, delay slot, E, D or T bit can be pending or start here (the
+@@ -1484,6 +1492,34 @@
+     }
+     static constexpr uint32_t kMaxPipelineLatency = VU1Interpreter::kMaxPipelineLatency;
+     static constexpr uint32_t kMaxXgkickWait = VU1Interpreter::kMaxXgkickWait;
++    // For the translator: whether running the pair's upper word and lower
++    // word (none with the I bit) can change VF0 or VI0, found by running
++    // them twice from a reset state with VF0 and VI0 set to other values
++    // (findings/20 s.33). The executors write a register given by the
++    // word's fields whatever the operands (an address is wrapped into VU
++    // memory), so one word either always writes VF0/VI0 or never does.
++    static bool upperLowerMayWriteZeroRegs(VU1Interpreter &vu, GS &gs, uint8_t *data, uint32_t dataSize,
++                                           uint32_t lower, uint32_t upper)
++    {
++        static constexpr float kMarks[2] = {-1234.5f, 0.375f};
++        static constexpr int32_t kViMarks[2] = {0x1357, -0x2468};
++        for (int pass = 0; pass < 2; ++pass)
++        {
++            vu.reset();
++            for (uint32_t lane = 0; lane < 4u; ++lane)
++                vu.m_state.vf[0][lane] = kMarks[pass] + static_cast<float>(lane);
++            vu.m_state.vi[0] = kViMarks[pass];
++            vu.execUpper(upper);
++            if ((upper & 0x80000000u) == 0u)
++                vu.execLower(lower, data, dataSize, gs, nullptr, upper);
++            for (uint32_t lane = 0; lane < 4u; ++lane)
++                if (vu.m_state.vf[0][lane] != kMarks[pass] + static_cast<float>(lane))
++                    return true;
++            if (vu.m_state.vi[0] != kViMarks[pass])
++                return true;
++        }
++        return false;
++    }
+     // For the translator: whether the upper word queues an FMAC flag entry
+     // (MAC and status) when it runs. It does so for every operand value
+     // (the fast and the per-lane flag code both queue one, unless DEST is
+@@ -1522,7 +1558,8 @@
+     // (the translator checked, findings/20 s.28): m_flagElide is set while it
+     // runs.
+     template <void (*Upper)(VU1Interpreter &), const Pair &P, uint32_t kPc, bool kFirst,
+-              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false>
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false,
++              bool kZeroWrite = true>
+     static PS2_VU_FORCEINLINE bool blockPairUpper(VU1Interpreter &vu, Frame &frame)
+     {
+         if constexpr (!kFirst)
+@@ -1540,13 +1577,14 @@
+                 { runUpper<Upper, kElide>(v); },
+                 [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
+                 { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true) == Result::Continue) [[likely]]
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true, kZeroWrite) == Result::Continue) [[likely]]
+             return true;
+         vu.m_state.pc = kPc;
+         return false;
+     }
+     template <void (*Upper)(VU1Interpreter &), LowerFn Lower, const Pair &P, uint32_t kPc, bool kFirst,
+-              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false>
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false,
++              bool kZeroWrite = true>
+     static PS2_VU_FORCEINLINE bool blockPairUpperLower(VU1Interpreter &vu, Frame &frame)
+     {
+         if constexpr (!kFirst)
+@@ -1563,7 +1601,7 @@
+                 { runUpper<Upper, kElide>(v); },
+                 [upperWord](VU1Interpreter &v, Frame &fr)
+                 { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true) == Result::Continue) [[likely]]
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true, kZeroWrite) == Result::Continue) [[likely]]
+             return true;
+         vu.m_state.pc = kPc;
+         return false;
