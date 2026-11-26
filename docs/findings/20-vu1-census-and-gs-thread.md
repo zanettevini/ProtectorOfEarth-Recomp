@@ -1143,3 +1143,22 @@ per second in one-minute averages in the first level.
 - Checked: same hashes as before on the level recording and the six
   random recordings; 6 bands match `--sync`; ps2xTest 454/454.
 
+## 37. C32 texture quads read inline (patch 0059)
+
+- After patch 0058 (10.53 G), the call into `GSMem::ReadTextureQuad` (in
+  another file, so never inlined), its format switch and the call into
+  `readQuad` cost about 0.3 G by source line (entry, switch, exits).
+- A side check on the same profile: the texture page buffer's 8 KB page
+  copies are cheap (libc `memcpy` 61 M in all); the large
+  `string_fortified.h` lines are the inlined 4-byte texel and pixel loads.
+  Reading pages in place would also change which stale data a draw sees
+  without a TEXFLUSH (s.7), so the buffer stays.
+- Patch 0059: the quad templates move to `ps2_gs_memory.h`, the C32 page
+  table is no longer file-local, and the sampler reads C32 quads inline
+  (other formats keep the call): 10.53 G -> 10.44 G, -0.8% (less than the
+  0.3 G: the inlined code keeps most of the work).
+- Checked: same hashes as before on the level recording and the six
+  random recordings; 6 bands match `--sync`; ps2xTest 454/454.
+- Since s.34 (12.27 G), patches 0053 and 0057-0059 took this measure to
+  10.44 G (-14.9%).
+

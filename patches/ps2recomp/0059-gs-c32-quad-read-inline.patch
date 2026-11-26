@@ -1,0 +1,220 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: C32 texture quads read inline in the sampler
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - readAtPixel and readQuad (the four texels of a bilinear sample) move
+    from ps2_gs_memory.cpp into ps2_gs_memory.h (namespace detail), with
+    the PS2_GS_MEMORY_INLINE macro; ReadTextureQuad keeps its format
+    switch and uses them as before.
+  - PageTableC32 loses `static` and is declared in the header;
+    ReadTextureQuadC32 reads a C32 quad inline. The sampler uses it for
+    C32 textures (most bilinear samples) and ReadTextureQuad for the
+    other formats: the same reads in the same order, without the call
+    and the format dispatch.
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and the six random recordings; 6
+  bands give the same hashes. ps2xTest 454/454. Instructions for the
+  first 60,000 records of the level recording: 10.53 G -> 10.44 G
+  (findings/20 s.37).
+
+--- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+@@ -555,6 +555,83 @@
+     void ReadTextureQuad(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
+                          u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4]);
+ 
++// Forced inline for the per-texel steps of the texture quad reads.
++#ifndef PS2_GS_MEMORY_INLINE
++#if defined(_MSC_VER)
++#define PS2_GS_MEMORY_INLINE __forceinline
++#else
++#define PS2_GS_MEMORY_INLINE inline __attribute__((always_inline))
++#endif
++#endif
++
++    namespace detail
++    {
++        // PixelStorageTraits<M>::Read for a texel whose page-local address
++        // is already known: the same steps after Address().
++        template <PixelStorageMode M>
++        PS2_GS_MEMORY_INLINE u32 readAtPixel(TexturePageCache& cache, const u8* data, u32 pixel_addr)
++        {
++            using Traits = PixelStorageTraits<M>;
++            using PackedT = typename Traits::PackedT;
++            const u32 bits = pixel_addr * UnpackedBitWidth(M) + Traits::BitOffset();
++            const u32 byte_addr = (bits / 8) & (MEMORY_SIZE - sizeof(PackedT));
++            const u32 shift = bits % 8;
++            const u8* source = cache.Resolve(data, byte_addr);
++            PackedT v;
++            std::memcpy(&v, source, sizeof(PackedT));
++            switch (M)
++            {
++            case C24:
++            case Z24:
++                return v & 0x00FFFFFF;
++            case P4:
++            case P4HL:
++            case P4HH:
++                return (v >> shift) & 0x0F;
++            default:
++                return v;
++            }
++        }
++
++        // The four texels of a bilinear sample: Address() split into the
++        // part of each row (v) and of each column (u), as PageId and the
++        // page table compute them.
++        template <PixelStorageMode M, typename TableT>
++        PS2_GS_MEMORY_INLINE void readQuad(const TableT& table, TexturePageCache& cache, const u8* data, u32 bp, u32 bw,
++                      u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
++        {
++            using Traits = PixelStorageTraits<M>;
++            constexpr auto page_extent = Traits::PageExtent();
++            constexpr u32 blocks = static_cast<u32>(Traits::BlocksPerPage());
++            constexpr u32 pixels_per_page = static_cast<u32>(Traits::PixelsPerPage());
++            const u32 base_page = bp / blocks;
++            const auto& pageTable = table[bp % blocks];
++            const u32 rowPages = (bw * 64) / page_extent.x;
++            const u32 row0 = base_page + (v0 / page_extent.y) * rowPages;
++            const u32 row1 = base_page + (v1 / page_extent.y) * rowPages;
++            const u32 col0 = u0 / page_extent.x;
++            const u32 col1 = u1 / page_extent.x;
++            const u32 y0 = v0 % page_extent.y, y1 = v1 % page_extent.y;
++            const u32 x0 = u0 % page_extent.x, x1 = u1 % page_extent.x;
++            out[0] = readAtPixel<M>(cache, data, (row0 + col0) * pixels_per_page + pageTable[y0][x0]);
++            out[1] = readAtPixel<M>(cache, data, (row0 + col1) * pixels_per_page + pageTable[y0][x1]);
++            out[2] = readAtPixel<M>(cache, data, (row1 + col0) * pixels_per_page + pageTable[y1][x0]);
++            out[3] = readAtPixel<M>(cache, data, (row1 + col1) * pixels_per_page + pageTable[y1][x1]);
++        }
++    }
++
++    // The C32 page lookup table (ps2_gs_memory.cpp), for the inline quad read.
++    extern PixelStorageTraits<C32>::PageLookupTableT PageTableC32;
++
++    // ReadTextureQuad for a C32 texture, inline in the caller: the same reads
++    // in the same order, without the call and the format dispatch
++    // (findings/20 s.37). C32 is most of the game's bilinear samples.
++    PS2_GS_MEMORY_INLINE void ReadTextureQuadC32(TexturePageCache& cache, const u8* data, u32 bp, u32 bw,
++                                                 u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
++    {
++        detail::readQuad<C32>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out);
++    }
++
+ 	// The byte address in GS memory of pixel (x, y) of a buffer, the same
+ 	// one Read*/Write* below compute, for the frame and Z formats: a pixel
+ 	// read and then written computes it once (findings/20 s.30). C32/Z32 and
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -3,13 +3,6 @@
+ 
+ #include "runtime/gs/ps2_gs_memory.h"
+ 
+-// Forced inline for the per-texel steps of ReadTextureQuad.
+-#if defined(_MSC_VER)
+-#define PS2_GS_MEMORY_INLINE __forceinline
+-#else
+-#define PS2_GS_MEMORY_INLINE inline __attribute__((always_inline))
+-#endif
+-
+ namespace GSMem
+ {
+     using C32Traits  = PixelStorageTraits<C32>;
+@@ -200,7 +193,8 @@
+     }};
+ 
+     // this is going to be massive (an entire page of addess lookups)
+-    static C32PageLookupTable  PageTableC32{ };
++    // Not static: ReadTextureQuadC32 (ps2_gs_memory.h) reads it inline.
++    C32PageLookupTable  PageTableC32{ };
+     static Z32PageLookupTableT PageTableZ32{ };
+     static C16PageLookupTable  PageTableC16{ };
+     static C16SPageLookupTable PageTableC16S{ };
+@@ -274,61 +268,9 @@
+         }
+     }
+ 
+-    namespace
+-    {
+-        // PixelStorageTraits<M>::Read for a texel whose page-local address
+-        // is already known: the same steps after Address().
+-        template <PixelStorageMode M>
+-        PS2_GS_MEMORY_INLINE u32 readAtPixel(TexturePageCache& cache, const u8* data, u32 pixel_addr)
+-        {
+-            using Traits = PixelStorageTraits<M>;
+-            using PackedT = typename Traits::PackedT;
+-            const u32 bits = pixel_addr * UnpackedBitWidth(M) + Traits::BitOffset();
+-            const u32 byte_addr = (bits / 8) & (MEMORY_SIZE - sizeof(PackedT));
+-            const u32 shift = bits % 8;
+-            const u8* source = cache.Resolve(data, byte_addr);
+-            PackedT v;
+-            std::memcpy(&v, source, sizeof(PackedT));
+-            switch (M)
+-            {
+-            case C24:
+-            case Z24:
+-                return v & 0x00FFFFFF;
+-            case P4:
+-            case P4HL:
+-            case P4HH:
+-                return (v >> shift) & 0x0F;
+-            default:
+-                return v;
+-            }
+-        }
+-
+-        // The four texels of a bilinear sample: Address() split into the
+-        // part of each row (v) and of each column (u), as PageId and the
+-        // page table compute them.
+-        template <PixelStorageMode M, typename TableT>
+-        void readQuad(const TableT& table, TexturePageCache& cache, const u8* data, u32 bp, u32 bw,
+-                      u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
+-        {
+-            using Traits = PixelStorageTraits<M>;
+-            constexpr auto page_extent = Traits::PageExtent();
+-            constexpr u32 blocks = static_cast<u32>(Traits::BlocksPerPage());
+-            constexpr u32 pixels_per_page = static_cast<u32>(Traits::PixelsPerPage());
+-            const u32 base_page = bp / blocks;
+-            const auto& pageTable = table[bp % blocks];
+-            const u32 rowPages = (bw * 64) / page_extent.x;
+-            const u32 row0 = base_page + (v0 / page_extent.y) * rowPages;
+-            const u32 row1 = base_page + (v1 / page_extent.y) * rowPages;
+-            const u32 col0 = u0 / page_extent.x;
+-            const u32 col1 = u1 / page_extent.x;
+-            const u32 y0 = v0 % page_extent.y, y1 = v1 % page_extent.y;
+-            const u32 x0 = u0 % page_extent.x, x1 = u1 % page_extent.x;
+-            out[0] = readAtPixel<M>(cache, data, (row0 + col0) * pixels_per_page + pageTable[y0][x0]);
+-            out[1] = readAtPixel<M>(cache, data, (row0 + col1) * pixels_per_page + pageTable[y0][x1]);
+-            out[2] = readAtPixel<M>(cache, data, (row1 + col0) * pixels_per_page + pageTable[y1][x0]);
+-            out[3] = readAtPixel<M>(cache, data, (row1 + col1) * pixels_per_page + pageTable[y1][x1]);
+-        }
+-    }
++    // readAtPixel and readQuad are in ps2_gs_memory.h (namespace detail), so
++    // the sampler can read C32 quads inline (ReadTextureQuadC32).
++    using detail::readQuad;
+ 
+     void ReadTextureQuad(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
+                          u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -1506,7 +1506,13 @@
+     const uint32_t wv1 = static_cast<uint32_t>(wrapTextureCoordinate(v1, texH, wrapV, minV, maxV));
+     uint32_t raw[4] = {0u, 0u, 0u, 0u};
+     if (m_vram)
+-        GSMem::ReadTextureQuad(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
++    {
++        // C32, most of the bilinear samples, is read inline (findings/20 s.37).
++        if (tex.psm == GS_PSM_CT32)
++            GSMem::ReadTextureQuadC32(m_texturePageCache, m_vram, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
++        else
++            GSMem::ReadTextureQuad(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
++    }
+     convertTexels(raw, 4);
+     return bilinearFilter(raw[0], raw[1], raw[2], raw[3], fx, fy);
+ }
