@@ -58,8 +58,9 @@ fix and how it was found.
 | `0048-vu-native-coverage-counters.patch` | VU: counts, per unit, the calls into translated code and the pairs the run loop hands to the interpreter (in total, by reason and per PC), readable from any thread | findings/21 s.27 |
 | `0049-gs-one-address-per-pixel.patch` | GS CPU backend: the frame and Z addresses of a pixel computed once each (32-, 24- and 16-bit formats), the word read and written in place; same results | findings/20 s.30 |
 | `0050-iop-kernel-one-pass-scheduling.patch` | IOP kernel: the next thread and the earliest wake cycle found in one pass over the threads; dead threads looked for only after one was marked; same scheduling | findings/20 s.31 |
+| `0051-gs-texture-read-overlay.patch` | GS CPU backend: the texture page buffer can take pages from an overlay of page copies (texture and CLUT reads), so a banded renderer can run an upload ahead of draws that still read the old pages; nothing changes without one | findings/20 s.32 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049 and 0050 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049 and 0050 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

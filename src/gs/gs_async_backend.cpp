@@ -75,12 +75,15 @@
 //     (drawsOverItself, findings/20 s.24); the main backend gets every
 //     CLUT load and TEXFLUSH too, so it has the bands' CLUT.
 //   - Image transfers run on the main backend on the dispatcher thread,
-//     while no band is drawing. One that would write pages a draw or CLUT
-//     load of the unfinished segment reads or writes first lets every band
-//     finish; one that touches none of them (the usual texture upload into
+//     while no band is drawing. One that would write pages a draw of the
+//     unfinished segment writes first lets every band finish; one that
+//     touches none of the segment's pages (the usual texture upload into
 //     a free area) runs at once, ahead of those draws, which do not see
-//     its pages either way (findings/20 s.21). Local-to-host and
-//     local-to-local transfers always wait.
+//     its pages either way (findings/20 s.21). One that writes pages the
+//     segment's draws or CLUT loads only read also runs at once: those
+//     pages are copied first and the draws queued before the upload read
+//     the copies (overlayAhead, GSCpuBackend::SetReadOverlay; findings/20
+//     s.32). Local-to-host and local-to-local transfers always wait.
 //   - One difference remains with N > 1: each band has its own copy of the
 //     GS texture page buffer (GSCpuBackend's one-page TexturePageCache), so
 //     a game that samples a page it rendered to without a TEXFLUSH may see
@@ -95,6 +98,7 @@
 #include "runtime/gs/gs_cpu_backend.h"
 
 #include <algorithm>
+#include <array>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -102,6 +106,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -132,8 +137,15 @@ namespace ben10::gs_async
     struct TextureFlushCommand
     {
     };
+    // Made by the dispatcher only, inside a segment: the bands read texture
+    // and CLUT pages through this overlay from here on (an upload ran ahead
+    // of the draws before it; findings/20 s.32). Not a producer command.
+    struct OverlayCommand
+    {
+        const uint8_t *const *pages = nullptr;
+    };
     using Command = std::variant<SubmitCommand, LoadClutCommand, BeginTransferCommand,
-                                 UploadImageCommand, TextureFlushCommand>;
+                                 UploadImageCommand, TextureFlushCommand, OverlayCommand>;
 
     // GS memory is 4 MB = 512 pages of 8 KB.
     constexpr uint32_t kPages = 512u;
@@ -585,6 +597,8 @@ namespace ben10::gs_async
         void Initialize(uint8_t *vram, uint32_t vramSize) override
         {
             drain();
+            m_vram = vram;
+            m_vramSize = vramSize;
             m_main->Initialize(vram, vramSize);
             for (auto &band : m_bands)
                 band->Initialize(vram, vramSize);
@@ -719,6 +733,87 @@ namespace ben10::gs_async
                 band.LoadClut(clut->tex0, clut->texclut);
             else if (std::holds_alternative<TextureFlushCommand>(command))
                 band.TextureFlush();
+            else if (auto *overlay = std::get_if<OverlayCommand>(&command))
+                band.SetReadOverlay(overlay->pages);
+        }
+
+        // An upload that writes pages the segment's draws or CLUT loads read
+        // (and none they write) runs at once instead of ending the segment
+        // (findings/20 s.32). The draws queued before it must still see those
+        // pages as they are now, so each page is copied, and every span of
+        // the segment so far (the commands between two such uploads) that
+        // has no copy of that page yet reads this one: an earlier span
+        // already has the copy made at an earlier upload, which is what it
+        // saw. The commands after this one start a new span that reads GS
+        // memory. The bands switch spans with OverlayCommands.
+        struct OverlaySpan
+        {
+            std::array<const uint8_t *, kPages> pages{};
+        };
+        void overlayAhead(std::vector<Command *> &segment, const PageSet &pages)
+        {
+            if (m_spansUsed == 0u)
+            {
+                // The commands so far become the first span.
+                OverlaySpan &first = takeSpan();
+                segment.insert(segment.begin(), &takeOverlayCommand(first.pages.data()));
+                m_spanStart = 1u; // the first span: everything after its OverlayCommand
+            }
+            // The last span gets no copies while no command is in it yet
+            // (several transfer commands in a row).
+            const size_t spans = segment.size() > m_spanStart ? m_spansUsed : m_spansUsed - 1u;
+            for (uint32_t page = 0; page < kPages; ++page)
+            {
+                if (!pages.test(page))
+                    continue;
+                const uint8_t *copy = nullptr;
+                for (size_t i = 0; i < spans; ++i)
+                {
+                    const uint8_t *&slot = m_spans[i]->pages[page];
+                    if (slot != nullptr)
+                        continue;
+                    if (copy == nullptr)
+                        copy = takeSnapshot(page);
+                    slot = copy;
+                }
+            }
+            // The commands after the upload read GS memory (a new span),
+            // unless no command came since the last span began.
+            if (segment.size() > m_spanStart)
+            {
+                OverlaySpan &next = takeSpan();
+                segment.push_back(&takeOverlayCommand(next.pages.data()));
+                m_spanStart = segment.size();
+            }
+            ++m_stats.transfersOverlaid;
+        }
+        OverlaySpan &takeSpan()
+        {
+            if (m_spansUsed == m_spans.size())
+                m_spans.push_back(std::make_unique<OverlaySpan>());
+            OverlaySpan &span = *m_spans[m_spansUsed++];
+            span.pages.fill(nullptr);
+            return span;
+        }
+        const uint8_t *takeSnapshot(uint32_t page)
+        {
+            if (m_snapshotsUsed == m_snapshots.size())
+                m_snapshots.push_back(std::make_unique<std::array<uint8_t, kPageBytes>>());
+            std::array<uint8_t, kPageBytes> &copy = *m_snapshots[m_snapshotsUsed++];
+            const size_t offset = static_cast<size_t>(page) * kPageBytes;
+            if (m_vram != nullptr && offset + kPageBytes <= m_vramSize)
+                std::memcpy(copy.data(), m_vram + offset, kPageBytes);
+            else
+                copy.fill(0u);
+            return copy.data();
+        }
+        Command &takeOverlayCommand(const uint8_t *const *pages)
+        {
+            if (m_overlayCommandsUsed == m_overlayCommands.size())
+                m_overlayCommands.push_back(std::make_unique<Command>(OverlayCommand{}));
+            Command &command = *m_overlayCommands[m_overlayCommandsUsed++];
+            command = OverlayCommand{pages};
+            return command;
         }
 
         // Every band draws the segment; returns when all are done.
@@ -726,6 +821,10 @@ namespace ben10::gs_async
         {
             if (segment.empty())
                 return;
+            // Back to GS memory after a segment that used overlays.
+            const size_t overlayCommands = m_overlayCommandsUsed == 0u ? 0u : m_overlayCommandsUsed + 1u;
+            if (m_overlayCommandsUsed != 0u)
+                segment.push_back(&takeOverlayCommand(nullptr));
             ++m_stats.segments;
             ++m_stats.barriers[static_cast<size_t>(reason)];
             const auto start = Clock::now();
@@ -754,8 +853,12 @@ namespace ben10::gs_async
                 m_bandSegment = nullptr;
                 m_stats.otherBands += Clock::now() - drawn;
             }
-            reportDone(segment.size());
+            reportDone(segment.size() - overlayCommands);
             segment.clear();
+            m_spansUsed = 0u;
+            m_snapshotsUsed = 0u;
+            m_overlayCommandsUsed = 0u;
+            m_spanStart = 0u;
             m_segmentWrites.reset();
             m_segmentReads.reset();
             m_segmentLayouts.clear();
@@ -888,8 +991,10 @@ namespace ben10::gs_async
                                               : transfer->command.direction == 3u ? PageSet{}
                                                                                   : PageSet{}.set();
                         }
-                        if (!banded || ((m_segmentWrites | m_segmentReads) & m_transferPages).any())
+                        if (!banded || m_transferPages.all() || (m_segmentWrites & m_transferPages).any())
                             runSegment(segment, Barrier::Transfer);
+                        else if ((m_segmentReads & m_transferPages).any())
+                            overlayAhead(segment, m_segmentReads & m_transferPages); // findings/20 s.32
                         else
                             ++m_stats.transfersAhead;
                         if (transfer)
@@ -1133,7 +1238,7 @@ namespace ben10::gs_async
             const auto &b = m_stats.barriers;
             std::fprintf(stderr,
                          "[gs-async] last %.1f s: %llu draws in %llu segments (ended by texture %llu, CLUT %llu, "
-                         "transfer %llu, length %llu, idle %llu, layout %llu, serial draw %llu; %llu serial draws; %llu transfer commands ran ahead of the segment); band 0 drew %.2f s and waited %.2f s for the "
+                         "transfer %llu, length %llu, idle %llu, layout %llu, serial draw %llu; %llu serial draws; %llu transfer commands ran ahead of the segment, %llu of them with page copies); band 0 drew %.2f s and waited %.2f s for the "
                          "other bands; producers held by the queue limit %llu times (%.2f s), drains %llu (%.2f s)\n",
                          seconds(elapsed), static_cast<unsigned long long>(m_stats.draws),
                          static_cast<unsigned long long>(m_stats.segments),
@@ -1141,7 +1246,8 @@ namespace ben10::gs_async
                          static_cast<unsigned long long>(b[2]), static_cast<unsigned long long>(b[3]),
                          static_cast<unsigned long long>(b[4]), static_cast<unsigned long long>(b[5]),
                          static_cast<unsigned long long>(b[6]), static_cast<unsigned long long>(m_stats.serialDraws),
-                         static_cast<unsigned long long>(m_stats.transfersAhead),
+                         static_cast<unsigned long long>(m_stats.transfersAhead + m_stats.transfersOverlaid),
+                         static_cast<unsigned long long>(m_stats.transfersOverlaid),
                          seconds(m_stats.band0), seconds(m_stats.otherBands),
                          static_cast<unsigned long long>(held), seconds(heldTime),
                          static_cast<unsigned long long>(drains), seconds(drainTime));
@@ -1222,6 +1328,7 @@ namespace ben10::gs_async
             uint64_t barriers[7] = {}; // indexed by Barrier
             uint64_t serialDraws = 0;  // draws made whole on the main backend
             uint64_t transfersAhead = 0; // transfer commands run without a barrier
+            uint64_t transfersOverlaid = 0; // of them, with copies of pages queued draws read
             Clock::duration band0{};
             Clock::duration otherBands{};
         };
@@ -1237,6 +1344,19 @@ namespace ben10::gs_async
         PageSet m_segmentWrites;                            // pages written since the last barrier
         PageSet m_segmentReads;                             // texture and CLUT pages read since then
         PageSet m_transferPages;                            // pages the current transfer writes
+        // Uploads run ahead of draws that read their pages (overlayAhead):
+        // the spans of the current segment, the page copies and the
+        // OverlayCommands, kept between segments for reuse.
+        static constexpr size_t kPageBytes = 8192u;
+        std::vector<std::unique_ptr<OverlaySpan>> m_spans;
+        size_t m_spansUsed = 0;
+        size_t m_spanStart = 0; // segment index where the current span began
+        std::vector<std::unique_ptr<std::array<uint8_t, kPageBytes>>> m_snapshots;
+        size_t m_snapshotsUsed = 0;
+        std::vector<std::unique_ptr<Command>> m_overlayCommands;
+        size_t m_overlayCommandsUsed = 0;
+        uint8_t *m_vram = nullptr;
+        uint32_t m_vramSize = 0;
 
         mutable std::mutex m_mutex;
         std::condition_variable m_workAvailable;

@@ -1015,3 +1015,42 @@ per second in one-minute averages in the first level.
   draws the first level on Linux. The speed-up is not measured: the game
   thread is not the limit on Windows now (it waits for the VIF1 worker),
   so it shows only in the game thread's own CPU time.
+
+## 32. Uploads into pages queued draws read: page copies instead of a barrier (patch 0051)
+
+- The `[gs-async]` line on the level recording (6 bands, `--every 0`):
+  3,933 segments in 15 s of play, 2,113 of them ended by a transfer, and
+  band 0 waited 3.05 of 8.9 s for the other bands. A throwaway count of
+  what those transfer barriers protected: 1,931 of 2,000 uploads wrote
+  only pages that the segment's draws or CLUT loads read (textures), 69
+  pages they wrote (frame or Z), none of them local-to-host or
+  local-to-local.
+- Every texture and CLUT read of GSCpuBackend goes through its one-page
+  texture buffer (`TexturePageCache::Resolve` copies the page from GS
+  memory on a miss). Patch 0051 gives that buffer an overlay: 512 page
+  pointers; on a miss it copies a page from the overlay when it has one.
+  The page already held is kept, as it would be across an upload.
+- The dispatcher (src/gs/gs_async_backend.cpp, `overlayAhead`): an upload
+  command that writes pages the unfinished segment reads, and none it
+  writes, no longer ends the segment. Each such page is copied before the
+  upload runs; every span of the segment so far (the commands between two
+  such uploads) that has no copy of the page yet gets this one (an earlier
+  span keeps the copy made at an earlier upload, which is what it saw);
+  the commands after the upload start a new span reading GS memory. The
+  bands switch spans at `OverlayCommand`s inserted into the segment, and
+  go back to GS memory at its end. Frame and Z pages, local-to-host and
+  local-to-local transfers still end the segment.
+- Checked: 2 and 6 bands give the same hashes as GSCpuBackend alone
+  (`--sync`) on the level recording (35 points and the end), the six
+  random recordings of s.24 and four new ones (seeds 11-14); ps2xTest
+  454/454; the game draws the first level.
+- Level recording, 6 bands, `--every 0`: 3,933 -> 2,168 segments
+  (transfer barriers 2,113 -> 73; 5,349 upload commands ran ahead with
+  page copies; more segments now end at the 512-command length limit,
+  1,132 instead of 858); band 0 waited 2.59 s instead of 3.05 s; the
+  whole replay 8.9 -> 7.7 s on the 2-core test machine, where 6 bands
+  share 2 cores. The gain on a machine with a core per band is to be
+  measured on Windows.
+- In the game (Linux, 6 bands, the first level): about 135-145 transfer
+  barriers and 810-865 uploads run ahead with page copies per 10 s,
+  1,000 segments per 10 s; the level draws as before.

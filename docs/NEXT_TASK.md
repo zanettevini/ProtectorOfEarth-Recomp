@@ -66,9 +66,10 @@
    side: the rest of the per-FMAC cost (operand normalisation and the
    fast-path checks, s.28), the block bodies' per-pair bookkeeping;
    on the GS side
-   the VRAM accesses (done, patch 0049, s.30: -0.9% only), the remaining transfer barriers (uploads into
-   pages queued draws still read: copy those pages for the queued draws
-   instead of waiting), maybe a dispatcher that draws no band itself;
+   the VRAM accesses (done, patch 0049, s.30: -0.9% only), the transfer
+   barriers (done, s.32: uploads into pages queued draws read run ahead
+   with page copies, segments -44% on the level recording; to measure on
+   Windows), the segment length limit (512 commands), maybe a dispatcher that draws no band itself;
    measure with `ben10_gs_replay --limit N` under callgrind; check every
    GS change with `ben10_gs_replay --sync` hashes on the level and on
    random recordings, and the band counts against it;
@@ -97,7 +98,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0050 upstream to PS2Recomp.
+5. Send patches 0002-0051 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

@@ -1,0 +1,96 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: a read overlay for the texture page buffer
+
+What it is for:
+  Protector of Earth Recomp draws with several GSCpuBackends in row bands
+  (one per thread) and runs image uploads on another backend while the
+  bands are idle. An upload into pages that draws still queued for the
+  bands read as textures used to wait for those draws. With an overlay,
+  the dispatcher can copy those pages, run the upload at once, and let
+  the bands read the copies for the draws queued before it.
+
+The changes:
+  - TexturePageCache::SetOverlay: an array of 512 page pointers (nullptr =
+    GS memory); when the one-page buffer loads a page, it copies it from
+    the overlay's page if there is one. The page already held is kept,
+    as it would be across the upload.
+  - GSCpuBackend::SetReadOverlay sets it. Everything that goes through the
+    texture page buffer (texture sampling and CLUT loads) reads through
+    it; frame and Z reads do not.
+  Without an overlay nothing changes.
+
+How it was checked:
+  ben10_gs_replay: with the port's banded backend using overlays, 2 and 6
+  bands give the same hashes as GSCpuBackend alone (--sync) on the first
+  level's recording (35 points and the end) and on ten random recordings.
+  ps2xTest 454/454 (findings/20 s.32).
+
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -42,6 +42,13 @@
+     static constexpr uint32_t kRowBandShift = 4u;
+     void SetRowBand(uint32_t index, uint32_t count);
+ 
++    // Texture and CLUT reads (everything that goes through the texture page
++    // buffer) take the pages listed here (512 pointers, one per 8 KB page,
++    // nullptr = GS memory) in place of GS memory, until called again;
++    // nullptr for none (findings/20 s.32). The array must stay valid while
++    // it is set.
++    void SetReadOverlay(const uint8_t *const *pages);
++
+ private:
+     bool rowInBand(int y) const noexcept
+     {
+--- a/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h
++++ b/ps2xRuntime/include/runtime/gs/gs_texture_page_cache.h
+@@ -17,6 +17,16 @@
+             m_pageBase = UINT32_MAX;
+         }
+ 
++        // Pages to take from elsewhere than GS memory when they are loaded
++        // (an array of 512 pointers, one per 8 KB page, nullptr for GS
++        // memory itself; nullptr for none): a backend drawing ahead of an
++        // upload reads the pages as they were before it (findings/20 s.32).
++        // The page already held is kept, as it would be across the upload.
++        void SetOverlay(const uint8_t* const* pages) noexcept
++        {
++            m_overlay = pages;
++        }
++
+         // byteAddress is the wrapped, swizzled VRAM address. The returned
+         // pointer is valid only until the next miss or invalidation.
+         const uint8_t* Resolve(const uint8_t* vram, uint32_t byteAddress) noexcept
+@@ -24,7 +34,10 @@
+             const uint32_t pageBase = byteAddress & ~(kPageSize - 1u);
+             if (m_pageBase != pageBase)
+             {
+-                std::memcpy(m_bytes.data(), vram + pageBase, kPageSize);
++                const uint8_t* source = vram + pageBase;
++                if (m_overlay != nullptr && m_overlay[pageBase / kPageSize] != nullptr)
++                    source = m_overlay[pageBase / kPageSize];
++                std::memcpy(m_bytes.data(), source, kPageSize);
+                 m_pageBase = pageBase;
+             }
+             return m_bytes.data() + (byteAddress & (kPageSize - 1u));
+@@ -33,5 +46,6 @@
+     private:
+         alignas(64) std::array<uint8_t, kPageSize> m_bytes{};
+         uint32_t m_pageBase = UINT32_MAX;
++        const uint8_t* const* m_overlay = nullptr;
+     };
+ }
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -948,6 +948,12 @@
+     }
+ }
+ 
++void GSCpuBackend::SetReadOverlay(const uint8_t *const *pages)
++{
++    std::lock_guard<std::mutex> lock(m_mutex);
++    m_texturePageCache.SetOverlay(pages);
++}
++
+ void GSCpuBackend::SetRowBand(uint32_t index, uint32_t count)
+ {
+     std::lock_guard<std::mutex> lock(m_mutex);
