@@ -1,0 +1,79 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VIF1 UNPACK: fast paths for unmasked writes without row addition
+
+What it is for:
+  In Ben 10: Protector of Earth's first level, with enemies on screen, the
+  VIF1/VU1 worker thread is the limit (it needs more than the 33 ms of a
+  30-per-second frame). A Windows profile of that thread in a fight
+  showed PS2Memory::processVIF1Data at 6.5% of its own samples: UNPACK
+  wrote every vector through the per-field mask and mode loop, even when
+  there is no write mask and no row addition.
+
+The changes:
+  - V4-32 with CL == WL, no write mask and MODE 0 or 3: the vectors are
+    copied as they are to consecutive VU1 addresses, wrapping at the end
+    of VU1 data memory (1024 qwords), in at most two copies.
+  - Any other handled format with no write mask and no row addition
+    (MODE 0 or 3, or V4-5, which never adds): each decompressed vector is
+    stored whole, without the per-field loop.
+  Same bytes in VU1 memory as before.
+
+How it was checked:
+  A throwaway program fed 200,000 random VIF1 packets (STCYCL with random
+  CL and WL, STMOD, STMASK, STROW, STCOL, then one to four UNPACKs of every
+  format, masked or not, with random NUM, addresses and the TOPS and
+  unsigned bits) to PS2Memory built with and without this patch: the same
+  VU1 data memory at every 100th packet. ps2xTest 454/454 (its VIF UNPACK,
+  STCYCL, STMOD and mask cases included).
+
+--- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
++++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
+@@ -1,4 +1,5 @@
+ // Based on Blackline Interactive implementation
++#include <algorithm>
+ #include "runtime/ps2_memory.h"
+ #include <cstring>
+ 
+@@ -572,7 +573,26 @@
+ 
+             const bool zeroExtend = (imm & 0x4000u) != 0u;
+ 
+-            if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
++            const uint32_t unpackMode = vif1_regs.mode & 3u;
++            if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes && vl == 0u && vn == 3u && cl == wl &&
++                !maskEnable && (unpackMode == 0u || unpackMode == 3u))
++            {
++                // V4-32 with no write mask, no row addition and every
++                // cycle a write (CL == WL): each vector is copied as is to
++                // consecutive VU addresses, wrapping at the end of VU1 data
++                // memory (1024 qwords). The same bytes as the loop below
++                // writes one vector at a time, in two copies at most.
++                const uint8_t *srcBase = data + pos;
++                uint32_t done = 0u;
++                while (done < writeVectorCount)
++                {
++                    const uint32_t destVec = (vuAddr + done) & 0x3FFu;
++                    const uint32_t run = std::min<uint32_t>(writeVectorCount - done, 0x400u - destVec);
++                    std::memmove(m_vu1Data + destVec * 16u, srcBase + done * 16u, run * 16u);
++                    done += run;
++                }
++            }
++            else if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
+             {
+                 const uint8_t *srcBase = data + pos;
+                 uint32_t srcIndex = 0u;
+@@ -720,6 +740,14 @@
+ 
+                     const bool canAdd = (vl != 3u || vn != 3u);
+                     const uint32_t mode = vif1_regs.mode & 3u;
++                    if (decoded && handledFormat && !maskEnable && (!canAdd || mode == 0u || mode == 3u))
++                    {
++                        // No write mask and no row addition: every field
++                        // takes the decompressed value (the loop below gives
++                        // the same in this case).
++                        std::memcpy(m_vu1Data + destOff, decompressed, sizeof(decompressed));
++                        continue;
++                    }
+                     const uint32_t colIdx = (cyclePos > 3u) ? 3u : cyclePos;
+                     const uint32_t maskCycle = (cyclePos > 3u) ? 3u : cyclePos;
+ 

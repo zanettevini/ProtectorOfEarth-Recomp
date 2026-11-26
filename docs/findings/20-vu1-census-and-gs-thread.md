@@ -859,3 +859,31 @@ per second in one-minute averages in the first level.
 - Next: a Windows profile of the worker in the dips (`run-worker.bat`),
   then the VU work it shows (s.25 of findings/21 lists upper words,
   block bodies and the run loop as the largest parts per VU cycle).
+
+## 27. The worker in a fight, profiled on Windows; VIF1 UNPACK fast paths (patch 0044)
+
+- Measured by the maintainer on Windows (commit 42eab78, `run-worker.bat`:
+  `BEN10_PROFILE_THREAD=VIF1Worker`; first level, fights). Per second:
+  29-33 game frames when quiet, 21-25 in the heaviest fight, where every
+  frame took 40-50 ms of host time (the new pacing counts: no frame on
+  time in those seconds, almost none over 50 ms) and only 42-50 VBlanks
+  passed. Stalls over 100 ms: two, at the level's start (203 and 169 ms).
+  So the "stutter" is a steady slowdown of the whole game in fights, not
+  single stalls.
+- The worker in the two busiest 10-second windows (about 10,300 samples):
+  VU1 translated code 35% of its samples, the VU interpreter's helpers
+  15% (`materializeFlags` alone 6.4%: applying the FMAC flag entries, one
+  per FMAC, when a flag instruction reads them), `processVIF1Data` 6.5%
+  (UNPACK), waiting in `ntdll` 17%; inclusive: XGKICK and the GIF path
+  into the GS frontend 14%, of which the push into the GS queue 11%
+  (mostly the queue limit: producers held 0.5-4.8 s of every 10).
+- Patch 0044: UNPACK without a write mask and without row addition
+  (MODE 0 or 3) stores each decompressed vector whole instead of going
+  through the per-field mask loop, and V4-32 with CL == WL is copied in
+  bulk. Same VU1 memory as before for 200,000 random VIF1 packets
+  (throwaway program, both builds); ps2xTest 454/454.
+- What is left in a fight is mostly the VU1 work itself. The next large
+  step there is the cost of the FMAC flags (each FMAC computes its MAC
+  and status bits, queues an entry, and the entry is applied later),
+  which only matters where a flag instruction or a later program reads
+  them.
