@@ -55,8 +55,13 @@
    log shows frame pacing; the worker is named (patch 0043). The worker
    in a fight (s.27): VU1 code and its flag helpers about 55% of its
    samples, UNPACK 6.5% (patch 0044: fast paths), the push into the GS
-   queue 11% (the queue limit). Next: the FMAC flag cost in translated
-   code (compute and queue flags only where something can read them);
+   queue 11% (the queue limit). Done (s.28): a compact flag ring (patch
+   0045) and FMAC flag results left out in translated blocks where no
+   flag instruction can read them (patch 0046 and the translator's step
+   5): VU work on the replay -10.6%, FMAC entries queued -67%; to be
+   measured on Windows in a fight (`run-worker.bat`). Next on the VU
+   side: the rest of the per-FMAC cost (operand normalisation and the
+   fast-path checks, s.28), the block bodies' per-pair bookkeeping;
    on the GS side
    the VRAM accesses (one address per pixel for the frame and one for Z,
    in place of four), the remaining transfer barriers (uploads into
@@ -88,7 +93,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0044 upstream to PS2Recomp.
+5. Send patches 0002-0046 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

@@ -51,13 +51,14 @@ game) and the [README](../README.md#-going-native) board.
 | What | Where | Result |
 |---|---|---|
 | `ctest` (41 cases: 38 instruction + 2 memory layout active, 1 disabled on purpose) | Linux, GCC 13 | **40/40 pass** |
-| PS2Recomp's own `ps2x_tests` with patches 0001-0044 (built separately, Release) | Linux, GCC 13 | **454/454 pass** (run from `ps2xTest/` or the submodule root) |
+| PS2Recomp's own `ps2x_tests` with patches 0001-0046 (built separately, Release) | Linux, GCC 13 | **454/454 pass** (run from `ps2xTest/` or the submodule root) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |
 | Boot runs under Xvfb, sampled with gdb | Linux | moves past each bound blocker (findings/15) |
 | `tools/ghidra_analyze.sh` | Linux | reproduces the same function list (20,234 identical entries) |
-| Patches applied by CMake | Linux | 0001-0044 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); CMake resets the submodule and reapplies them all when the patch set changes (stamp file) |
+| Patches applied by CMake | Linux | 0001-0046 apply in order on a clean checkout of the pinned commit and give exactly the patched tree (`git apply` on a worktree); CMake resets the submodule and reapplies them all when the patch set changes (stamp file) |
 | VU1 replay (`ben10_vu1_replay --sum`), 40 workloads from the first level | Linux | identical checksums before and after patch 0013 (findings/20 s.3) |
+| VU replay after patches 0045-0046 (flag ring, flag results left out in blocks), 40 VU1 and 60 VU0 workloads | Linux | identical checksums interpreted, translated and translated without blocks; every flag read (cycle and value) the same interpreted and translated (findings/20 s.28) |
 | GS replay (`ben10_gs_replay`), 15 s of the first level (695,840 backend calls) and random recordings (`ben10_gs_synth`) | Linux | 2, 3, 4, 6 and 16 row bands give the same GS memory as PS2Recomp's GSCpuBackend on the level and on eight random recordings; before the fixes of findings/20 s.21 and s.24 they did not, and differed run to run |
 | Windows, first level with `BEN10_ASYNC_VU1=1`, after patches 0037-0038 | Windows, MSVC, Release | builds (translated blocks included); 16.5-27 game frames per second; the VIF1 worker is no longer the limit, the GS bands are next (findings/21 s.26) |
 | First level, under Xvfb | Linux | renders (screenshot 06); Ben walks with W (screenshot 07); reached from New Game too (findings/19 s.7); attacks and jumps (screenshot 09, findings/20 s.9); Omnitrix and the first fight (screenshot 10, s.10) |

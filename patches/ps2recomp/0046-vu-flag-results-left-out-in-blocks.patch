@@ -1,0 +1,245 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU: let translated blocks leave out FMAC flag results nobody reads
+
+What it is for:
+  Most FMAC results in the game's VU1 transform loops have their MAC and
+  status flags replaced by the next FMAC result before any flag
+  instruction reads them. Their flag entry still had to be built, queued
+  and applied. The game's translated VU code (tools/vu1_translate in
+  Protector of Earth Recomp) knows where the flag reads are.
+
+The changes:
+  - VU1Interpreter::m_flagElide: set by a translated block around an upper
+    instruction the translator marked. fmacFlagsFast then queues nothing
+    when every lane takes its fast path (the result adds no U or O flag,
+    only Z and S) and Z and S are already in m_flagStickyIssued.
+  - m_flagStickyIssued: the sticky Z/S/U/O bits set once every queued
+    entry is applied (the status register's, OR each queued status write,
+    from the last FSSET on). Kept by appendFmacFlagEntry and queueFsset,
+    recomputed from the registers and the ring when run() starts.
+  - VU1NativeAccess: blockPairUpper/blockPairUpperLower take a kElide
+    template argument (default false); blockCanEnterWithin<kMaxCycles>
+    lets such a block start only when its body cannot run out of the
+    run's cycle budget, so it never stops between a left-out result and
+    the one that replaces it (bounds: kMaxPipelineLatency per pair,
+    kMaxXgkickWait for an XGKICK); upperQueuesFmacFlags tells the
+    translator which upper words always queue an FMAC entry.
+  Code that does not set kElide runs as before.
+
+How it was checked:
+  tools/vu1_replay --sum: the same checksums for the 40 VU1 and 60 VU0
+  workloads, interpreted and translated (with and without blocks). A
+  throwaway build logged every flag read (cycle and register read: 2,806
+  MAC and 5,068 clip reads in the VU1 workloads): the same list
+  interpreted and translated. ps2xTest 454/454. Instructions in VU1::run
+  on the replay, without the resolver: 328.3 M -> 303.3 M; FMAC entries
+  queued: 856,920 -> 280,440 (findings/20 s.28).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -302,6 +302,15 @@
+     // due-cycle order; entries stay after they are due until something reads
+     // the flags (materializeFlags), and at most 8 can be not yet due.
+     static constexpr uint32_t kMaxFlagEntries = 16u;
++    // Upper bounds on how long one pair can wait before it issues, for the
++    // translated blocks that leave out flag results (findings/20 s.28): a
++    // pair waits at most for the longest result latency (every latency
++    // decodeInstructionPair gives is at most kMaxPipelineLatency; the
++    // longest, the EFU's EEXP, is 54 cycles) or, for an XGKICK, for the
++    // previous XGKICK's transfer (one qword every two cycles, at most
++    // XgkickPipeline::kBufferSize bytes).
++    static constexpr uint32_t kMaxPipelineLatency = 64u;
++    static constexpr uint32_t kMaxXgkickWait = 2u * (0x10000u / 16u) + 2u;
+     static constexpr uint32_t kMaxPendingStores = 8u;
+     static constexpr uint32_t kMaxPendingVfWrites = 16u;
+     static constexpr uint32_t kMaxPendingViWrites = 8u;
+@@ -365,6 +374,18 @@
+     GS *m_activeGs = nullptr;
+     PS2Memory *m_activeMemory = nullptr;
+     bool m_stopRequested = false;
++    // Set by a translated block around an upper instruction whose MAC and
++    // status results no flag instruction reads before a later FMAC result
++    // replaces them (VU1NativeAccess::blockPair* with kElide, findings/20
++    // s.28): fmacFlagsFast then queues no flag entry when the only sticky
++    // bits the result could add (Z and S) are already in m_flagStickyIssued.
++    bool m_flagElide = false;
++    // The sticky Z/S/U/O bits (as bits 3:0) set once every flag entry queued
++    // so far is applied: the status register's, plus each queued status
++    // write's, from the last FSSET on. Kept by appendFmacFlagEntry and
++    // queueFsset, and recomputed when a run starts (the state may have been
++    // changed in between).
++    uint32_t m_flagStickyIssued = 0;
+     bool m_pendingHaltD = false;
+     bool m_pendingHaltT = false;
+ 
+@@ -498,6 +519,8 @@
+     // Applies to m_state.mac/status/clip, in issue order, every flag entry
+     // due by now (what the per-cycle commit used to do), and drops them.
+     void materializeFlags();
++    // m_flagStickyIssued from the status register and the queued entries.
++    void recomputeFlagStickyIssued() noexcept;
+     // Whether a flag entry is still not due, and the first such due cycle.
+     bool flagEntryPending() const noexcept;
+     uint64_t firstPendingFlagCycle() const noexcept;
+@@ -1198,6 +1221,7 @@
+     // bits, and the same bits plus the products' ones as sticky bits.
+     const uint32_t current = status & 0xFu;
+     const uint32_t applied = current | ((current | extraSticky) << 6);
++    m_flagStickyIssued |= (current | extraSticky) & 0xFu;
+     if (m_flagCount == kMaxFlagEntries) [[unlikely]]
+     {
+         // As appendFlagEntry: apply what is due, and report a full ring.
+@@ -1298,6 +1322,20 @@
+     m_flagCount = count;
+ }
+ 
++inline void VU1Interpreter::recomputeFlagStickyIssued() noexcept
++{
++    uint32_t sticky = (m_state.status >> 6) & 0xFu;
++    for (uint32_t i = 0; i < m_flagCount; ++i)
++    {
++        const FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + i) & (kMaxFlagEntries - 1u)];
++        if ((entry.writes & kFlagWritesStatus) != 0u)
++            sticky |= (entry.status >> 6) & 0xFu;
++        if ((entry.writes & kFlagWritesSticky) != 0u)
++            sticky = (entry.status >> 6) & 0xFu;
++    }
++    m_flagStickyIssued = sticky;
++}
++
+ inline bool VU1Interpreter::flagEntryPending() const noexcept
+ {
+     return m_flagCount != 0u &&
+@@ -1358,6 +1396,18 @@
+             { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+             VU1Interpreter::ConstTiming<P>{}, true);
+     }
++    template <void (*Upper)(VU1Interpreter &), bool kElide>
++    static PS2_VU_FORCEINLINE void runUpper(VU1Interpreter &vu)
++    {
++        if constexpr (kElide)
++        {
++            vu.m_flagElide = true;
++            Upper(vu);
++            vu.m_flagElide = false;
++        }
++        else
++            Upper(vu);
++    }
+     // ---- Translated blocks (findings/21 s.24) ---------------------------
+     // A block function runs a straight-line run of pairs: the body pairs
+     // here, one after another without going back to the run loop, then the
+@@ -1375,6 +1425,34 @@
+     {
+         return !vu.m_state.branchPending && !vu.m_state.ebit && !vu.m_state.haltAfterDelaySlot;
+     }
++    // For a block that leaves out flag results (kElide pairs, findings/20
++    // s.28): it may also start only if its body cannot run out of the run's
++    // cycle budget, so that it never stops halfway, between an instruction
++    // whose flag result was left out and the later one whose result replaces
++    // it. kMaxCycles is the translator's bound on the cycles the body takes
++    // (per pair one cycle plus kMaxPipelineLatency, or kMaxXgkickWait for an
++    // XGKICK).
++    template <uint64_t kMaxCycles>
++    static PS2_VU_FORCEINLINE bool blockCanEnterWithin(const VU1Interpreter &vu, const Frame &frame)
++    {
++        return blockCanEnter(vu) && vu.m_cycle + kMaxCycles < frame.budgetEnd;
++    }
++    static constexpr uint32_t kMaxPipelineLatency = VU1Interpreter::kMaxPipelineLatency;
++    static constexpr uint32_t kMaxXgkickWait = VU1Interpreter::kMaxXgkickWait;
++    // For the translator: whether the upper word queues an FMAC flag entry
++    // (MAC and status) when it runs. It does so for every operand value
++    // (the fast and the per-lane flag code both queue one, unless DEST is
++    // empty), so one run with all registers zero tells.
++    static bool upperQueuesFmacFlags(VU1Interpreter &vu, uint32_t word)
++    {
++        vu.reset();
++        vu.execUpper(word);
++        for (uint32_t i = 0; i < vu.m_flagCount; ++i)
++            if ((vu.m_flagPipeline[(vu.m_flagHead + i) & (VU1Interpreter::kMaxFlagEntries - 1u)].writes &
++                 VU1Interpreter::kFlagWritesMac) != 0u)
++                return true;
++        return false;
++    }
+     // Sets the PC the run loop would hold before the pair at `pc` (wrapping
+     // at the end of code memory as the per-pair step does).
+     static PS2_VU_FORCEINLINE void blockSetPc(VU1Interpreter &vu, const Frame &frame, uint32_t pc)
+@@ -1394,8 +1472,11 @@
+     // hazard check reads only the lanes the translator could not settle at
+     // build time (MaskedTiming). Returns false when the run loop would stop
+     // (Break), with the PC at kPc.
++    // kElide: the upper instruction's MAC and status results are never read
++    // (the translator checked, findings/20 s.28): m_flagElide is set while it
++    // runs.
+     template <void (*Upper)(VU1Interpreter &), const Pair &P, uint32_t kPc, bool kFirst,
+-              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false>
+     static PS2_VU_FORCEINLINE bool blockPairUpper(VU1Interpreter &vu, Frame &frame)
+     {
+         if constexpr (!kFirst)
+@@ -1410,7 +1491,7 @@
+         const uint32_t upperWord = P.upper;
+         if (vu.execPairWith(
+                 P, frame, [](VU1Interpreter &v)
+-                { Upper(v); },
++                { runUpper<Upper, kElide>(v); },
+                 [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
+                 { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+                 VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
+@@ -1419,7 +1500,7 @@
+         return false;
+     }
+     template <void (*Upper)(VU1Interpreter &), LowerFn Lower, const Pair &P, uint32_t kPc, bool kFirst,
+-              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc>
++              uint8_t kU0, uint8_t kU1, uint8_t kL0, uint8_t kL1, uint16_t kVi, uint8_t kAcc, bool kElide = false>
+     static PS2_VU_FORCEINLINE bool blockPairUpperLower(VU1Interpreter &vu, Frame &frame)
+     {
+         if constexpr (!kFirst)
+@@ -1433,7 +1514,7 @@
+         const uint32_t upperWord = P.upper;
+         if (vu.execPairWith(
+                 P, frame, [](VU1Interpreter &v)
+-                { Upper(v); },
++                { runUpper<Upper, kElide>(v); },
+                 [upperWord](VU1Interpreter &v, Frame &fr)
+                 { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+                 VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -596,6 +596,15 @@
+     else if ((static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(fast))) & destLanes) != destLanes)
+         return false;
+ 
++    // Every lane qualifies: the result adds no U or O flag, only Z and S
++    // (its own, and the products'). In a translated block that marked this
++    // instruction (m_flagElide: no flag instruction reads its MAC or status
++    // before a later FMAC result replaces them), nothing is queued when Z and
++    // S are already sticky: the entry would change nothing anyone sees
++    // (findings/20 s.28).
++    if (m_flagElide && (m_flagStickyIssued & 0x3u) == 0x3u)
++        return true;
++
+     // Each lane's flags: its sign (S), and Z for the zero lanes. MAC holds
+     // Z in bits 3:0 and S in bits 7:4, x the highest of each.
+     const uint32_t signLanes = static_cast<uint32_t>(_mm_movemask_ps(r)) & destLanes;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -134,6 +134,7 @@
+     {
+         entry->status = static_cast<uint32_t>(immediate) & 0xFC0u;
+         entry->writes = kFlagWritesSticky;
++        m_flagStickyIssued = (entry->status >> 6) & 0xFu;
+     }
+ }
+ 
+@@ -1249,6 +1250,10 @@
+     frame.memory = memory;
+     frame.budgetEnd = m_cycle + maxCycles;
+     resolveNativeCode(vuCode, codeSize, memory);
++    // The registers may have been changed since the last run (the EE's VU0
++    // registers, a reset): the sticky bits translated blocks rely on are
++    // taken from them again.
++    recomputeFlagStickyIssued();
+ 
+     while (loopHead(frame) == StepResult::Continue)
+     {

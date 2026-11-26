@@ -36,6 +36,12 @@
 //      hazard check only on the read lanes not settled at build time, see
 //      MaskedTiming) and its last pair through the ordinary step. 32 more
 //      files, vu1_native_blocks_N.cpp, with the block tables.
+//   5. Marks the body pairs whose FMAC flag result (MAC and status) no flag
+//      instruction can read before the next FMAC result replaces it
+//      (findings/20 s.28): they run with kElide, and their flag entry is
+//      left out when it could change nothing (its only sticky bits, Z and
+//      S, already set). Such a block starts only when its body cannot run
+//      out of the run's cycle budget (blockCanEnterWithin).
 //
 // USAGE
 //   ben10_vu1_translate <game ELF> <output folder>
@@ -424,6 +430,18 @@ int main(int argc, char **argv)
     std::vector<std::set<uint32_t>> blockUppers(kFileCount), blockLowers(kFileCount);
     std::vector<size_t> blockCounts(kFileCount, 0);
     size_t blockPairs = 0;
+    size_t elidedPairs = 0;
+    // Whether an upper word queues an FMAC flag entry, asked once per word
+    // of the interpreter itself (VU1NativeAccess::upperQueuesFmacFlags).
+    VU1Interpreter probe(VU1Interpreter::Unit::VU1);
+    std::map<uint32_t, bool> queuesFmacMemo;
+    const auto queuesFmac = [&](uint32_t upper)
+    {
+        auto it = queuesFmacMemo.find(upper);
+        if (it == queuesFmacMemo.end())
+            it = queuesFmacMemo.emplace(upper, VU1NativeAccess::upperQueuesFmacFlags(probe, upper)).first;
+        return it->second;
+    };
     size_t b = 0;
     for (const auto &[key, block] : blocks)
     {
@@ -469,13 +487,74 @@ int main(int argc, char **argv)
                 o << "VU1NativeAccess::execPairUpperLower<&ben10::vu1_native::upper::" << un
                   << ", &ben10::vu1_native::lower::" << ln << ", k_" << bid << "_" << i << ">(vu, k_" << bid << "_" << i << ", frame);\n";
         };
+        const size_t count = block.words.size();
+        // Flag results left out (findings/20 s.28). Body pair i's FMAC
+        // result (MAC, status, sticky) is due 4 cycles after it issues and
+        // stays in the flag registers until the next FMAC result j replaces
+        // it, 4 cycles after j issues. Pairs issue at least one cycle apart,
+        // so only a flag read in pairs i+1 .. j+3 can see i's MAC or status
+        // (FSEQ/FSAND/FSOR, FMEQ/FMAND/FMOR; FSSET also changes the queued
+        // entries, so it counts too; the clip-flag instructions do not read
+        // them). If none of those pairs reads them, and they are all body
+        // pairs (the block cannot stop before them: blockCanEnterWithin),
+        // pair i runs with kElide: its entry is left out when the only
+        // sticky bits it could add are set already (fmacFlagsFast). j is the
+        // next pair whose upper word always queues an FMAC entry
+        // (upperQueuesFmacFlags); if j is left out too, the same holds for
+        // it with its own next one, so the registers are right whenever an
+        // instruction can read them.
+        std::vector<bool> elide(count, false);
+        {
+            const auto reads = [&](size_t k)
+            {
+                const auto &[lower, upper] = block.words[k];
+                if ((upper & 0x80000000u) != 0u)
+                    return false; // I bit: the lower word is an immediate
+                const uint32_t opHi = (lower >> 25) & 0x7Fu;
+                return opHi == 0x14u || opHi == 0x15u || opHi == 0x16u || opHi == 0x17u || opHi == 0x18u ||
+                       opHi == 0x1Au || opHi == 0x1Bu;
+            };
+            for (size_t i = 0; i + 1 < count; ++i)
+            {
+                if (!queuesFmac(block.words[i].second) || reads(i))
+                    continue;
+                size_t j = i + 1;
+                while (j < count && !queuesFmac(block.words[j].second))
+                    ++j;
+                if (j >= count || j + 3 > count - 2)
+                    continue;
+                bool read = false;
+                for (size_t k = i + 1; k <= j + 3 && !read; ++k)
+                    read = reads(k);
+                if (!read)
+                {
+                    elide[i] = true;
+                    ++elidedPairs;
+                }
+            }
+        }
+        // The body's cycle bound for blockCanEnterWithin.
+        uint64_t bodyBound = 0;
+        bool anyElided = false;
+        for (size_t i = 0; i + 1 < count; ++i)
+        {
+            const uint32_t pc = block.pc + static_cast<uint32_t>(i) * 8u;
+            const auto &[lower, upper] = block.words[i];
+            const auto &d = pairInfo.at({pc, lower, upper}).decoded;
+            bodyBound += 1u + (d.lowerUsage.pipeline == VU1Interpreter::PipelineXgkick ? VU1NativeAccess::kMaxXgkickWait
+                                                                                        : VU1NativeAccess::kMaxPipelineLatency);
+            anyElided = anyElided || elide[i];
+        }
         o << "    Result " << bid << "(VU1Interpreter &vu, Frame &frame)\n    {\n"
           << "        // A branch, delay slot or end pending: the first pair alone,\n"
-          << "        // as the run loop would run it.\n"
-          << "        if (!VU1NativeAccess::blockCanEnter(vu))\n"
-          << "            return ";
+          << "        // as the run loop would run it.\n";
+        if (anyElided)
+            o << "        // Flag results left out: also when the body could run out of cycles.\n"
+              << "        if (!VU1NativeAccess::blockCanEnterWithin<" << bodyBound << "u>(vu, frame))\n";
+        else
+            o << "        if (!VU1NativeAccess::blockCanEnter(vu))\n";
+        o << "            return ";
         ordinaryStep(0);
-        const size_t count = block.words.size();
         // The latest write of each VF lane, VI register and ACC lane by an
         // earlier pair of this block: its index and latency. A read whose
         // latest write is at least that latency in pairs back cannot stall
@@ -537,8 +616,9 @@ int main(int argc, char **argv)
             for (uint32_t bit = 0; bit < 4u; ++bit)
                 if ((d.upperUsage.accWrite & (1u << bit)) != 0u)
                     accLast[3u - bit] = {true, i, 1u}; // kAccForwardLatency
-            char masks[96];
-            std::snprintf(masks, sizeof(masks), ", 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu", u0, u1, l0, l1, vi, acc);
+            char masks[112];
+            std::snprintf(masks, sizeof(masks), ", 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu, 0x%Xu%s", u0, u1, l0, l1, vi, acc,
+                          elide[i] ? ", true" : "");
             if ((upper & 0x80000000u) != 0u)
                 o << "        if (!VU1NativeAccess::blockPairUpper<&ben10::vu1_native::upper::" << un << ", k_" << bid << "_" << i
                   << ", 0x" << std::hex << pc << std::dec << "u, " << (i == 0 ? "true" : "false") << masks << ">(vu, frame))\n";
@@ -631,7 +711,8 @@ int main(int argc, char **argv)
     std::ofstream(outDir / "vu1_native_index.cpp") << index.str();
 
     std::printf("vu1_translate: %zu overlay entries, %zu distinct pairs (%zu also valid on VU0), %zu upper and %zu lower words, "
-                "%zu blocks of %zu pairs -> %s\n",
-                entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), blocks.size(), blockPairs, outDir.string().c_str());
+                "%zu blocks of %zu pairs (%zu with flag results left out) -> %s\n",
+                entries.size(), n, vu0Pairs, upperFile.size(), lowerFile.size(), blocks.size(), blockPairs, elidedPairs,
+                outDir.string().c_str());
     return 0;
 }

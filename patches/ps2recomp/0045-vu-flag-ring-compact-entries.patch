@@ -1,0 +1,292 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU flag ring: compact entries, one register load and store per read
+
+What it is for:
+  In Ben 10: Protector of Earth's fights the VIF1/VU1 worker thread is the
+  limit. Every FMAC instruction queues a flag entry (MAC, status, sticky)
+  that is applied when a flag instruction reads the flags. On the
+  captured VU1 workloads (tools/vu1_replay, callgrind) queueing cost about
+  21 instructions per entry and applying about 41: the entry had a valid
+  flag, an issue cycle, separate sticky bits and four write flags, and
+  materializeFlags loaded and stored the registers once per entry.
+
+The changes:
+  - FlagPipelineEntry: the due cycle (the issue cycle is always that minus
+    kFmacLatency), MAC, a status word stored ready to apply (current bits
+    and the sticky bits they add, as `(status & 0xFF0) | word`), the clip
+    word and one byte of kFlagWrites* bits. No valid flag: an entry in the
+    ring is live.
+  - materializeFlags: a quick exit when nothing is due, then the registers
+    are loaded once, the due entries applied (the FMAC kind first), and
+    stored once.
+  - updateFmacFlags queues through appendFmacFlagEntry; queueFsset and
+    queueFcset look at the live entries issued in this cycle by due cycle.
+  Same order and same values as before for every entry.
+
+How it was checked:
+  tools/vu1_replay --sum: the same checksums for the 40 VU1 and 60 VU0
+  workloads, interpreted and translated (with and without blocks).
+  ps2xTest 454/454. Instructions in VU1::run on the replay: -11 M of
+  451.8 M (findings/20 s.28).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -198,19 +198,25 @@
+     friend struct VU1NativeAccess;
+     friend struct VU1NativeLowerAccess;
+ 
++    // One queued flag result. Compact (findings/20 s.28): the issue cycle is
++    // readyCycle - kFmacLatency (every entry has that latency), the status
++    // word is stored ready to apply, and what the entry writes is one byte.
++    // An entry in the ring is live; there is no separate valid flag.
++    static constexpr uint8_t kFlagWritesMac = 1u;
++    static constexpr uint8_t kFlagWritesStatus = 2u; // current Z/S/U/O and the sticky bits they set
++    static constexpr uint8_t kFlagWritesSticky = 4u; // FSSET: sticky bits 11:6 replaced
++    static constexpr uint8_t kFlagWritesClip = 8u;
++    static constexpr uint8_t kFlagWritesFmac = kFlagWritesMac | kFlagWritesStatus;
+     struct FlagPipelineEntry
+     {
+         uint64_t readyCycle = 0;
+-        uint64_t issueCycle = 0;
+         uint32_t mac = 0;
++        // kFlagWritesStatus: current bits 3:0 and the sticky bits 9:6 (and
++        // above) they add, applied as status = (status & 0xFF0) | this.
++        // kFlagWritesSticky: the new sticky bits 11:6.
+         uint32_t status = 0;
+-        uint32_t extraSticky = 0;
+         uint32_t clip = 0;
+-        bool valid = false;
+-        bool writesMac = false;
+-        bool writesStatus = false;
+-        bool writesSticky = false;
+-        bool writesClip = false;
++        uint8_t writes = 0; // kFlagWrites* bits
+     };
+ 
+     struct ScalarPipelineEntry
+@@ -482,11 +488,12 @@
+     void queueFsset(uint16_t immediate);
+     void queueClip(uint32_t clip);
+     // A new flag entry at the end of the queue, reset, issued now and due in
+-    // kFmacLatency cycles; nullptr (after reporting errorCode) if 8 entries
+-    // are still not due.
++    // kFmacLatency cycles; nullptr (after reporting errorCode) if the ring
++    // is still full after applying what is due.
+     FlagPipelineEntry *appendFlagEntry(uint32_t errorCode, bool upper);
+     // appendFlagEntry for an FMAC result (MAC, status and sticky written),
+-    // with each field written once (findings/21 s.25).
++    // with each field written once (findings/21 s.25). status: the Z/S/U/O
++    // bits (3:0); extraSticky: sticky bits set beyond them (the products').
+     void appendFmacFlagEntry(uint32_t mac, uint32_t status, uint32_t extraSticky);
+     // Applies to m_state.mac/status/clip, in issue order, every flag entry
+     // due by now (what the per-cycle commit used to do), and drops them.
+@@ -1177,11 +1184,9 @@
+         reportReservedInstruction(upper, errorCode);
+         return nullptr;
+     }
+-    FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + m_flagCount) % kMaxFlagEntries];
++    FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + m_flagCount) & (kMaxFlagEntries - 1u)];
+     ++m_flagCount;
+     entry = {};
+-    entry.valid = true;
+-    entry.issueCycle = m_cycle;
+     entry.readyCycle = m_cycle + kFmacLatency;
+     return &entry;
+ }
+@@ -1189,6 +1194,10 @@
+ PS2_VU_FORCEINLINE void VU1Interpreter::appendFmacFlagEntry(uint32_t mac, uint32_t status, uint32_t extraSticky)
+ {
+     static_assert((kMaxFlagEntries & (kMaxFlagEntries - 1u)) == 0u, "the flag ring size is a power of two");
++    // The status word as materializeFlags applies it: the current Z/S/U/O
++    // bits, and the same bits plus the products' ones as sticky bits.
++    const uint32_t current = status & 0xFu;
++    const uint32_t applied = current | ((current | extraSticky) << 6);
+     if (m_flagCount == kMaxFlagEntries) [[unlikely]]
+     {
+         // As appendFlagEntry: apply what is due, and report a full ring.
+@@ -1196,25 +1205,16 @@
+         if (!entry)
+             return;
+         entry->mac = mac;
+-        entry->status = status;
+-        entry->extraSticky = extraSticky;
+-        entry->writesMac = true;
+-        entry->writesStatus = true;
++        entry->status = applied;
++        entry->writes = kFlagWritesFmac;
+         return;
+     }
+     FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + m_flagCount) & (kMaxFlagEntries - 1u)];
+     ++m_flagCount;
+     entry.readyCycle = m_cycle + kFmacLatency;
+-    entry.issueCycle = m_cycle;
+     entry.mac = mac;
+-    entry.status = status;
+-    entry.extraSticky = extraSticky;
+-    entry.clip = 0u;
+-    entry.valid = true;
+-    entry.writesMac = true;
+-    entry.writesStatus = true;
+-    entry.writesSticky = false;
+-    entry.writesClip = false;
++    entry.status = applied;
++    entry.writes = kFlagWritesFmac;
+ }
+ 
+ template <bool kConst>
+@@ -1252,43 +1252,63 @@
+         progressXgkick();
+ }
+ 
++// The flag instructions call this on every read, mostly with nothing due
++// yet or one or two entries due (a clip test per vertex), so the first check
++// is the quick "nothing due" exit, and the registers are loaded and stored
++// once per call, not once per entry (findings/20 s.28).
+ inline void VU1Interpreter::materializeFlags()
+ {
+-    while (m_flagCount != 0u)
++    uint32_t count = m_flagCount;
++    uint32_t head = m_flagHead;
++    if (count == 0u || m_flagPipeline[head].readyCycle > m_cycle)
++        return;
++    uint32_t mac = m_state.mac;
++    uint32_t status = m_state.status;
++    uint32_t clip = m_state.clip;
++    do
+     {
+-        FlagPipelineEntry &entry = m_flagPipeline[m_flagHead];
++        const FlagPipelineEntry &entry = m_flagPipeline[head];
+         if (entry.readyCycle > m_cycle)
+-            return;
+-        if (entry.writesMac)
+-            m_state.mac = entry.mac;
+-        if (entry.writesStatus)
++            break;
++        const uint8_t writes = entry.writes;
++        if (writes == kFlagWritesFmac) [[likely]]
+         {
+-            const uint32_t current = entry.status & 0xFu;
+-            m_state.status = (m_state.status & 0xFF0u) | current | ((current | entry.extraSticky) << 6);
++            mac = entry.mac;
++            status = (status & 0xFF0u) | entry.status;
+         }
+-        if (entry.writesSticky)
++        else
+         {
+-            m_state.status = (m_state.status & 0x03Fu) | (entry.status & 0xFC0u);
++            // In the order the fields were applied one by one before.
++            if ((writes & kFlagWritesMac) != 0u)
++                mac = entry.mac;
++            if ((writes & kFlagWritesStatus) != 0u)
++                status = (status & 0xFF0u) | entry.status;
++            if ((writes & kFlagWritesSticky) != 0u)
++                status = (status & 0x03Fu) | (entry.status & 0xFC0u);
++            if ((writes & kFlagWritesClip) != 0u)
++                clip = entry.clip;
+         }
+-        if (entry.writesClip)
+-            m_state.clip = entry.clip;
+-        entry.valid = false;
+-        m_flagHead = (m_flagHead + 1u) % kMaxFlagEntries;
+-        --m_flagCount;
+-    }
++        head = (head + 1u) & (kMaxFlagEntries - 1u);
++        --count;
++    } while (count != 0u);
++    m_state.mac = mac;
++    m_state.status = status;
++    m_state.clip = clip;
++    m_flagHead = head;
++    m_flagCount = count;
+ }
+ 
+ inline bool VU1Interpreter::flagEntryPending() const noexcept
+ {
+     return m_flagCount != 0u &&
+-           m_flagPipeline[(m_flagHead + m_flagCount - 1u) % kMaxFlagEntries].readyCycle > m_cycle;
++           m_flagPipeline[(m_flagHead + m_flagCount - 1u) & (kMaxFlagEntries - 1u)].readyCycle > m_cycle;
+ }
+ 
+ inline uint64_t VU1Interpreter::firstPendingFlagCycle() const noexcept
+ {
+     for (uint32_t i = 0; i < m_flagCount; ++i)
+     {
+-        const FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + i) % kMaxFlagEntries];
++        const FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + i) & (kMaxFlagEntries - 1u)];
+         if (entry.readyCycle > m_cycle)
+             return entry.readyCycle;
+     }
+--- a/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_fmac_inl.h
+@@ -526,14 +526,7 @@
+         status |= flags;
+     }
+ 
+-    FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFFu, true);
+-    if (!entry)
+-        return;
+-    entry->mac = mac;
+-    entry->status = status;
+-    entry->extraSticky = extraSticky;
+-    entry->writesMac = true;
+-    entry->writesStatus = true;
++    appendFmacFlagEntry(mac, status, extraSticky);
+ }
+ 
+ // The common case of normalizeFmacResult + calculateFmacProductSticky +
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -121,16 +121,19 @@
+ 
+ void VU1Interpreter::queueFsset(uint16_t immediate)
+ {
+-    for (FlagPipelineEntry &entry : m_flagPipeline)
++    // An FMAC result issued in this same cycle (the pair's upper
++    // instruction) does not write the status flag.
++    for (uint32_t i = 0; i < m_flagCount; ++i)
+     {
+-        if (entry.valid && entry.issueCycle == m_cycle)
+-            entry.writesStatus = false;
++        FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + i) & (kMaxFlagEntries - 1u)];
++        if (entry.readyCycle == m_cycle + kFmacLatency)
++            entry.writes = static_cast<uint8_t>(entry.writes & ~kFlagWritesStatus);
+     }
+ 
+     if (FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFEu, false))
+     {
+         entry->status = static_cast<uint32_t>(immediate) & 0xFC0u;
+-        entry->writesSticky = true;
++        entry->writes = kFlagWritesSticky;
+     }
+ }
+ 
+@@ -140,22 +143,24 @@
+     if (FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFDu, true))
+     {
+         entry->clip = m_workingClip;
+-        entry->writesClip = true;
++        entry->writes = kFlagWritesClip;
+     }
+ }
+ 
+ void VU1Interpreter::queueFcset(uint32_t clip)
+ {
+     m_workingClip = clip & 0xFFFFFFu;
+-    for (FlagPipelineEntry &entry : m_flagPipeline)
++    // A CLIP result issued in this same cycle does not write the clip flag.
++    for (uint32_t i = 0; i < m_flagCount; ++i)
+     {
+-        if (entry.valid && entry.issueCycle == m_cycle)
+-            entry.writesClip = false;
++        FlagPipelineEntry &entry = m_flagPipeline[(m_flagHead + i) & (kMaxFlagEntries - 1u)];
++        if (entry.readyCycle == m_cycle + kFmacLatency)
++            entry.writes = static_cast<uint8_t>(entry.writes & ~kFlagWritesClip);
+     }
+     if (FlagPipelineEntry *entry = appendFlagEntry(0xFFFFFFFAu, false))
+     {
+         entry->clip = m_workingClip;
+-        entry->writesClip = true;
++        entry->writes = kFlagWritesClip;
+     }
+ }
+ 

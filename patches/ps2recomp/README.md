@@ -52,8 +52,10 @@ fix and how it was found.
 | `0042-gs-per-primitive-setup-inline-pixel-steps.patch` | GS CPU backend: buffer and texture state decoded once per primitive, the palette key checked once per primitive, the per-pixel steps forced inline, Z tested before the frame is read; same results bit for bit | findings/20 s.25 |
 | `0043-vif1-worker-thread-name.patch` | The optional VIF1/VU1 worker thread names itself `VIF1Worker`, for profilers and thread lists | findings/20 s.26 |
 | `0044-vif1-unpack-fast-paths.patch` | VIF1 UNPACK: V4-32 copied in bulk, other formats stored whole, when there is no write mask and no row addition; same results | findings/20 s.27 |
+| `0045-vu-flag-ring-compact-entries.patch` | VU flag ring: compact entries (due cycle, MAC, ready-to-apply status word, one byte of write bits); materializeFlags loads and stores the registers once per read; same results | findings/20 s.28 |
+| `0046-vu-flag-results-left-out-in-blocks.patch` | VU: translated blocks may mark upper instructions whose MAC and status no flag instruction reads; their flag entry is left out when it would set only sticky bits already set; such blocks start only when they cannot run out of cycles | findings/20 s.28 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042 and 0044 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018 and 0032 hooks for translated VU code) and should also go to upstream
+Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044 and 0045 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032 and 0046 hooks for translated VU code) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

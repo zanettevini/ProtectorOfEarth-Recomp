@@ -887,3 +887,58 @@ per second in one-minute averages in the first level.
   and status bits, queues an entry, and the entry is applied later),
   which only matters where a flag instruction or a later program reads
   them.
+
+## 28. The FMAC flag cost; a compact flag ring (patch 0045) and flag results left out in translated blocks (patch 0046)
+
+- Measured on the 40 captured VU1 workloads (`ben10_vu1_replay
+  user/vu1_captures --native --reps 20` under callgrind with
+  `--toggle-collect='VU1Interpreter::run(*'`): 451.8 M instructions for
+  2.2 M VU cycles. A note for later measurements: 112.5 M of them are
+  `resolveNativeCode`, because the replay gives the interpreter no
+  PS2Memory, so the translated functions are looked up again for every
+  workload. In the game the lookup is redone only after a code upload
+  (generation counter), so that part is left out of the numbers below
+  (339.3 M without it).
+- The flags, per source line: about 0.86 M FMAC flag entries, each
+  costing about 15 instructions to decide its flags (fmacFlagsFast), 21
+  to queue and 41 to apply in materializeFlags. That is about 22% of the
+  VU work. In the disassembly of a translated MADD (`MADDw.xyzw`), about
+  95 of its 130 instructions are flag work. materializeFlags is called
+  mostly by FCAND/FMAND-type reads in the transform loops, about 4 due
+  entries per call.
+- Patch 0045, a compact ring: an entry is its due cycle (the issue cycle
+  is always 4 less), MAC, the status word ready to OR in, the clip word
+  and one byte saying what it writes; no valid flag (an entry in the ring
+  is live). materializeFlags exits at once when nothing is due, then loads
+  and stores the registers once per call instead of once per entry. Same
+  values in the same order: 339.3 M -> 328.3 M.
+- Patch 0046 and the translator (tools/vu1_translate, step 5): in a block,
+  the MAC and status written by pair i's FMAC stay until the next FMAC j
+  replaces them, 4 cycles after j issues. Pairs issue at least a cycle
+  apart, so only a flag read in pairs i+1 .. j+3 can see them (FSEQ,
+  FSAND, FSOR, FMEQ, FMAND, FMOR; FSSET counts too, because it changes the
+  entries issued with it; the clip reads see only the clip flags). When
+  there is none and all those pairs are in the block's body, pair i runs
+  with kElide, and fmacFlagsFast leaves its entry out when every lane
+  takes the fast path (no U or O flag) and the only sticky bits it could
+  add, Z and S, are already set once the queued entries are applied
+  (m_flagStickyIssued). A block with such pairs starts only when its
+  body cannot run out of the run's cycle budget (per pair one cycle plus
+  the longest latency, 64; an XGKICK can wait for the previous transfer,
+  at most 8,194 cycles), so it never stops between i and j. Which upper
+  words always queue an FMAC entry is asked of the interpreter itself
+  (`upperQueuesFmacFlags`). 1,961 of the 5,922 block pairs are marked;
+  FMAC entries queued: 856,920 -> 280,440; VU work: 328.3 M -> 303.3 M.
+- Checked: `--sum` gives the same checksums as before both patches for
+  the 40 VU1 and 60 VU0 workloads, interpreted, translated and
+  translated without blocks. A throwaway build logged every flag read
+  (cycle, and the register the instruction reads): 2,806 MAC reads and
+  5,068 clip reads in the VU1 workloads, the same list interpreted and
+  translated (the VU0 workloads read no flags; no workload reads the
+  status flags). ps2xTest 454/454.
+- Open: an error that stops a run halfway through a block (an XGKICK
+  packet over 64 KB, a full flag ring) can leave the flag registers
+  without a left-out result; the run is already wrong then. The
+  remaining flag cost is mostly fmacFlagsFast's own checks, which also
+  decide whether the result needs the slow, exact normalization, so they
+  cannot be left out. Not yet measured in the game on Windows.
