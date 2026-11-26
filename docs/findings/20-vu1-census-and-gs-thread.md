@@ -993,3 +993,25 @@ per second in one-minute averages in the first level.
   replay, so only the pair is comparable). The address functions are
   still calls (3% of the instructions); the per-pixel work is dominated
   by DrawTriangle's interpolation, texture sampling and blending.
+
+## 31. The IOP scheduler walks its threads once per step (patch 0050)
+
+- The Windows profile of the game thread (findings/21 s.26) showed the
+  IOP kernel's scheduling at about 10% of it: `IopKernel::beginNextReady`
+  6.7%, `nextWakeCycle` 3.1%. `IopEmulator::runCycles` asks for the next
+  thread after every timeslice. Each time, beginNextReady walked the
+  thread map twice (wake the delayed threads whose wake cycle has passed,
+  then pick the ready thread with the best priority and lowest id),
+  nextWakeCycle walked it again when no thread was ready, and
+  `cleanupDeadThreads` walked it once more after the timeslice.
+- Patch 0050: beginNextReady wakes and picks in the same pass (whether a
+  thread wakes and whether it is the best ready one depend only on that
+  thread, so the result is the same) and also returns the earliest wake
+  cycle of the threads still delayed, which runCycles uses in place of
+  nextWakeCycle; cleanupDeadThreads walks the map only after a thread was
+  marked Dead (ExitDeleteThread or terminateThreadsInRange).
+- Checked: ps2xIOP's own tests (emulator smoke tests, import tests, the
+  18 compatibility cases) and ps2xTest 454/454 pass; the game boots and
+  draws the first level on Linux. The speed-up is not measured: the game
+  thread is not the limit on Windows now (it waits for the VIF1 worker),
+  so it shows only in the game thread's own CPU time.

@@ -74,6 +74,8 @@
    random recordings, and the band counts against it;
    and on the VU side the upper words (about 50 per VU cycle),
    PATH1 in batches (s.11 item 3) and more static scheduling in blocks;
+   the IOP scheduler walks its threads once per step (patch 0050,
+   findings/20 s.31; speed not measured);
    the maintainer decides later whether the async option becomes the
    default. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
@@ -95,7 +97,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0049 upstream to PS2Recomp.
+5. Send patches 0002-0050 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

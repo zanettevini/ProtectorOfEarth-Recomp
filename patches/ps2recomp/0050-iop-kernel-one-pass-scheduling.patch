@@ -1,0 +1,138 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] IOP kernel: one pass over the threads per scheduling step
+
+What it is for:
+  The IOP scheduler (runCycles) asks IopKernel for the next thread after
+  every timeslice. beginNextReady walked every thread twice (wake the
+  delayed ones, then pick the best ready one), nextWakeCycle walked them
+  again when none was ready, and cleanupDeadThreads walked them after
+  every timeslice. A Windows profile of Protector of Earth Recomp's game
+  thread showed beginNextReady at 6.7% and nextWakeCycle at 3.1% of it.
+
+The changes:
+  - beginNextReady wakes and picks in one pass (each thread's wake-up and
+    whether it is the best ready one depend only on that thread) and can
+    return the earliest wake cycle of the threads still delayed; runCycles
+    uses it instead of calling nextWakeCycle.
+  - cleanupDeadThreads walks the threads only after a thread was marked
+    Dead (ExitDeleteThread, terminateThreadsInRange).
+  Same thread chosen, same wake cycles, same threads removed.
+
+How it was checked:
+  ps2xIOP's own tests (emulator smoke tests, import tests, 18
+  compatibility cases) pass; ps2xTest 454/454; the game boots and reaches
+  the first level (Linux). Speed not measured yet.
+
+--- a/ps2xIOP/src/emulator/core/iop_kernel.cpp
++++ b/ps2xIOP/src/emulator/core/iop_kernel.cpp
+@@ -107,6 +107,7 @@
+             if (m_currentThread != nullptr)
+             {
+                 m_currentThread->state = ordinal == 9 ? IopThreadState::Dead : IopThreadState::Dormant;
++                m_deadPending = m_deadPending || ordinal == 9;
+                 cpu.stopped = true;
+                 cpu.yielded = true;
+             }
+@@ -669,23 +670,33 @@
+         cpu.yielded = true;
+     }
+ 
+-    IopThread *IopKernel::beginNextReady(uint64_t currentCycle)
++    IopThread *IopKernel::beginNextReady(uint64_t currentCycle, uint64_t *minDelayWake)
+     {
+-        for (auto &[id, thread] : m_threads)
+-        {
+-            if (thread.state == IopThreadState::Delay && thread.wakeCycle <= currentCycle)
+-                thread.state = IopThreadState::Ready;
+-        }
+-
++        // One pass (the scheduler runs this after every timeslice): a
++        // thread's wake-up and whether it is the best ready one depend only
++        // on that thread, so waking all first and then choosing gives the
++        // same thread.
+         IopThread *next = nullptr;
++        uint64_t earliestWake = UINT64_MAX;
+         for (auto &[id, thread] : m_threads)
+         {
++            if (thread.state == IopThreadState::Delay)
++            {
++                if (thread.wakeCycle > currentCycle)
++                {
++                    earliestWake = std::min(earliestWake, thread.wakeCycle);
++                    continue;
++                }
++                thread.state = IopThreadState::Ready;
++            }
+             if (thread.state != IopThreadState::Ready)
+                 continue;
+             if (next == nullptr || thread.priority < next->priority ||
+                 (thread.priority == next->priority && thread.id < next->id))
+                 next = &thread;
+         }
++        if (minDelayWake != nullptr)
++            *minDelayWake = earliestWake;
+         if (next == nullptr)
+             return nullptr;
+ 
+@@ -719,6 +730,9 @@
+ 
+     void IopKernel::cleanupDeadThreads()
+     {
++        if (!m_deadPending)
++            return;
++        m_deadPending = false;
+         for (auto thread = m_threads.begin(); thread != m_threads.end();)
+         {
+             if (thread->second.state != IopThreadState::Dead)
+@@ -738,7 +752,10 @@
+         {
+             const uint32_t pc = IopMemory::physicalAddress(thread.cpu.pc);
+             if (pc >= base && pc < base + size)
++            {
+                 thread.state = IopThreadState::Dead;
++                m_deadPending = true;
++            }
+         }
+     }
+ }
+--- a/ps2xIOP/src/emulator/core/iop_kernel.h
++++ b/ps2xIOP/src/emulator/core/iop_kernel.h
+@@ -60,7 +60,11 @@
+         void sleepCurrent(IopCpuState &cpu);
+         void delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu);
+ 
+-        [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle);
++        // The ready thread to run next (Delay threads whose wake cycle has
++        // passed become ready first); nullptr if none. With minDelayWake,
++        // also the earliest wake cycle of the threads still delayed (as
++        // nextWakeCycle gives), found in the same pass over the threads.
++        [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle, uint64_t *minDelayWake = nullptr);
+         [[nodiscard]] uint64_t nextWakeCycle(uint64_t fallback) const;
+         void endTimeslice(IopThread &thread, uint32_t returnSentinel);
+         void cleanupDeadThreads();
+@@ -99,5 +103,8 @@
+         uint32_t m_nextSemaphoreId = 1;
+         uint32_t m_nextEventFlagId = 1;
+         IopThread *m_currentThread = nullptr;
++        // Set when a thread is marked Dead, so cleanupDeadThreads (after
++        // every timeslice) walks the threads only when one may be there.
++        bool m_deadPending = false;
+     };
+ }
+--- a/ps2xIOP/src/emulator/iop_emulator.cpp
++++ b/ps2xIOP/src/emulator/iop_emulator.cpp
+@@ -563,10 +563,12 @@
+                     servicePendingDmaInterrupts();
+                     servicePendingGuestCallbacks();
+                     timrman.serviceDue(totalCycles, *this);
+-                    IopThread *next = kernel.beginNextReady(totalCycles);
++                    uint64_t delayedWake = UINT64_MAX;
++                    IopThread *next = kernel.beginNextReady(totalCycles, &delayedWake);
+                     if (!next)
+                     {
+-                        uint64_t nextWake = kernel.nextWakeCycle(target);
++                        // = kernel.nextWakeCycle(target), from the same pass
++                        uint64_t nextWake = std::min(target, delayedWake);
+                         for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
+                             nextWake = std::min(nextWake, completionCycle);
+                         if (!pendingGuestCallbacks.empty())
