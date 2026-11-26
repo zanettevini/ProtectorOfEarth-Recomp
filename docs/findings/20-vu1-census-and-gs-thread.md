@@ -1162,3 +1162,18 @@ per second in one-minute averages in the first level.
 - Since s.34 (12.27 G), patches 0053 and 0057-0059 took this measure to
   10.44 G (-14.9%).
 
+## 38. One wrap-mode dispatch per coordinate pair (patch 0060), and an inline-address attempt
+
+- After patch 0059 (10.44 G), `wrapTextureCoordinate`'s mode switch ran
+  four times per bilinear sample (0.14 G for the switch line alone).
+- Patch 0060: the two columns and the two rows of a sample share a mode,
+  so REPEAT masks both after one dispatch (the other modes call the old
+  function twice): 10.44 G -> 10.41 G, -0.3%. Same hashes on the level
+  and six random recordings, 6 bands match `--sync`; ps2xTest 454/454.
+- Tried and dropped: computing the CT32 frame and Z24/Z32 depth byte
+  addresses inline in WritePixelWith (the page tables made non-static,
+  `ByteAddressOf` in the header) instead of through the setup's function
+  pointers: 10.78 G with both changes, +3.3%; the larger inlined
+  per-pixel code costs more than the calls it saves. With the address
+  part taken out, the wrap part alone gave the 10.41 G above.
+

@@ -67,8 +67,9 @@ fix and how it was found.
 | `0057-gs-alpha-blend-three-channels-at-once.patch` | GS CPU backend: alpha blending of R, G and B in one SSE4.1 vector, each selector chosen once; same results | findings/20 s.35 |
 | `0058-gs-palette-filled-once-per-clut-key.patch` | GS CPU backend: the palette (CLUT after TEXA) filled for all 256 indices when its key changes, no per-texel lookup check; same results | findings/20 s.36 |
 | `0059-gs-c32-quad-read-inline.patch` | GS CPU backend: C32 bilinear quads read inline in the sampler (quad templates in the header); same results | findings/20 s.37 |
+| `0060-gs-wrap-mode-once-per-coordinate-pair.patch` | GS CPU backend: the wrap mode of a bilinear sample's two columns and two rows dispatched once per pair; same results | findings/20 s.38 |
 
-Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053 and 0057-0059 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
+Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053 and 0057-0060 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

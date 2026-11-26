@@ -1,0 +1,65 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: one wrap-mode dispatch per bilinear column and row pair
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - wrapTextureCoordinatePair: the two columns (u0, u1) or rows (v0, v1)
+    of a bilinear sample share their wrap mode; REPEAT, the common mode,
+    masks both after one dispatch, the other modes call
+    wrapTextureCoordinate for each as before. The sampler uses it for
+    its four coordinates.
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and the six random recordings; 6
+  bands give the same hashes. ps2xTest 454/454. Instructions for the
+  first 60,000 records of the level recording: 10.44 G -> 10.41 G
+  (findings/20 s.38).
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -150,6 +150,26 @@
+         }
+     }
+ 
++    // wrapTextureCoordinate of two coordinates with the same mode (the two
++    // columns or rows of a bilinear sample), with the mode dispatched once
++    // for REPEAT, the common case (findings/20 s.38).
++    PS2_GS_FORCEINLINE void wrapTextureCoordinatePair(int c0, int c1, int textureSize, uint8_t mode,
++                                                      uint16_t regionMin, uint16_t regionMax,
++                                                      uint32_t &w0, uint32_t &w1)
++    {
++        switch (mode & 0x3u)
++        {
++        case 0: // REPEAT
++            w0 = static_cast<uint32_t>(c0) & static_cast<uint32_t>(textureSize - 1);
++            w1 = static_cast<uint32_t>(c1) & static_cast<uint32_t>(textureSize - 1);
++            return;
++        default:
++            w0 = static_cast<uint32_t>(wrapTextureCoordinate(c0, textureSize, mode, regionMin, regionMax));
++            w1 = static_cast<uint32_t>(wrapTextureCoordinate(c1, textureSize, mode, regionMin, regionMax));
++            return;
++        }
++    }
++
+     bool passesAlphaTest(uint64_t testReg, uint8_t alpha)
+     {
+         if ((testReg & 0x1u) == 0u)
+@@ -1500,10 +1520,9 @@
+ 
+     // The four texels, read in the order the texture page cache saw them
+     // before (u0v0, u1v0, u0v1, u1v1), with one format dispatch for all four.
+-    const uint32_t wu0 = static_cast<uint32_t>(wrapTextureCoordinate(u0, texW, wrapU, minU, maxU));
+-    const uint32_t wu1 = static_cast<uint32_t>(wrapTextureCoordinate(u1, texW, wrapU, minU, maxU));
+-    const uint32_t wv0 = static_cast<uint32_t>(wrapTextureCoordinate(v0, texH, wrapV, minV, maxV));
+-    const uint32_t wv1 = static_cast<uint32_t>(wrapTextureCoordinate(v1, texH, wrapV, minV, maxV));
++    uint32_t wu0, wu1, wv0, wv1;
++    wrapTextureCoordinatePair(u0, u1, texW, wrapU, minU, maxU, wu0, wu1);
++    wrapTextureCoordinatePair(v0, v1, texH, wrapV, minV, maxV, wv0, wv1);
+     uint32_t raw[4] = {0u, 0u, 0u, 0u};
+     if (m_vram)
+     {
