@@ -1107,3 +1107,25 @@ per second in one-minute averages in the first level.
 - Also tried: segments of 1,024 or 2,048 commands instead of 512 (fewer
   ends of segment by length): no difference on the 2-core machine (best
   of four runs 6.5-6.6 s for each), so the limit stays.
+
+## 35. Alpha blending of the three colour channels at once (patch 0057)
+
+- Callgrind on the same measure as s.34 (`ben10_gs_replay
+  user/gs_rec/level.gsr --sync --limit 60000 --every 0`), after patch
+  0053: 11.29 G instructions. By source line, the alpha blend took about
+  0.4 G: the selector lambda (`if (sel == 0)` alone 0.14 G) ran nine
+  times per pixel, three selectors for each of R, G and B, although the
+  selectors are the same for every channel.
+- Patch 0057: the blend for R, G and B in one SSE4.1 vector, each
+  selector chosen once, the colours widened from their packed bytes,
+  clamped with two saturating packs (as `clampU8`): 11.04 G with the
+  colours set lane by lane, 10.98 G with the widening loads. -2.7%.
+- Checked: same hashes as before on the level recording (35 points and
+  the end) and the six random recordings; 6 bands match `--sync`;
+  ps2xTest 454/454.
+- Sprites: the 960 sprite draws of this part of the recording cost 3.4 G
+  (about 7.7 million pixels, ~440 instructions each, the blend and the
+  frame/Z address work of WritePixelWith included); the per-draw fields
+  WritePixelWith recomputes for every pixel (alpha-test class, the
+  destination-alpha decisions, about 0.3 G) are the next candidate.
+

@@ -1,0 +1,84 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: alpha blending of the three colour channels at once
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - WritePixelWith: ((A - B) * C >> 7) + D for R, G and B in one SSE4.1
+    vector. The A, B and D selectors (Cs, Cd or 0) are the same for the
+    three channels, so each is chosen once instead of once per channel;
+    the source and destination colours are widened from their packed
+    bytes with one instruction each; two saturating packs clamp to 0-255
+    as clampU8 did (the sums stay within +-1024). The scalar code stays
+    for compilers without SSE4.1 (PS2_GS_BLEND_SIMD).
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and the six random recordings
+  (three of them with draws sampling their own buffers); 6 bands give the
+  same hashes. ps2xTest 454/454. Instructions for the first 60,000
+  records of the level recording: 11.29 G -> 10.98 G (findings/20 s.35).
+
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -28,6 +28,14 @@
+ #else
+ #define PS2_GS_BILINEAR_SIMD 0
+ #endif
++
++// Alpha blending of the three colour channels together needs SSE4.1 (_mm_mullo_epi32).
++#if defined(__SSE4_1__) || defined(__AVX__) || (defined(_MSC_VER) && (defined(_M_X64) || defined(_M_AMD64)))
++#define PS2_GS_BLEND_SIMD 1
++#include <smmintrin.h>
++#else
++#define PS2_GS_BLEND_SIMD 0
++#endif
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+@@ -1208,6 +1216,28 @@
+                 uint8_t dsel = (alphaReg >> 6) & 3;
+                 uint8_t fix = static_cast<uint8_t>((alphaReg >> 32) & 0xFF);
+ 
++                int cAlpha = (csel == 0) ? a : (csel == 1) ? da
++                                                           : fix;
++#if PS2_GS_BLEND_SIMD
++                // ((A - B) * C >> 7) + D for the three channels at once: the selectors are the
++                // same for every channel, so each is chosen once (Cs, Cd or 0), not per channel.
++                // The two packs clamp like clampU8 (the sums stay within +-1024).
++                // Lane 3 of cs and cd (alpha) is computed too and thrown away.
++                const __m128i cs = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(static_cast<int>(r | (g << 8) | (b << 16))));
++                const __m128i cd = _mm_cvtepu8_epi32(_mm_cvtsi32_si128(static_cast<int>(fbrgba)));
++                const __m128i none = _mm_setzero_si128();
++                const __m128i va = asel == 0 ? cs : (asel == 1 ? cd : none);
++                const __m128i vb = bsel == 0 ? cs : (bsel == 1 ? cd : none);
++                const __m128i vd = dsel == 0 ? cs : (dsel == 1 ? cd : none);
++                __m128i blended = _mm_mullo_epi32(_mm_sub_epi32(va, vb), _mm_set1_epi32(cAlpha));
++                blended = _mm_add_epi32(_mm_srai_epi32(blended, 7), vd);
++                blended = _mm_packs_epi32(blended, blended);
++                blended = _mm_packus_epi16(blended, blended);
++                const uint32_t rgb = static_cast<uint32_t>(_mm_cvtsi128_si32(blended));
++                r = static_cast<uint8_t>(rgb);
++                g = static_cast<uint8_t>(rgb >> 8);
++                b = static_cast<uint8_t>(rgb >> 16);
++#else
+                 auto pickRGB = [&](uint8_t sel, int cs, int cd) -> int
+                 {
+                     if (sel == 0)
+@@ -1216,12 +1246,10 @@
+                         return cd;
+                     return 0;
+                 };
+-                int cAlpha = (csel == 0) ? a : (csel == 1) ? da
+-                                                           : fix;
+-
+                 r = clampU8(((pickRGB(asel, r, dr) - pickRGB(bsel, r, dr)) * cAlpha >> 7) + pickRGB(dsel, r, dr));
+                 g = clampU8(((pickRGB(asel, g, dg) - pickRGB(bsel, g, dg)) * cAlpha >> 7) + pickRGB(dsel, g, dg));
+                 b = clampU8(((pickRGB(asel, b, db) - pickRGB(bsel, b, db)) * cAlpha >> 7) + pickRGB(dsel, b, db));
++#endif
+             }
+             else
+             {
