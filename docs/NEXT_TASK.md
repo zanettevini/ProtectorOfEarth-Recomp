@@ -97,11 +97,11 @@
 3. Keep going one blocker at a time; record each in findings/15. Update the
    "Boot" milestone in `tools/native_progress.py` when it changes.
 4. More per-instruction tests for the game's instructions still untested
-   (KNOWN_ISSUES R13): MULT1/MULTU1/DIV1 and the HI1/LO1 moves, MTSAH,
-   PEXT5/PPAC5 and the rest of VU0 macro mode. Done (findings/14 s.8):
-   LDL/LDR/SDL/SDR, QFSRV, RSQRT.S, MADD.S/MSUB.S, C.*.S, MAX.S/MIN.S,
-   PMFHL and every 128-bit HI/LO MMI instruction (patches 0054-0055 fixed
-   what they found). R27 (PCSX2 and the runtime disagree on exponent-255
+   (KNOWN_ISSUES R13): the rest of VU0 macro mode. Done (findings/14
+   s.8): LDL/LDR/SDL/SDR, QFSRV, MTSAH, RSQRT.S, MADD.S/MSUB.S, C.*.S,
+   MAX.S/MIN.S, PMFHL, every 128-bit HI/LO MMI instruction, pipeline 1
+   (MULT1, DIV1, MADD1, HI1/LO1 moves), MADD/MADDU, PEXT5/PPAC5 (patches
+   0054-0055 fixed what they found). R27 (PCSX2 and the runtime disagree on exponent-255
    floats) waits for the ps2autotests results.
 5. Send patches 0002-0055 upstream to PS2Recomp.
 

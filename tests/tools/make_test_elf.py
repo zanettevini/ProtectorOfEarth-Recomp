@@ -73,6 +73,19 @@ def sdl(rt, off, base):    return i_type(0x2C, base, rt, off)
 def sdr(rt, off, base):    return i_type(0x2D, base, rt, off)
 # REGIMM (opcode 1) MTSAB: rt field 0x18 (PCSX2 tbl_REGIMM)
 def mtsab(rs, imm):        return i_type(0x01, rs, 0x18, imm)
+def mtsah(rs, imm):        return i_type(0x01, rs, 0x19, imm)
+# MMI pipeline-1 and multiply-add (opcode 0x1C, picked by the function field).
+def _mmi_fn(fn):           return lambda rd, rs, rt: r_type(0x1C, rs, rt, rd, 0, fn)
+madd, maddu, mult1, multu1 = _mmi_fn(0x00), _mmi_fn(0x01), _mmi_fn(0x18), _mmi_fn(0x19)
+madd1, maddu1 = _mmi_fn(0x20), _mmi_fn(0x21)
+def div1(rs, rt):          return r_type(0x1C, rs, rt, 0, 0, 0x1A)
+def divu1(rs, rt):         return r_type(0x1C, rs, rt, 0, 0, 0x1B)
+def mfhi1(rd):             return r_type(0x1C, 0, 0, rd, 0, 0x10)
+def mthi1(rs):             return r_type(0x1C, rs, 0, 0, 0, 0x11)
+def mflo1(rd):             return r_type(0x1C, 0, 0, rd, 0, 0x12)
+def mtlo1(rs):             return r_type(0x1C, rs, 0, 0, 0, 0x13)
+def pext5(rd, rt):         return r_type(0x1C, 0, rt, rd, 0x1E, 0x08)  # MMI0
+def ppac5(rd, rt):         return r_type(0x1C, 0, rt, rd, 0x1F, 0x08)  # MMI0
 
 
 # Branches: the offset is relative to the NEXT instruction (pc + 4), in words.
@@ -296,6 +309,16 @@ CASES["t_sdl_sdr_pair"] = lambda pc: [sdl(A1, 7, A0), sdr(A1, 0, A0)] + ret()
 # --- MMI, R13 ------------------------------------------------------------------
 # SA = a2 & 0xF (MTSAB a2, 0), then QFSRV v0, a0, a1 (a0 = rs, a1 = rt).
 CASES["t_qfsrv"] = lambda pc: [mtsab(A2, 0), qfsrv(V0, A0, A1)] + ret()
+CASES["t_qfsrv_h"] = lambda pc: [mtsah(A2, 0), qfsrv(V0, A0, A1)] + ret()
+# Pipeline 1 (HI/LO bits 64-127) and the multiply-adds; the test sets HI/LO in the context.
+for _name, _op in [("madd", madd), ("maddu", maddu), ("mult1", mult1), ("multu1", multu1),
+                   ("madd1", madd1), ("maddu1", maddu1)]:
+    CASES[f"t_{_name}"] = (lambda o: (lambda pc: [o(V0, A0, A1)] + ret()))(_op)
+CASES["t_div1"] = lambda pc: [div1(A0, A1)] + ret()
+CASES["t_divu1"] = lambda pc: [divu1(A0, A1)] + ret()
+CASES["t_hilo1_moves"] = lambda pc: [mthi1(A0), mtlo1(A1), mfhi1(V0), mflo1(V1)] + ret()
+CASES["t_pext5"] = lambda pc: [pext5(V0, A0)] + ret()
+CASES["t_ppac5"] = lambda pc: [ppac5(V0, A0)] + ret()
 # HI = a1, LO = a0 (128 bits), then PMFHL.fmt v0.
 for _fmt, _name in ((0, "lw"), (1, "uw"), (2, "slw"), (3, "lh"), (4, "sh")):
     CASES[f"t_pmfhl_{_name}"] = (lambda f: (lambda pc: [pmthi(A1), pmtlo(A0), pmfhl(V0, f)] + ret()))(_fmt)

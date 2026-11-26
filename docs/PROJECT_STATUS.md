@@ -50,7 +50,7 @@ game) and the [README](../README.md#-going-native) board.
 
 | What | Where | Result |
 |---|---|---|
-| `ctest` (86 cases: 79 instruction + 2 memory layout active, 5 disabled on purpose, findings/14 s.8) | Linux, GCC 13 | **81/81 pass** |
+| `ctest` (98 cases: 91 instruction + 2 memory layout active, 5 disabled on purpose, findings/14 s.8) | Linux, GCC 13 | **93/93 pass** |
 | PS2Recomp's own `ps2x_tests` with patches 0001-0055 (built separately, Release) | Linux, GCC 13 | **454/454 pass** (run from `ps2xTest/` or the submodule root) |
 | The same, before patches 0002-0005 | Linux | 24 passed, 8 failed (findings/14 s.5) |
 | Full `ben10_poe` build, after each binding batch | Linux, GCC 13, `-O0` | compiles and links |

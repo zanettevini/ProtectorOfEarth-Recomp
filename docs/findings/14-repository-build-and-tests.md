@@ -189,5 +189,12 @@ first level as before (screenshot checked). The three PMULTH functions are
 only reached through pointers; a 60 s gdb watch in the first level did not
 hit them, so where the game uses them is not known yet.
 
-Still without a case: MULT1/MULTU1/DIV1, MFHI1/MFLO1/MTHI1/MTLO1, MTSAH,
-PEXT5/PPAC5 and most of the VU0 macro operations.
+Then 12 more cases, all passing the first time (no bug found): MULT1,
+MULTU1, DIV1, DIVU1, MADD1, MADDU1 and the HI1/LO1 moves (each also checks
+that pipeline 0's HI/LO stay), MADD and MADDU, PEXT5, PPAC5, and MTSAH
+followed by QFSRV. In the game: 13 MULT1, 1 MULTU1, 2 MTHI1/MTLO1, 1
+MFHI1/MFLO1, 16 MADD, 16 PPAC5. Now **98 cases, 93 pass, 5 disabled**.
+
+Still without a case: most of the VU0 macro operations, and MFSA/MTSA (the
+runtime keeps SA in bits, PCSX2 in bytes, so MFSA would differ; the game
+has neither).

@@ -725,6 +725,191 @@ TEST_F(EeTest, QfsrvFunnelShiftsBytes) {
     }
 }
 
+// PCSX2 R5900OpcodeImpl.cpp MTSAH: SA = ((rs ^ imm) & 7) * 2 bytes; QFSRV
+// then shifts by that many bytes.
+TEST_F(EeTest, MtsahSetsHalfwordShift) {
+    const U128 rt = bytesFrom(0x00), rs = bytesFrom(0x10);
+    for (uint32_t halves : {0u, 1u, 3u, 7u}) {
+        set128(A1, rt.hi, rt.lo);
+        set128(A0, rs.hi, rs.lo);
+        set64(A2, halves);
+        run(CASE_t_qfsrv_h);
+        EXPECT_EQ(get128(V0), bytesFrom(halves * 2)) << "halfwords = " << halves;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline 1 (HI/LO bits 64-127: ctx->hi1/lo1) and the multiply-adds.
+// PCSX2 MMI.cpp MULT1/MULTU1/DIV1/DIVU1/MADD1/MADDU1/MFHI1/MTLO1... and
+// R5900OpcodeImpl.cpp MADD/MADDU. Pipeline 0 (ctx->hi/lo) must not change.
+// ---------------------------------------------------------------------------
+class EePipe1Test : public EeTest {
+protected:
+    void SetUp() override {
+        EeTest::SetUp();
+        ctx->hi = 0x1111111111111111ull;
+        ctx->lo = 0x2222222222222222ull;
+        ctx->hi1 = 0x3333333333333333ull;
+        ctx->lo1 = 0x4444444444444444ull;
+    }
+    void expectPipe0Unchanged() const {
+        EXPECT_EQ(ctx->hi, 0x1111111111111111ull);
+        EXPECT_EQ(ctx->lo, 0x2222222222222222ull);
+    }
+};
+
+// MULT1: the low words only; LO1/HI1 the sign-extended halves, rd = LO1.
+TEST_F(EePipe1Test, Mult1) {
+    set64(A0, 0x123456787FFFFFFFull);
+    set64(A1, 0x9ABCDEF0FFFFFFFEull);  // -2
+    run(CASE_t_mult1);
+    EXPECT_EQ(ctx->lo1, 2u);
+    EXPECT_EQ(ctx->hi1, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(get64(V0), 2u);
+    expectPipe0Unchanged();
+}
+
+// MULTU1: unsigned product, results still sign-extended.
+TEST_F(EePipe1Test, Multu1) {
+    set64(A0, 0xFFFFFFFFu);
+    set64(A1, 2);
+    run(CASE_t_multu1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFFFFFFFFFEull);
+    EXPECT_EQ(ctx->hi1, 1u);
+    EXPECT_EQ(get64(V0), 0xFFFFFFFFFFFFFFFEull);
+    expectPipe0Unchanged();
+}
+
+// DIV1: truncating division; 0x80000000 / -1 -> LO1 0x80000000, HI1 0;
+// by zero: LO1 = 1 for a negative dividend, -1 otherwise, HI1 = dividend.
+TEST_F(EePipe1Test, Div1) {
+    set64(A0, 0xFFFFFFF9u);  // -7
+    set64(A1, 2);
+    run(CASE_t_div1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFFFFFFFFFDull);
+    EXPECT_EQ(ctx->hi1, 0xFFFFFFFFFFFFFFFFull);
+    set64(A0, 0x80000000u);
+    set64(A1, 0xFFFFFFFFu);
+    run(CASE_t_div1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFF80000000ull);
+    EXPECT_EQ(ctx->hi1, 0u);
+    set64(A0, 5);
+    set64(A1, 0);
+    run(CASE_t_div1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(ctx->hi1, 5u);
+    set64(A0, 0xFFFFFFFBu);  // -5
+    run(CASE_t_div1);
+    EXPECT_EQ(ctx->lo1, 1u);
+    EXPECT_EQ(ctx->hi1, 0xFFFFFFFFFFFFFFFBull);
+    expectPipe0Unchanged();
+}
+
+// DIVU1: unsigned, results sign-extended; by zero LO1 = -1, HI1 = dividend.
+TEST_F(EePipe1Test, Divu1) {
+    set64(A0, 0xFFFFFFFFu);
+    set64(A1, 2);
+    run(CASE_t_divu1);
+    EXPECT_EQ(ctx->lo1, 0x7FFFFFFFu);
+    EXPECT_EQ(ctx->hi1, 1u);
+    set64(A0, 0x80000000u);
+    set64(A1, 1);
+    run(CASE_t_divu1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFF80000000ull);
+    EXPECT_EQ(ctx->hi1, 0u);
+    set64(A0, 0x90000000u);
+    set64(A1, 0);
+    run(CASE_t_divu1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(ctx->hi1, 0xFFFFFFFF90000000ull);
+    expectPipe0Unchanged();
+}
+
+// MADD: {HI.w0, LO.w0} + rs * rt; LO/HI sign-extended, rd = LO.
+TEST_F(EeTest, MaddAccumulates) {
+    ctx->hi = 1;
+    ctx->lo = 0xFFFFFFFFFFFFFFFFull;
+    ctx->hi1 = 0x77;
+    ctx->lo1 = 0x88;
+    set64(A0, 3);
+    set64(A1, 0xFFFFFFFFu);  // -1
+    run(CASE_t_madd);
+    EXPECT_EQ(ctx->lo, 0xFFFFFFFFFFFFFFFCull);
+    EXPECT_EQ(ctx->hi, 1u);
+    EXPECT_EQ(get64(V0), 0xFFFFFFFFFFFFFFFCull);
+    EXPECT_EQ(ctx->hi1, 0x77u);
+    EXPECT_EQ(ctx->lo1, 0x88u);
+}
+
+// MADDU: unsigned; 0xFFFFFFFF + 0xFFFFFFFF^2 = 0xFFFFFFFF'00000000.
+TEST_F(EeTest, MadduAccumulates) {
+    ctx->hi = 0;
+    ctx->lo = 0xFFFFFFFFFFFFFFFFull;
+    set64(A0, 0xFFFFFFFFu);
+    set64(A1, 0xFFFFFFFFu);
+    run(CASE_t_maddu);
+    EXPECT_EQ(ctx->lo, 0u);
+    EXPECT_EQ(ctx->hi, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(get64(V0), 0u);
+}
+
+// MADD1: the same on HI1/LO1; rd = LO1.
+TEST_F(EePipe1Test, Madd1) {
+    ctx->hi1 = 1;
+    ctx->lo1 = 0xFFFFFFFFFFFFFFFFull;
+    set64(A0, 3);
+    set64(A1, 0xFFFFFFFFu);
+    run(CASE_t_madd1);
+    EXPECT_EQ(ctx->lo1, 0xFFFFFFFFFFFFFFFCull);
+    EXPECT_EQ(ctx->hi1, 1u);
+    EXPECT_EQ(get64(V0), 0xFFFFFFFFFFFFFFFCull);
+    expectPipe0Unchanged();
+}
+
+// MADDU1: unsigned on HI1/LO1.
+TEST_F(EePipe1Test, Maddu1) {
+    ctx->hi1 = 0;
+    ctx->lo1 = 0xFFFFFFFFFFFFFFFFull;
+    set64(A0, 0xFFFFFFFFu);
+    set64(A1, 0xFFFFFFFFu);
+    run(CASE_t_maddu1);
+    EXPECT_EQ(ctx->lo1, 0u);
+    EXPECT_EQ(ctx->hi1, 0xFFFFFFFFFFFFFFFFull);
+    EXPECT_EQ(get64(V0), 0u);
+    expectPipe0Unchanged();
+}
+
+// MTHI1/MTLO1 copy rs bits 0-63; MFHI1/MFLO1 write rd bits 0-63 and leave
+// bits 64-127 (PCSX2 writes UD[0] only).
+TEST_F(EePipe1Test, Hilo1Moves) {
+    set128(A0, 0xAAAAAAAAAAAAAAAAull, 0x0123456789ABCDEFull);
+    set128(A1, 0xBBBBBBBBBBBBBBBBull, 0xFEDCBA9876543210ull);
+    set128(V0, 0xCCCCCCCCCCCCCCCCull, 0);
+    set128(V1, 0xDDDDDDDDDDDDDDDDull, 0);
+    run(CASE_t_hilo1_moves);
+    EXPECT_EQ(ctx->hi1, 0x0123456789ABCDEFull);
+    EXPECT_EQ(ctx->lo1, 0xFEDCBA9876543210ull);
+    EXPECT_EQ(get128(V0), (U128{0x0123456789ABCDEFull, 0xCCCCCCCCCCCCCCCCull}));
+    EXPECT_EQ(get128(V1), (U128{0xFEDCBA9876543210ull, 0xDDDDDDDDDDDDDDDDull}));
+    expectPipe0Unchanged();
+}
+
+// PCSX2 MMI.cpp PEXT5: each word's 1-5-5-5 colour spread to 8 bits a channel.
+TEST_F(EeTest, Pext5ExpandsColours) {
+    set128(A0, (uint64_t(0x000003E0u) << 32) | 0xFFFF0001u, (uint64_t(0x00007C1Fu) << 32) | 0x0000FFFFu);
+    run(CASE_t_pext5);
+    EXPECT_EQ(get128(V0), (U128{(uint64_t(0x00F800F8u) << 32) | 0x80F8F8F8u,
+                                (uint64_t(0x0000F800u) << 32) | 0x00000008u}));
+}
+
+// PCSX2 PPAC5: the reverse, keeping the top 5 bits of each channel.
+TEST_F(EeTest, Ppac5PacksColours) {
+    set128(A0, (uint64_t(0x00000000u) << 32) | 0x80000000u, (uint64_t(0x12345678u) << 32) | 0x80F8F8F8u);
+    run(CASE_t_ppac5);
+    EXPECT_EQ(get128(V0), (U128{(uint64_t(0x0000194Fu) << 32) | 0x0000FFFFu,
+                                (uint64_t(0x00000000u) << 32) | 0x00008000u}));
+}
+
 // HI = a1, LO = a0 as four 32-bit words each (word 0 the lowest).
 class EePmfhlTest : public EeTest {
 protected:
