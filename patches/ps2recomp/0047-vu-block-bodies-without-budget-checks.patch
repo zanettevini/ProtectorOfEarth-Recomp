@@ -1,0 +1,154 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU: no budget checks in translated block bodies, no per-cycle copy of the cycle count
+
+What it is for:
+  Every pair of a translated block's body checked the run's cycle budget
+  twice (in the hazard wait and after it), and every VU cycle copied the
+  cycle counter into VU1State::cycles, which nothing reads during a run.
+
+The changes:
+  - execPairWith takes inBudget: the caller knows the pair issues before
+    the budget ends; the budget checks are left out. The block body pairs
+    (VU1NativeAccess::blockPairUpper/blockPairUpperLower) pass it: every
+    translated block now starts through blockCanEnterWithin, whose bound
+    the translator computes from the body (pair count, plus the longest
+    wait for something issued before the block, plus the sum of the
+    body's own latencies; an XGKICK counts kMaxXgkickWait).
+  - advanceOneCycle no longer stores m_state.cycles; run() and
+    flushPipelines set it, as before.
+  Same results.
+
+How it was checked:
+  tools/vu1_replay --sum: the same checksums for the 40 VU1 and 60 VU0
+  workloads, interpreted, translated and without blocks. ps2xTest 454/454.
+  Instructions in VU1::run on the replay: 415.8 M -> 410.2 M
+  (findings/20 s.29).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -407,9 +407,13 @@
+     // ConstTiming<D> (translated code) has the pair as a constant and
+     // unrolls both at compile time to one max per register lane read and one
+     // store per lane written (findings/21 s.15). Same results.
++    // inBudget: the caller knows the pair issues before the run's cycle
++    // budget ends (a translated block body entered through
++    // VU1NativeAccess::blockCanEnterWithin), so the budget checks are left
++    // out.
+     template <class UpperExec, class LowerExec, class Timing>
+     StepResult execPairWith(const DecodedInstructionPair &decoded, RunFrame &frame, UpperExec upper, LowerExec lower,
+-                            Timing timing, bool immediateWrites = false, bool blockBody = false);
++                            Timing timing, bool immediateWrites = false, bool blockBody = false, bool inBudget = false);
+     struct DynamicTiming
+     {
+         const DecodedInstructionPair &decoded;
+@@ -952,7 +956,7 @@
+ 
+ template <class UpperExec, class LowerExec, class Timing>
+ PS2_VU_FORCEINLINE VU1Interpreter::StepResult VU1Interpreter::execPairWith(const DecodedInstructionPair &decoded, RunFrame &f, UpperExec upper, LowerExec lower,
+-                                                                           Timing timing, bool immediateWrites, bool blockBody)
++                                                                           Timing timing, bool immediateWrites, bool blockBody, bool inBudget)
+ {
+     if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
+     {
+@@ -961,18 +965,30 @@
+     }
+ 
+     uint64_t readyCycle = timing.ready(*this);
+-    while (readyCycle > m_cycle)
++    if (inBudget)
+     {
+-        if (readyCycle >= f.budgetEnd)
++        // Every wait ends before the budget does (blockCanEnterWithin).
++        while (readyCycle > m_cycle)
+         {
+-            advanceTo(f.budgetEnd);
+-            break;
++            advanceTo(readyCycle);
++            readyCycle = timing.ready(*this);
+         }
+-        advanceTo(readyCycle);
+-        readyCycle = timing.ready(*this);
+     }
+-    if (m_cycle >= f.budgetEnd)
+-        return StepResult::Break;
++    else
++    {
++        while (readyCycle > m_cycle)
++        {
++            if (readyCycle >= f.budgetEnd)
++            {
++                advanceTo(f.budgetEnd);
++                break;
++            }
++            advanceTo(readyCycle);
++            readyCycle = timing.ready(*this);
++        }
++        if (m_cycle >= f.budgetEnd)
++            return StepResult::Break;
++    }
+ 
+     // The lowest VI register (1-15) the lower instruction writes, if any.
+     uint8_t writtenVi = 0u;
+@@ -1267,7 +1283,8 @@
+ PS2_VU_FORCEINLINE void VU1Interpreter::advanceOneCycle()
+ {
+     ++m_cycle;
+-    m_state.cycles = m_cycle;
++    // m_state.cycles is set from m_cycle when run() returns and in
++    // flushPipelines; nothing reads it during a run (findings/20 s.29).
+     // LSU commits become visible at the cycle boundary before PATH1 consumes
+     // its next qword from VU memory.
+     if (m_cycle >= m_nextCommitCycle)
+@@ -1425,13 +1442,17 @@
+     {
+         return !vu.m_state.branchPending && !vu.m_state.ebit && !vu.m_state.haltAfterDelaySlot;
+     }
+-    // For a block that leaves out flag results (kElide pairs, findings/20
+-    // s.28): it may also start only if its body cannot run out of the run's
+-    // cycle budget, so that it never stops halfway, between an instruction
+-    // whose flag result was left out and the later one whose result replaces
+-    // it. kMaxCycles is the translator's bound on the cycles the body takes
+-    // (per pair one cycle plus kMaxPipelineLatency, or kMaxXgkickWait for an
+-    // XGKICK).
++    // Every translated block starts through this: also only if its body
++    // cannot run out of the run's cycle budget, so the body pairs need no
++    // budget check (findings/20 s.29) and a block that leaves out flag
++    // results (kElide pairs, s.28) never stops halfway, between an
++    // instruction whose flag result was left out and the later one whose
++    // result replaces it. kMaxCycles is the translator's bound on the cycles
++    // the body takes: a pair issues one cycle after the previous one or when
++    // a result it waits for is due, so the body ends within its pair count,
++    // plus the longest wait for something issued before the block
++    // (kMaxPipelineLatency, or kMaxXgkickWait with an XGKICK), plus the sum
++    // of the body's own latencies (an XGKICK counting kMaxXgkickWait).
+     template <uint64_t kMaxCycles>
+     static PS2_VU_FORCEINLINE bool blockCanEnterWithin(const VU1Interpreter &vu, const Frame &frame)
+     {
+@@ -1463,7 +1484,8 @@
+     // would run it, without what cannot happen inside a block:
+     // - the run loop's commit check: the previous pair's cycle advance has
+     //   just committed everything due by this cycle;
+-    // - its budget check: the step makes the same one before it executes;
++    // - the budget checks, the run loop's and the step's: the block was
++    //   entered through blockCanEnterWithin;
+     // - its end-of-code-memory check: kPc is inside code memory;
+     // - the PC update: only branches (never in a body) read the PC, so it is
+     //   set only when the block leaves early.
+@@ -1494,7 +1516,7 @@
+                 { runUpper<Upper, kElide>(v); },
+                 [lowerWord, upperWord](VU1Interpreter &v, Frame &fr)
+                 { v.execLower(lowerWord, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true) == Result::Continue) [[likely]]
+             return true;
+         vu.m_state.pc = kPc;
+         return false;
+@@ -1517,7 +1539,7 @@
+                 { runUpper<Upper, kElide>(v); },
+                 [upperWord](VU1Interpreter &v, Frame &fr)
+                 { Lower(v, fr.vuData, fr.dataSize, *fr.gs, fr.memory, upperWord); },
+-                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true) == Result::Continue) [[likely]]
++                VU1Interpreter::MaskedTiming<P, kU0, kU1, kL0, kL1, kVi, kAcc>{}, true, true, true) == Result::Continue) [[likely]]
+             return true;
+         vu.m_state.pc = kPc;
+         return false;

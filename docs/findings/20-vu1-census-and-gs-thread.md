@@ -942,3 +942,32 @@ per second in one-minute averages in the first level.
   remaining flag cost is mostly fmacFlagsFast's own checks, which also
   decide whether the result needs the slow, exact normalization, so they
   cannot be left out. Not yet measured in the game on Windows.
+
+## 29. Translated block bodies without budget checks (patch 0047)
+
+- After s.28 the per-pair bookkeeping of a block body is the largest part
+  of the VU work left besides the upper words. Two parts of it never do
+  anything in a body: the cycle-budget checks (in the hazard wait and
+  after it) and the copy of the cycle counter into `VU1State::cycles` on
+  every cycle (run() and flushPipelines set it; nothing reads it during a
+  run).
+- Every translated block now starts through `blockCanEnterWithin` with a
+  bound the translator computes: a body pair issues one cycle after the
+  previous one, or when a result it waits for is due, either from an
+  earlier body pair (at most that pair's latency after it issued) or from
+  before the block (at most 64 cycles, or an XGKICK transfer, 8,194). By
+  induction the body ends within its pair count plus that wait plus the
+  sum of its pairs' latencies. Bounds: 69 to 104 cycles for most blocks,
+  49,214 for the longest one with XGKICKs; the VU1 budget is 65,536
+  cycles per MSCAL, VU0's 4,096, so blocks near the end of a budget run
+  pair by pair. The translator stops if any decoded latency is above 64.
+- The body pairs then skip the budget checks. Same `--sum` checksums for
+  the 40 VU1 and 60 VU0 workloads (interpreted, translated, without
+  blocks); ps2xTest 454/454. VU1 replay: 415.8 M -> 410.2 M instructions
+  in `VU1::run` (VU0 replay: -0.2%).
+- What is left per body pair: the stop-request check, the hazard check on
+  the lanes not settled at build time, resetting VF0 and VI0, the
+  immediate-write bookkeeping and the cycle advance (commit and XGKICK
+  checks). Each is a few instructions; a larger cut needs the translated
+  code to keep its own state and schedule instead of the interpreter's
+  (the native VU step of the roadmap).

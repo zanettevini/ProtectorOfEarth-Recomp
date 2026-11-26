@@ -50,6 +50,7 @@
 
 #include "runtime/ps2_vu1.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -332,6 +333,21 @@ int main(int argc, char **argv)
         ++n;
     }
 
+    // The block bounds (blockCanEnterWithin) assume no result takes longer
+    // than kMaxPipelineLatency cycles.
+    for (const auto &[key, info] : pairInfo)
+    {
+        const auto &d = info.decoded;
+        const uint32_t latency = std::max<uint32_t>({d.upperUsage.latency, d.upperUsage.vfLatency, d.lowerUsage.latency,
+                                                     d.lowerUsage.vfLatency, d.lowerUsage.viLatency});
+        if (latency > VU1NativeAccess::kMaxPipelineLatency)
+        {
+            std::fprintf(stderr, "vu1_translate: pair at 0x%x has latency %u, above kMaxPipelineLatency\n",
+                         std::get<0>(key), latency);
+            return 1;
+        }
+    }
+
     // ---- Blocks (findings/21 s.24) ----------------------------------------
     // A block is a straight-line run of pairs of one overlay chunk, starting
     // at a leader: the chunk's first pair, a static branch target, or the
@@ -533,26 +549,33 @@ int main(int argc, char **argv)
                 }
             }
         }
-        // The body's cycle bound for blockCanEnterWithin.
+        // The body's cycle bound for blockCanEnterWithin (findings/20 s.29):
+        // a body pair issues one cycle after the previous one, or when a
+        // result it waits for is due, either from an earlier body pair (at
+        // most that pair's latency after it issued) or from before the
+        // block (at most kMaxPipelineLatency, or an XGKICK transfer:
+        // kMaxXgkickWait). By induction the body ends within its pair count
+        // plus that wait plus the sum of its pairs' latencies.
         uint64_t bodyBound = 0;
-        bool anyElided = false;
+        bool bodyXgkick = false;
         for (size_t i = 0; i + 1 < count; ++i)
         {
             const uint32_t pc = block.pc + static_cast<uint32_t>(i) * 8u;
             const auto &[lower, upper] = block.words[i];
             const auto &d = pairInfo.at({pc, lower, upper}).decoded;
-            bodyBound += 1u + (d.lowerUsage.pipeline == VU1Interpreter::PipelineXgkick ? VU1NativeAccess::kMaxXgkickWait
-                                                                                        : VU1NativeAccess::kMaxPipelineLatency);
-            anyElided = anyElided || elide[i];
+            const bool xgkick = d.lowerUsage.pipeline == VU1Interpreter::PipelineXgkick;
+            bodyXgkick = bodyXgkick || xgkick;
+            // (at least 1: the ACC result, forwarded to the next pair)
+            const uint32_t latency = std::max<uint32_t>({1u, d.upperUsage.latency, d.upperUsage.vfLatency, d.lowerUsage.latency,
+                                                         d.lowerUsage.vfLatency, d.lowerUsage.viLatency});
+            bodyBound += 1u + (xgkick ? VU1NativeAccess::kMaxXgkickWait : latency);
         }
+        bodyBound += bodyXgkick ? VU1NativeAccess::kMaxXgkickWait : VU1NativeAccess::kMaxPipelineLatency;
         o << "    Result " << bid << "(VU1Interpreter &vu, Frame &frame)\n    {\n"
-          << "        // A branch, delay slot or end pending: the first pair alone,\n"
-          << "        // as the run loop would run it.\n";
-        if (anyElided)
-            o << "        // Flag results left out: also when the body could run out of cycles.\n"
-              << "        if (!VU1NativeAccess::blockCanEnterWithin<" << bodyBound << "u>(vu, frame))\n";
-        else
-            o << "        if (!VU1NativeAccess::blockCanEnter(vu))\n";
+          << "        // A branch, delay slot or end pending, or a body that could run\n"
+          << "        // past the cycle budget: the first pair alone, as the run loop\n"
+          << "        // would run it.\n"
+          << "        if (!VU1NativeAccess::blockCanEnterWithin<" << bodyBound << "u>(vu, frame))\n";
         o << "            return ";
         ordinaryStep(0);
         // The latest write of each VF lane, VI register and ACC lane by an

@@ -59,7 +59,8 @@
    0045) and FMAC flag results left out in translated blocks where no
    flag instruction can read them (patch 0046 and the translator's step
    5): VU work on the replay -10.6%, FMAC entries queued -67%; to be
-   measured on Windows in a fight (`run-worker.bat`). Next on the VU
+   measured on Windows in a fight (`run-worker.bat`). Patch 0047 (s.29):
+   block bodies without budget checks, -1.8%. Next on the VU
    side: the rest of the per-FMAC cost (operand normalisation and the
    fast-path checks, s.28), the block bodies' per-pair bookkeeping;
    on the GS side
@@ -93,7 +94,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0046 upstream to PS2Recomp.
+5. Send patches 0002-0047 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
