@@ -338,10 +338,68 @@ CASES["t_pmthl_lw"] = lambda pc: [pmthi(A2), pmtlo(A3), pmthl_lw(A0)] + ret()
 # --- VU0 macro mode -----------------------------------------------------------
 # vf1 = a0, vf2 = a1 (128 bits); vf3 gets a known base (a2);
 # VADD with a destination mask; v0 = vf3.
+
+def _dest(dest):
+    return sum(bit for c, bit in (("x", 8), ("y", 4), ("z", 2), ("w", 1)) if c in dest)
+
+def _vu1op(fn, dest, fd, fs, ft):
+    """COP2 special1 macro op (function 0x00-0x3B in bits 0-5)."""
+    return (COP2 << 26) | (1 << 25) | (_dest(dest) << 21) | (ft << 16) | (fs << 11) | (fd << 6) | fn
+
+def _vu2op(code, field, fs, ft):
+    """COP2 special2 macro op: bits 0-1 and 6-10 hold the 7-bit code; field is bits 21-24."""
+    return ((COP2 << 26) | (1 << 25) | (field << 21) | (ft << 16) | (fs << 11)
+            | ((code >> 2) << 6) | 0x3C | (code & 3))
+
+_BC = {"x": 0, "y": 1, "z": 2, "w": 3}
+def vaddbc(bc, dest, fd, fs, ft):   return _vu1op(0x00 + _BC[bc], dest, fd, fs, ft)
+def vmaddbc(bc, dest, fd, fs, ft):  return _vu1op(0x08 + _BC[bc], dest, fd, fs, ft)
+def vminibc(bc, dest, fd, fs, ft):  return _vu1op(0x14 + _BC[bc], dest, fd, fs, ft)
+def vmulbc(bc, dest, fd, fs, ft):   return _vu1op(0x18 + _BC[bc], dest, fd, fs, ft)
+def vmulq(dest, fd, fs):            return _vu1op(0x1C, dest, fd, fs, 0)
+def vmul(dest, fd, fs, ft):         return _vu1op(0x2A, dest, fd, fs, ft)
+def vmax(dest, fd, fs, ft):         return _vu1op(0x2B, dest, fd, fs, ft)
+def vsub(dest, fd, fs, ft):         return _vu1op(0x2C, dest, fd, fs, ft)
+def vopmsub(fd, fs, ft):            return _vu1op(0x2E, "xyz", fd, fs, ft)
+def vmaddabc(bc, dest, fs, ft):     return _vu2op(0x08 + _BC[bc], _dest(dest), fs, ft)
+def vitof12(dest, ft, fs):          return _vu2op(0x12, _dest(dest), fs, ft)
+def vftoi0(dest, ft, fs):           return _vu2op(0x14, _dest(dest), fs, ft)
+def vmulabc(bc, dest, fs, ft):      return _vu2op(0x18 + _BC[bc], _dest(dest), fs, ft)
+def vopmula(fs, ft):                return _vu2op(0x2E, _dest("xyz"), fs, ft)
+def vmr32(dest, ft, fs):            return _vu2op(0x31, _dest(dest), fs, ft)
+def vdiv(fs, fsf, ft, ftf):         return _vu2op(0x38, _BC[fsf] | (_BC[ftf] << 2), fs, ft)
+def vsqrt(ft, ftf):                 return _vu2op(0x39, _BC[ftf] << 2, 0, ft)
+def vrsqrt(fs, fsf, ft, ftf):       return _vu2op(0x3A, _BC[fsf] | (_BC[ftf] << 2), fs, ft)
+def vwaitq():                       return _vu2op(0x3B, 0, 0, 0)
+
 CASES["t_vadd_xyzw"] = lambda pc: [qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3),
                                    vadd("xyzw", 3, 1, 2), qmfc2(V0, 3)] + ret()
 CASES["t_vadd_x_only"] = lambda pc: [qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3),
                                      vadd("x", 3, 1, 2), qmfc2(V0, 3)] + ret()
+
+# More VU0 macro operations: vf1 = a0, vf2 = a1, vf3 = a2 (and vf4 = a3,
+# vf5 = t0 where used); the result comes back from vf3 (or vf6) in v0.
+def _vu_case(*ops, out=3):
+    return lambda pc: ([qmtc2(A0, 1), qmtc2(A1, 2), qmtc2(A2, 3), qmtc2(A3, 4), qmtc2(T0, 5)]
+                       + list(ops) + [qmfc2(V0, out)] + ret())
+CASES["t_vmulx"] = _vu_case(vmulbc("x", "xyzw", 3, 1, 2))
+CASES["t_vaddw"] = _vu_case(vaddbc("w", "xyzw", 3, 1, 2))
+CASES["t_vaddy"] = _vu_case(vaddbc("y", "xyzw", 3, 1, 2))
+CASES["t_vaddz"] = _vu_case(vaddbc("z", "xyzw", 3, 1, 2))
+CASES["t_vsub"] = _vu_case(vsub("xyzw", 3, 1, 2))
+CASES["t_vmul"] = _vu_case(vmul("xyzw", 3, 1, 2))
+CASES["t_vmax"] = _vu_case(vmax("xyzw", 3, 1, 2))
+CASES["t_vminix"] = _vu_case(vminibc("x", "xyzw", 3, 1, 2))
+CASES["t_vmatrix"] = _vu_case(vmulabc("x", "xyzw", 1, 5), vmaddabc("y", "xyzw", 2, 5),
+                              vmaddabc("z", "xyzw", 3, 5), vmaddbc("w", "xyzw", 6, 4, 5), out=6)
+CASES["t_vcross"] = _vu_case(vopmula(1, 2), vopmsub(3, 2, 1))
+CASES["t_vmr32"] = _vu_case(vmr32("xyzw", 3, 1))
+CASES["t_vftoi0"] = _vu_case(vftoi0("xyzw", 3, 1))
+CASES["t_vitof12"] = _vu_case(vitof12("xyzw", 3, 1))
+# Q read back as vf4 * Q (vf4 = a3).
+CASES["t_vdiv"] = _vu_case(vdiv(1, "x", 2, "y"), vwaitq(), vmulq("xyzw", 3, 4))
+CASES["t_vsqrt"] = _vu_case(vsqrt(2, "z"), vwaitq(), vmulq("xyzw", 3, 4))
+CASES["t_vrsqrt"] = _vu_case(vrsqrt(1, "x", 2, "y"), vwaitq(), vmulq("xyzw", 3, 4))
 
 
 # ---------------------------------------------------------------------------

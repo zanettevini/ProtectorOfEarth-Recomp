@@ -195,6 +195,30 @@ that pipeline 0's HI/LO stay), MADD and MADDU, PEXT5, PPAC5, and MTSAH
 followed by QFSRV. In the game: 13 MULT1, 1 MULTU1, 2 MTHI1/MTLO1, 1
 MFHI1/MFLO1, 16 MADD, 16 PPAC5. Now **98 cases, 93 pass, 5 disabled**.
 
-Still without a case: most of the VU0 macro operations, and MFSA/MTSA (the
-runtime keeps SA in bits, PCSX2 in bytes, so MFSA would differ; the game
-has neither).
+Then 11 VU0 macro cases, from the operations the game uses most (counts in
+`generated/default`: 810 VMULx, 576 VADD, 470 VMULAx, 468 each of VMADDw,
+VMADDAz and VMADDAy, 397 VSUB, 238 VMUL, ~230 each VADDw/y/z, 205 VWAITQ,
+180 VMULq, 124 VRSQRT, 73 VOPMULA/VOPMSUB, 56 VDIV, 25 VSQRT): VMULx, the
+VADDbc forms, VSUB, VMUL, VMAX, VMINIx, the ACC matrix-times-vector chain
+(VMULAx, VMADDAy, VMADDAz, VMADDw), VOPMULA + VOPMSUB (cross product),
+VMR32, VFTOI0/VITOF12, and VDIV/VSQRT/VRSQRT read back through VMULq. 8 pass
+as they are. 3 failed, a third translator bug: **VRSQRT computed
+1 / sqrt(ft) and ignored fs** (RSQRT Q, fs, ft is fs / sqrt(ft): 6 / sqrt(9)
+gave 0.333), VDIV by zero and VSQRT/VRSQRT of a negative value gave Q = 0.
+Fixed by patch 0056, which follows PCSX2's VU interpreter (`VUops.cpp`
+`_vuDIV`, `_vuSQRT`, `_vuRSQRT`) and this runtime's own VU interpreter:
++-0x7F7FFFFF for a zero divisor, |ft| for the root. The game's 124 VRSQRT
+and 56 VDIV all divide vf0.w (1.0), so only their zero and negative cases
+change; its 25 VSQRT (which the disassembler prints as `.word`) took 0 for
+a negative operand. Now **109 cases, 104 pass, 5 disabled**. After
+regenerating, the game builds and reaches the first level as before
+(screenshot checked).
+
+CFC2/CTC2 of VI1-VI15 have no case: PCSX2's interpreter keeps 32 bits
+there, the runtime 16 (the VI registers' width), so the two references
+disagree for values above 0xFFFF.
+
+Still without a case: the rarer VU0 macro operations (VLQI/VSQI, CFC2/CTC2,
+VCALLMS, which need VU0 memory or the runtime), and MFSA/MTSA (the runtime
+keeps SA in bits, PCSX2 in bytes, so MFSA would differ; the game has
+neither).

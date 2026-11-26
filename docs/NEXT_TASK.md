@@ -97,17 +97,19 @@
 3. Keep going one blocker at a time; record each in findings/15. Update the
    "Boot" milestone in `tools/native_progress.py` when it changes.
 4. More per-instruction tests for the game's instructions still untested
-   (KNOWN_ISSUES R13): the rest of VU0 macro mode. Done (findings/14
-   s.8): LDL/LDR/SDL/SDR, QFSRV, MTSAH, RSQRT.S, MADD.S/MSUB.S, C.*.S,
+   (KNOWN_ISSUES R13): VLQI/VSQI, CFC2/CTC2 and VCALLMS (they need VU0
+   memory or the runtime in the test). Done (findings/14 s.8):
+   LDL/LDR/SDL/SDR, QFSRV, MTSAH, RSQRT.S, MADD.S/MSUB.S, C.*.S,
    MAX.S/MIN.S, PMFHL, every 128-bit HI/LO MMI instruction, pipeline 1
-   (MULT1, DIV1, MADD1, HI1/LO1 moves), MADD/MADDU, PEXT5/PPAC5 (patches
-   0054-0055 fixed what they found). R27 (PCSX2 and the runtime disagree on exponent-255
-   floats) waits for the ps2autotests results.
-5. Send patches 0002-0055 upstream to PS2Recomp.
+   (MULT1, DIV1, MADD1, HI1/LO1 moves), MADD/MADDU, PEXT5/PPAC5 and the
+   common VU0 macro operations (patches 0054-0056 fixed what they
+   found). R27 (PCSX2 and the runtime disagree on exponent-255 floats)
+   waits for the ps2autotests results.
+5. Send patches 0002-0056 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
-0. **After pulling patches 0054-0055, build `ben10_codegen` again before
+0. **After pulling patches 0054-0056, build `ben10_codegen` again before
    `ben10_poe`** (`cmake --build --preset windows-release --target ben10_codegen`,
    then the normal build): the game's generated code must
    call the new MMI helpers, and an old `generated\default` stops with

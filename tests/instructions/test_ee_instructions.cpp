@@ -34,7 +34,7 @@
 namespace {
 
 // MIPS register numbers, as in make_test_elf.py.
-constexpr int V0 = 2, V1 = 3, A0 = 4, A1 = 5, A2 = 6, A3 = 7, RA = 31;
+constexpr int V0 = 2, V1 = 3, A0 = 4, A1 = 5, A2 = 6, A3 = 7, T0 = 8, RA = 31;
 
 // Any return address: the "jr ra" at the end of each case just copies this
 // into ctx->pc and returns.
@@ -429,6 +429,148 @@ TEST_F(EeTest, VaddDestMaskXOnly) {
     set128(A2, pack2(-3.0f, -4.0f), pack2(-1.0f, -2.0f));
     run(CASE_t_vadd_x_only);
     EXPECT_EQ(get128(V0), (U128{pack2(11.0f, -2.0f), pack2(-3.0f, -4.0f)}));
+}
+
+// ---------------------------------------------------------------------------
+// More VU0 macro operations (findings/14 s.8). vf1 = a0, vf2 = a1, vf3 = a2,
+// vf4 = a3, vf5 = t0; the result is vf3 (vf6 for the matrix case) in v0.
+// Expected values from PCSX2 VUops.cpp; operands are ordinary floats unless
+// a case says otherwise.
+// ---------------------------------------------------------------------------
+class EeVu0Test : public EeTest {
+protected:
+    void setVf(int gpr, float x, float y, float z, float w) {
+        set128(gpr, pack2(z, w), pack2(x, y));
+    }
+    void setVfBits(int gpr, uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+        set128(gpr, (uint64_t(w) << 32) | z, (uint64_t(y) << 32) | x);
+    }
+    static U128 vf(float x, float y, float z, float w) { return {pack2(x, y), pack2(z, w)}; }
+    static U128 vfBits(uint32_t x, uint32_t y, uint32_t z, uint32_t w) {
+        return {(uint64_t(y) << 32) | x, (uint64_t(w) << 32) | z};
+    }
+};
+
+// VMULx: fd = fs * ft.x (broadcast).
+TEST_F(EeVu0Test, VmulxBroadcastsX) {
+    setVf(A0, 1, 2, 3, 4);
+    setVf(A1, 10, 99, 99, 99);
+    run(CASE_t_vmulx);
+    EXPECT_EQ(get128(V0), vf(10, 20, 30, 40));
+}
+
+// VADDw/VADDy/VADDz: fd = fs + ft.bc.
+TEST_F(EeVu0Test, VaddBroadcasts) {
+    setVf(A0, 1, 2, 3, 4);
+    setVf(A1, 10, 20, 30, 40);
+    run(CASE_t_vaddw);
+    EXPECT_EQ(get128(V0), vf(41, 42, 43, 44));
+    run(CASE_t_vaddy);
+    EXPECT_EQ(get128(V0), vf(21, 22, 23, 24));
+    run(CASE_t_vaddz);
+    EXPECT_EQ(get128(V0), vf(31, 32, 33, 34));
+}
+
+TEST_F(EeVu0Test, VsubAndVmul) {
+    setVf(A0, 10, 20, 30, 40);
+    setVf(A1, 1, 2, 3, 4);
+    run(CASE_t_vsub);
+    EXPECT_EQ(get128(V0), vf(9, 18, 27, 36));
+    setVf(A0, 1, 2, 3, 4);
+    setVf(A1, 5, 6, 7, 8);
+    run(CASE_t_vmul);
+    EXPECT_EQ(get128(V0), vf(5, 12, 21, 32));
+}
+
+// VMAX: lane-wise maximum; VMINIx: minimum against ft.x.
+TEST_F(EeVu0Test, VmaxAndVminix) {
+    setVf(A0, 1, -2, 3, -4);
+    setVf(A1, 0, 0, 5, -8);
+    run(CASE_t_vmax);
+    EXPECT_EQ(get128(V0), vf(1, 0, 5, -4));
+    setVf(A1, 0, 99, 99, 99);
+    run(CASE_t_vminix);
+    EXPECT_EQ(get128(V0), vf(0, -2, 0, -4));
+}
+
+// The game's matrix-times-vector chain: ACC = c1 * v.x, ACC += c2 * v.y,
+// ACC += c3 * v.z, vf6 = ACC + c4 * v.w.
+TEST_F(EeVu0Test, MatrixTimesVectorThroughAcc) {
+    setVf(A0, 1, 2, 3, 4);
+    setVf(A1, 5, 6, 7, 8);
+    setVf(A2, 9, 10, 11, 12);
+    setVf(A3, 13, 14, 15, 16);
+    setVf(T0, 1, 2, 3, 1);
+    run(CASE_t_vmatrix);
+    EXPECT_EQ(get128(V0), vf(51, 58, 65, 72));
+}
+
+// VOPMULA + VOPMSUB: the cross product; w of fd stays.
+TEST_F(EeVu0Test, OuterProductGivesCrossProduct) {
+    setVf(A0, 1, 2, 3, 0);
+    setVf(A1, 4, 5, 6, 0);
+    setVf(A2, 0, 0, 0, 7);
+    run(CASE_t_vcross);
+    EXPECT_EQ(get128(V0), vf(-3, 6, -3, 7));
+}
+
+// VMR32: fd = {fs.y, fs.z, fs.w, fs.x}.
+TEST_F(EeVu0Test, Vmr32Rotates) {
+    setVf(A0, 1, 2, 3, 4);
+    run(CASE_t_vmr32);
+    EXPECT_EQ(get128(V0), vf(2, 3, 4, 1));
+}
+
+// VFTOI0 truncates toward zero; VITOF12 reads 20.12 fixed point.
+TEST_F(EeVu0Test, VftoiAndVitof) {
+    setVf(A0, 1.5f, -1.5f, 2.9f, -2.9f);
+    run(CASE_t_vftoi0);
+    EXPECT_EQ(get128(V0), vfBits(1u, 0xFFFFFFFFu, 2u, 0xFFFFFFFEu));
+    setVfBits(A0, 4096u, 0xFFFFF800u, 8192u, 1u);
+    run(CASE_t_vitof12);
+    EXPECT_EQ(get128(V0), vf(1.0f, -0.5f, 2.0f, 1.0f / 4096.0f));
+}
+
+// PCSX2 _vuDIV: Q = fs.x / ft.y; a zero divisor gives 0x7F7FFFFF with the
+// sign of fs xor ft. Q is read back as vf4 * Q with vf4 = 1.
+TEST_F(EeVu0Test, VdivSetsQ) {
+    setVf(A0, 10, 0, 0, 0);
+    setVf(A1, 0, 4, 0, 0);
+    setVf(A3, 1, 1, 1, 1);
+    run(CASE_t_vdiv);
+    EXPECT_EQ(get128(V0), vf(2.5f, 2.5f, 2.5f, 2.5f));
+    setVf(A0, -3, 0, 0, 0);
+    setVfBits(A1, 0, 0x00000000u, 0, 0);  // +0
+    run(CASE_t_vdiv);
+    EXPECT_EQ(get128(V0), vfBits(0xFF7FFFFFu, 0xFF7FFFFFu, 0xFF7FFFFFu, 0xFF7FFFFFu));
+}
+
+// PCSX2 _vuSQRT: Q = sqrt(|ft.z|).
+TEST_F(EeVu0Test, VsqrtIgnoresSign) {
+    setVf(A1, 0, 0, -16, 0);
+    setVf(A3, 1, 1, 1, 1);
+    run(CASE_t_vsqrt);
+    EXPECT_EQ(get128(V0), vf(4, 4, 4, 4));
+}
+
+// PCSX2 _vuRSQRT: Q = fs.x / sqrt(|ft.y|) (fs is not ignored); ft zero:
+// 0x7F7FFFFF with the sign of fs xor ft, or a signed zero when fs is zero.
+TEST_F(EeVu0Test, VrsqrtDividesFs) {
+    setVf(A0, 6, 0, 0, 0);
+    setVf(A1, 0, 9, 0, 0);
+    setVf(A3, 1, 1, 1, 1);
+    run(CASE_t_vrsqrt);
+    EXPECT_EQ(get128(V0), vf(2, 2, 2, 2));
+    setVf(A1, 0, -9, 0, 0);
+    run(CASE_t_vrsqrt);
+    EXPECT_EQ(get128(V0), vf(2, 2, 2, 2));
+    setVf(A1, 0, 0, 0, 0);
+    run(CASE_t_vrsqrt);
+    EXPECT_EQ(get128(V0), vfBits(0x7F7FFFFFu, 0x7F7FFFFFu, 0x7F7FFFFFu, 0x7F7FFFFFu));
+    setVfBits(A0, 0x00000000u, 0, 0, 0);
+    setVfBits(A1, 0, 0x80000000u, 0, 0);  // 0 / sqrt(-0)
+    run(CASE_t_vrsqrt);
+    EXPECT_EQ(get128(V0), vfBits(0x80000000u, 0x80000000u, 0x80000000u, 0x80000000u));
 }
 
 // ---------------------------------------------------------------------------

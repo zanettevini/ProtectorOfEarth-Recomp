@@ -1,0 +1,130 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU0 macro mode: VDIV, VSQRT and VRSQRT as the VU interpreters
+
+What it broke:
+  - VRSQRT computed 1 / sqrt(ft.ftf) and ignored fs.fsf: RSQRT Q, fs, ft
+    is fs / sqrt(ft) (6 / sqrt(9) gave 0.333 instead of 2).
+  - VDIV by zero gave Q = 0; VRSQRT and VSQRT of a negative value gave 0.
+    PCSX2's VU interpreter (pcsx2/VUops.cpp _vuDIV, _vuSQRT, _vuRSQRT)
+    and this runtime's own VU interpreter give +-0x7F7FFFFF for a zero
+    divisor (sign of fs xor ft) and use |ft| for the root.
+  - Operands with exponent 0 or 255 were used as host floats.
+  Protector of Earth's 124 VRSQRT and 56 VDIV all use vf0.w (1.0) as fs,
+  so only their zero and negative cases changed.
+
+The changes:
+  - ps2_runtime_macros.h: ps2_vu_double (PCSX2 vuDouble: exponent 0 ->
+    +-0, exponent 255 -> +-0x7F7FFFFF), ps2_vu0_div, ps2_vu0_sqrt and
+    ps2_vu0_rsqrt, following _vuDIV/_vuSQRT/_vuRSQRT (status flags not
+    kept; the macro-mode context has none).
+  - vu_translation_helpers.cpp: VDIV, VSQRT and VRSQRT call them.
+
+How it was checked:
+  New per-instruction cases (findings/14 s.8): VdivSetsQ, VsqrtIgnoresSign
+  and VrsqrtDividesFs failed before (Q 0 for x/0, 0 for sqrt(-16), 0.333
+  for 6 / sqrt(9)) and pass after; the 8 other new VU0 macro cases (VMULx,
+  VADDbc, VSUB, VMUL, VMAX, VMINIx, the ACC matrix chain, VOPMULA/VOPMSUB,
+  VMR32, VFTOI0/VITOF12) pass before and after. ps2xTest 454/454.
+
+--- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+@@ -70,26 +70,22 @@
+ 
+     std::string CodeGenerator::translateVU_VDIV(const Instruction &inst)
+     {
+-        uint8_t fsf = inst.vectorInfo.fsf;
+-        uint8_t ftf = inst.vectorInfo.ftf;
+-        uint8_t fs_reg = inst.rd;
+-        uint8_t ft_reg = inst.rt;
+-
+-        return fmt::format("{{ float fs = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft != 0.0f) ? (fs / ft) : 0.0f; }}", fs_reg, fs_reg, fsf, ft_reg, ft_reg, ftf);
++        // Q = fs.fsf / ft.ftf with PCSX2's VU rules (ps2_vu0_div in ps2_runtime_macros.h).
++        return fmt::format("ctx->vu0_q = ps2_vu0_div(ctx->vu0_vf[{}], {}, ctx->vu0_vf[{}], {});",
++                           inst.rd, inst.vectorInfo.fsf, inst.rt, inst.vectorInfo.ftf);
+     }
+ 
+     std::string CodeGenerator::translateVU_VSQRT(const Instruction &inst)
+     {
+-        uint8_t ftf = inst.vectorInfo.ftf;
+-        uint8_t ft_reg = inst.rt;
+-        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = sqrtf(std::max(0.0f, ft)); }}", ft_reg, ft_reg, ftf);
++        // Q = sqrt(|ft.ftf|) (ps2_vu0_sqrt).
++        return fmt::format("ctx->vu0_q = ps2_vu0_sqrt(ctx->vu0_vf[{}], {});", inst.rt, inst.vectorInfo.ftf);
+     }
+ 
+     std::string CodeGenerator::translateVU_VRSQRT(const Instruction &inst)
+     {
+-        uint8_t ftf = inst.vectorInfo.ftf;
+-        uint8_t ft_reg = inst.rt;
+-        return fmt::format("{{ float ft = _mm_cvtss_f32(_mm_shuffle_ps(ctx->vu0_vf[{}], ctx->vu0_vf[{}], _MM_SHUFFLE(0,0,0,{}))); ctx->vu0_q = (ft > 0.0f) ? (1.0f / sqrtf(ft)) : 0.0f; }}", ft_reg, ft_reg, ftf);
++        // Q = fs.fsf / sqrt(|ft.ftf|): RSQRT divides fs, it is not 1 / sqrt(ft) (ps2_vu0_rsqrt).
++        return fmt::format("ctx->vu0_q = ps2_vu0_rsqrt(ctx->vu0_vf[{}], {}, ctx->vu0_vf[{}], {});",
++                           inst.rd, inst.vectorInfo.fsf, inst.rt, inst.vectorInfo.ftf);
+     }
+ 
+     std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -340,6 +340,62 @@
+     return std::bit_cast<float>(r);
+ }
+ 
++// VU0 macro mode DIV/SQRT/RSQRT, as PCSX2's VU interpreter (pcsx2/VUops.cpp _vuDIV, _vuSQRT,
++// _vuRSQRT) and this runtime's own VU interpreter: operands through vuDouble (exponent 0 -> +-0,
++// exponent 255 -> +-0x7F7FFFFF), a zero divisor gives +-0x7F7FFFFF with the sign of fs xor ft
++// (RSQRT of 0 by 0: +-0), the radicand's sign is ignored, and the result goes through vuDouble again.
++inline float ps2_vu_double(uint32_t bits)
++{
++    switch (bits & 0x7F800000u)
++    {
++    case 0u:
++        bits &= 0x80000000u;
++        break;
++    case 0x7F800000u:
++        bits = (bits & 0x80000000u) | 0x7F7FFFFFu;
++        break;
++    default:
++        break;
++    }
++    return std::bit_cast<float>(bits);
++}
++
++inline uint32_t ps2_vu_lane_bits(__m128 v, int lane)
++{
++    alignas(16) uint32_t words[4];
++    _mm_store_ps(reinterpret_cast<float *>(words), v);
++    return words[lane & 3];
++}
++
++inline float ps2_vu0_div(__m128 vfs, int fsf, __m128 vft, int ftf)
++{
++    const uint32_t sBits = ps2_vu_lane_bits(vfs, fsf);
++    const uint32_t tBits = ps2_vu_lane_bits(vft, ftf);
++    const float fs = ps2_vu_double(sBits);
++    const float ft = ps2_vu_double(tBits);
++    if (ft == 0.0f)
++        return std::bit_cast<float>(((sBits ^ tBits) & 0x80000000u) | 0x7F7FFFFFu);
++    return ps2_vu_double(std::bit_cast<uint32_t>(fs / ft));
++}
++
++inline float ps2_vu0_sqrt(__m128 vft, int ftf)
++{
++    const float ft = ps2_vu_double(ps2_vu_lane_bits(vft, ftf));
++    return ps2_vu_double(std::bit_cast<uint32_t>(std::sqrt(std::fabs(ft))));
++}
++
++inline float ps2_vu0_rsqrt(__m128 vfs, int fsf, __m128 vft, int ftf)
++{
++    const uint32_t sBits = ps2_vu_lane_bits(vfs, fsf);
++    const uint32_t tBits = ps2_vu_lane_bits(vft, ftf);
++    const float fs = ps2_vu_double(sBits);
++    const float ft = ps2_vu_double(tBits);
++    const uint32_t sign = (sBits ^ tBits) & 0x80000000u;
++    if (ft == 0.0f)
++        return std::bit_cast<float>(fs != 0.0f ? (sign | 0x7F7FFFFFu) : sign);
++    return ps2_vu_double(std::bit_cast<uint32_t>(fs / std::sqrt(std::fabs(ft))));
++}
++
+ enum class Ps2VecOp
+ {
+     Add,
