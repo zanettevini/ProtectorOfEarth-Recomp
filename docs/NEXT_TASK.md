@@ -97,11 +97,21 @@
 3. Keep going one blocker at a time; record each in findings/15. Update the
    "Boot" milestone in `tools/native_progress.py` when it changes.
 4. More per-instruction tests for the game's instructions still untested
-   (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
-   QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0053 upstream to PS2Recomp.
+   (KNOWN_ISSUES R13): MULT1/MULTU1/DIV1 and the HI1/LO1 moves, MTSAH,
+   PEXT5/PPAC5 and the rest of VU0 macro mode. Done (findings/14 s.8):
+   LDL/LDR/SDL/SDR, QFSRV, RSQRT.S, MADD.S/MSUB.S, C.*.S, MAX.S/MIN.S,
+   PMFHL and every 128-bit HI/LO MMI instruction (patches 0054-0055 fixed
+   what they found). R27 (PCSX2 and the runtime disagree on exponent-255
+   floats) waits for the ps2autotests results.
+5. Send patches 0002-0055 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
+
+0. **After pulling patches 0054-0055, build `ben10_codegen` again before
+   `ben10_poe`** (`cmake --build --preset windows-release --target ben10_codegen`,
+   then the normal build): the game's generated code must
+   call the new MMI helpers, and an old `generated\default` stops with
+   "'PS2_PMFHL_UW' was not declared" (findings/14 s.8).
 
 1. Clone the repository with its submodules
    (`git clone --recursive ...`).

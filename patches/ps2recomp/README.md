@@ -61,8 +61,10 @@ fix and how it was found.
 | `0051-gs-texture-read-overlay.patch` | GS CPU backend: the texture page buffer can take pages from an overlay of page copies (texture and CLUT reads), so a banded renderer can run an upload ahead of draws that still read the old pages; nothing changes without one | findings/20 s.32 |
 | `0052-vu-skip-zero-register-reset.patch` | VU: translated block pairs that never write VF0 or VI0 (asked of the executors at translation time) skip resetting them; same results | findings/20 s.33 |
 | `0053-gs-quad-texel-reads-fewer-pixel-checks.patch` | GS CPU backend: bilinear texel addresses by row and column, fog interpolated only with FGE, no per-pixel scissor/band checks where the loops already clip; same results | findings/20 s.34 |
+| `0054-mmi-128-bit-hi-lo.patch` | MMI: HI and LO as 128 bits in PMFHI/PMFLO/PMTHI/PMTLO/PMTHL/PMFHL and the parallel multiplies and divides (they were treated as 32-bit; the game's 36 PMULTH + PMFHL.UW got wrong values) | findings/14 s.8 |
+| `0055-fpu-compares-and-max-min-in-ps2-order.patch` | FPU: C.EQ/C.LT/C.LE and MAX.S/MIN.S order the bits as PS2 floats (0x7FFFFFFF is the largest value, not NaN; exponent 0 compares as zero) | findings/14 s.8 |
 
-Patches 0002-0010, 0012, 0015 and 0017 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052 and 0053 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
+Patches 0002-0010, 0012, 0015, 0017, 0054 and 0055 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052 and 0053 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

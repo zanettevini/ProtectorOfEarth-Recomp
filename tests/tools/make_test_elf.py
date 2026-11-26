@@ -65,6 +65,14 @@ def jr(rs):                return r_type(0, rs, 0, 0, 0, 0x08)
 def lq(rt, off, base):     return i_type(0x1E, base, rt, off)
 def sq(rt, off, base):     return i_type(0x1F, base, rt, off)
 def lw(rt, off, base):     return i_type(0x23, base, rt, off)
+# Unaligned 64-bit loads and stores (PCSX2 R5900OpcodeTables.cpp: LDL 0x1A,
+# LDR 0x1B, SDL 0x2C, SDR 0x2D)
+def ldl(rt, off, base):    return i_type(0x1A, base, rt, off)
+def ldr(rt, off, base):    return i_type(0x1B, base, rt, off)
+def sdl(rt, off, base):    return i_type(0x2C, base, rt, off)
+def sdr(rt, off, base):    return i_type(0x2D, base, rt, off)
+# REGIMM (opcode 1) MTSAB: rt field 0x18 (PCSX2 tbl_REGIMM)
+def mtsab(rs, imm):        return i_type(0x01, rs, 0x18, imm)
 
 
 # Branches: the offset is relative to the NEXT instruction (pc + 4), in words.
@@ -87,6 +95,19 @@ def mul_s(fd, fs, ft):     return _fpu_s(0x02, fd, fs, ft)
 def div_s(fd, fs, ft):     return _fpu_s(0x03, fd, fs, ft)
 def sqrt_s(fd, ft):        return _fpu_s(0x04, fd, 0, ft)   # on the R5900, SQRT.S reads ft
 def cvt_w_s(fd, fs):       return _fpu_s(0x24, fd, fs, 0)
+def cfc1(rt, fs):          return r_type(COP1, 0x02, rt, fs, 0, 0)
+# PCSX2 R5900OpcodeTables.cpp tbl_COP1_S: RSQRT_S 0x16, ADDA_S 0x18,
+# MADD_S 0x1C, MSUB_S 0x1D, C_F 0x30, C_EQ 0x32, C_LT 0x34, C_LE 0x36.
+def rsqrt_s(fd, fs, ft):   return _fpu_s(0x16, fd, fs, ft)
+def adda_s(fs, ft):        return _fpu_s(0x18, 0, fs, ft)
+def madd_s(fd, fs, ft):    return _fpu_s(0x1C, fd, fs, ft)
+def msub_s(fd, fs, ft):    return _fpu_s(0x1D, fd, fs, ft)
+def c_f_s(fs, ft):         return _fpu_s(0x30, 0, fs, ft)
+def c_eq_s(fs, ft):        return _fpu_s(0x32, 0, fs, ft)
+def c_lt_s(fs, ft):        return _fpu_s(0x34, 0, fs, ft)
+def c_le_s(fs, ft):        return _fpu_s(0x36, 0, fs, ft)
+def max_s(fd, fs, ft):     return _fpu_s(0x28, fd, fs, ft)
+def min_s(fd, fs, ft):     return _fpu_s(0x29, fd, fs, ft)
 
 # MMI (opcode 0x1C). MMI0..MMI3 pick the operation by the sa field.
 MMI = 0x1C
@@ -104,6 +125,19 @@ def pexew(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1E, 0x09)   # MMI2
 def prot3w(rd, rt):        return r_type(MMI, 0, rt, rd, 0x1F, 0x09)   # MMI2
 def pexch(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1A, 0x29)   # MMI3
 def pexcw(rd, rt):         return r_type(MMI, 0, rt, rd, 0x1E, 0x29)   # MMI3
+def qfsrv(rd, rs, rt):     return r_type(MMI, rs, rt, rd, 0x1B, 0x28)  # MMI1
+def pmthi(rs):             return r_type(MMI, rs, 0, 0, 0x08, 0x29)    # MMI3
+def pmtlo(rs):             return r_type(MMI, rs, 0, 0, 0x09, 0x29)    # MMI3
+def pmfhl(rd, fmt):        return r_type(MMI, 0, 0, rd, fmt, 0x30)     # sa = format
+def pmthl_lw(rs):          return r_type(MMI, rs, 0, 0, 0x00, 0x31)
+def _mmi2(sa):             return lambda rd, rs, rt: r_type(MMI, rs, rt, rd, sa, 0x09)
+def _mmi3(sa):             return lambda rd, rs, rt: r_type(MMI, rs, rt, rd, sa, 0x29)
+pmaddw, pmsubw, pmultw, pdivw = _mmi2(0x00), _mmi2(0x04), _mmi2(0x0C), _mmi2(0x0D)
+pmaddh, phmadh, pmsubh, phmsbh = _mmi2(0x10), _mmi2(0x11), _mmi2(0x14), _mmi2(0x15)
+pmulth, pdivbw = _mmi2(0x1C), _mmi2(0x1D)
+pmadduw, pmultuw, pdivuw = _mmi3(0x00), _mmi3(0x0C), _mmi3(0x0D)
+def pmfhi(rd):             return r_type(MMI, 0, 0, rd, 0x08, 0x09)    # MMI2
+def pmflo(rd):             return r_type(MMI, 0, 0, rd, 0x09, 0x09)    # MMI2
 
 # VU0 macro mode (COP2)
 COP2 = 0x12
@@ -217,6 +251,66 @@ CASES["t_pexew"] = lambda pc: [pexew(V0, A1)] + ret()
 CASES["t_prot3w"] = lambda pc: [prot3w(V0, A1)] + ret()
 CASES["t_pexch"] = lambda pc: [pexch(V0, A1)] + ret()
 CASES["t_pexcw"] = lambda pc: [pexcw(V0, A1)] + ret()
+
+# FPU, R13 (findings/14 s.7): the FPU control register (FCR31) is read
+# back into v1 after the operation.
+CASES["t_rsqrt_s"] = lambda pc: [mtc1(A0, 12), mtc1(A1, 13), rsqrt_s(0, 12, 13),
+                                 mfc1(V0, 0), cfc1(V1, 31)] + ret()
+# ACC = a2 + 0 (ADDA.S with $f15 = 0), then MADD.S/MSUB.S $f0 = ACC +- a0 * a1.
+def _acc_case(op):
+    def build(pc):
+        return [mtc1(A0, 12), mtc1(A1, 13), mtc1(A2, 14), mtc1(ZERO, 15), adda_s(14, 15),
+                op, mfc1(V0, 0), cfc1(V1, 31)] + ret()
+    return build
+
+
+CASES["t_madd_s"] = _acc_case(madd_s(0, 12, 13))
+CASES["t_msub_s"] = _acc_case(msub_s(0, 12, 13))
+# C.cond.S $f12, $f13, then v0 = FCR31 (bit 23 = C).
+def _cmp_case(op):
+    def build(pc):
+        return [mtc1(A0, 12), mtc1(A1, 13), op, cfc1(V0, 31)] + ret()
+    return build
+
+
+CASES["t_c_eq_s"] = _cmp_case(c_eq_s(12, 13))
+CASES["t_c_lt_s"] = _cmp_case(c_lt_s(12, 13))
+CASES["t_c_le_s"] = _cmp_case(c_le_s(12, 13))
+CASES["t_max_s"] = lambda pc: [mtc1(A0, 12), mtc1(A1, 13), max_s(0, 12, 13), mfc1(V0, 0)] + ret()
+CASES["t_min_s"] = lambda pc: [mtc1(A0, 12), mtc1(A1, 13), min_s(0, 12, 13), mfc1(V0, 0)] + ret()
+# C.EQ sets C, then C.F clears it.
+CASES["t_c_f_s"] = lambda pc: [mtc1(A0, 12), mtc1(A0, 13), c_eq_s(12, 13), c_f_s(12, 13),
+                               cfc1(V0, 31)] + ret()
+
+# --- Unaligned 64-bit loads and stores, R13 -------------------------------
+# v0 starts as a2; LDL/LDR merge bytes from the doubleword at (a0 + off) & ~7.
+CASES["t_ldl"] = lambda pc: [daddu(V0, A2, ZERO), ldl(V0, 3, A0)] + ret()
+CASES["t_ldr"] = lambda pc: [daddu(V0, A2, ZERO), ldr(V0, 5, A0)] + ret()
+# The usual unaligned load idiom: ldl v0, 7(a0); ldr v0, 0(a0).
+CASES["t_ldl_ldr_pair"] = lambda pc: [ldl(V0, 7, A0), ldr(V0, 0, A0)] + ret()
+CASES["t_sdl"] = lambda pc: [sdl(A1, 2, A0)] + ret()
+CASES["t_sdr"] = lambda pc: [sdr(A1, 6, A0)] + ret()
+# The usual unaligned store idiom: sdl a1, 7(a0); sdr a1, 0(a0).
+CASES["t_sdl_sdr_pair"] = lambda pc: [sdl(A1, 7, A0), sdr(A1, 0, A0)] + ret()
+
+# --- MMI, R13 ------------------------------------------------------------------
+# SA = a2 & 0xF (MTSAB a2, 0), then QFSRV v0, a0, a1 (a0 = rs, a1 = rt).
+CASES["t_qfsrv"] = lambda pc: [mtsab(A2, 0), qfsrv(V0, A0, A1)] + ret()
+# HI = a1, LO = a0 (128 bits), then PMFHL.fmt v0.
+for _fmt, _name in ((0, "lw"), (1, "uw"), (2, "slw"), (3, "lh"), (4, "sh")):
+    CASES[f"t_pmfhl_{_name}"] = (lambda f: (lambda pc: [pmthi(A1), pmtlo(A0), pmfhl(V0, f)] + ret()))(_fmt)
+
+# 128-bit HI/LO: HI <- a2 and LO <- a3 first, then the operation on a0/a1
+# into v0. The test reads HI/LO straight from the context.
+for _name, _op in [("pmulth", pmulth), ("pmaddh", pmaddh), ("pmsubh", pmsubh),
+                   ("phmadh", phmadh), ("phmsbh", phmsbh), ("pmultw", pmultw),
+                   ("pmultuw", pmultuw), ("pmaddw", pmaddw), ("pmsubw", pmsubw),
+                   ("pmadduw", pmadduw), ("pdivw", pdivw), ("pdivuw", pdivuw),
+                   ("pdivbw", pdivbw)]:
+    CASES[f"t_{_name}"] = (lambda o: (lambda pc: [pmthi(A2), pmtlo(A3), o(V0, A0, A1)] + ret()))(_op)
+CASES["t_pmthi_pmfhi"] = lambda pc: [pmthi(A0), pmfhi(V0)] + ret()
+CASES["t_pmtlo_pmflo"] = lambda pc: [pmtlo(A0), pmflo(V0)] + ret()
+CASES["t_pmthl_lw"] = lambda pc: [pmthi(A2), pmtlo(A3), pmthl_lw(A0)] + ret()
 
 # --- VU0 macro mode -----------------------------------------------------------
 # vf1 = a0, vf2 = a1 (128 bits); vf3 gets a known base (a2);

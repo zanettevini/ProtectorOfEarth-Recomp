@@ -1,0 +1,111 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] FPU: C.EQ/C.LT/C.LE and MAX.S/MIN.S in PS2 order
+
+What it broke:
+  The compares and MAX.S/MIN.S used host float comparisons. The runtime's
+  own float model (ps2_runtime_macros.h) has no Inf or NaN: exponent 255
+  is an ordinary exponent and x/0 or an overflow leaves +-0x7FFFFFFF,
+  which the host reads as NaN, so every host comparison with it is false
+  (C.LT 1.0, 0x7FFFFFFF cleared C; MAX.S 1.0, 0x7FFFFFFF gave 1.0). An
+  exponent-0 value with a mantissa compared as a tiny number instead of
+  zero (PCSX2 fpuDouble and the model both read it as zero). std::max and
+  std::min also gave the first operand for +0 against -0, where PCSX2's
+  fp_max/fp_min give +0 and -0. Protector of Earth has 1,205 C.LT.S,
+  851 C.EQ.S, 456 C.LE.S, 24 MAX.S and 14 MIN.S.
+
+The changes:
+  - ps2_fcompare_key: exponent 0 gives 0, otherwise the bits' magnitude
+    with the sign; FPU_C_EQ_S/SEQ, C_OLT_S/LT and C_OLE_S/LE compare the
+    keys (the EE's C.LT and C.LE are the codes PS2Recomp names OLT and
+    OLE). The unordered forms, which the EE does not have, are unchanged.
+  - ps2_fmax/ps2_fmin: PCSX2's fp_max/fp_min on the bits (signed integer
+    order, reversed when both are negative); the translator emits them for
+    MAX.S/MIN.S instead of std::max/std::min.
+
+How it was checked:
+  New per-instruction cases (findings/14 s.8): C.LT with 0x7FFFFFFF and
+  with -0x7FFFFFFF, C.EQ of a denormal and zero, C.EQ of -0 and +0,
+  MAX.S/MIN.S with 0x7FFFFFFF, two negatives and +0/-0 (expected values
+  from PCSX2 FPU.cpp, where it and the runtime's float model agree): they
+  failed before and pass after; the earlier compare cases still pass.
+  ps2xTest 454/454. The game's code regenerated: only its 24 MAX.S and 14
+  MIN.S lines changed; it builds and reaches the first level.
+
+--- a/ps2xRecomp/src/lib/fpu_translator.cpp
++++ b/ps2xRecomp/src/lib/fpu_translator.cpp
+@@ -95,9 +95,9 @@
+             case COP1_S_MSUBA:
+                 return fmt::format("FPU_SET_ACC(ctx, FPU_SUB_S(ctx->f_acc, FPU_MUL_S(ctx->f[{}], ctx->f[{}])));", fs, ft);
+             case COP1_S_MAX:
+-                return fmt::format("ctx->f[{}] = std::max(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
++                return fmt::format("ctx->f[{}] = ps2_fmax(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
+             case COP1_S_MIN:
+-                return fmt::format("ctx->f[{}] = std::min(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
++                return fmt::format("ctx->f[{}] = ps2_fmin(ctx->f[{}], ctx->f[{}]);", fd, fs, ft);
+             case COP1_S_C_F:
+                 return fmt::format("ctx->fcr31 &= ~0x800000;");
+             case COP1_S_C_UN:
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -311,6 +311,35 @@
+     return ps2_fall_normal(a, b, r) ? r : ps2_frsqrt_slow(a, b);
+ }
+ 
++// C.EQ/C.LT/C.LE and MAX.S/MIN.S order PS2 floats by sign and magnitude of their bits, so the
++// exponent-255 values (0x7F800000 and up, which the host reads as Inf or NaN) are ordinary large
++// numbers. The compares also count an exponent-0 value as zero, whatever its mantissa (PCSX2
++// fpuDouble; the PS2 format above); MAX.S/MIN.S return one operand's bits unchanged (PCSX2 fp_max/fp_min).
++inline int64_t ps2_fcompare_key(float x)
++{
++    const uint32_t b = std::bit_cast<uint32_t>(x);
++    if ((b & PS2_FLOAT_EXP_MASK) == 0u)
++        return 0;
++    const int64_t magnitude = static_cast<int64_t>(b & 0x7FFFFFFFu);
++    return (b & PS2_FLOAT_SIGN_MASK) ? -magnitude : magnitude;
++}
++
++inline float ps2_fmax(float a, float b)
++{
++    const int32_t ia = std::bit_cast<int32_t>(a);
++    const int32_t ib = std::bit_cast<int32_t>(b);
++    const int32_t r = (ia < 0 && ib < 0) ? (ia < ib ? ia : ib) : (ia > ib ? ia : ib);
++    return std::bit_cast<float>(r);
++}
++
++inline float ps2_fmin(float a, float b)
++{
++    const int32_t ia = std::bit_cast<int32_t>(a);
++    const int32_t ib = std::bit_cast<int32_t>(b);
++    const int32_t r = (ia < 0 && ib < 0) ? (ia > ib ? ia : ib) : (ia < ib ? ia : ib);
++    return std::bit_cast<float>(r);
++}
++
+ enum class Ps2VecOp
+ {
+     Add,
+@@ -1295,19 +1324,19 @@
+ #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
+ #define FPU_C_F_S(a, b) (0)
+ #define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_EQ_S(a, b) ((float)(a) == (float)(b))
++#define FPU_C_EQ_S(a, b) (ps2_fcompare_key((float)(a)) == ps2_fcompare_key((float)(b)))
+ #define FPU_C_UEQ_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_OLT_S(a, b) ((float)(a) < (float)(b))
++#define FPU_C_OLT_S(a, b) (ps2_fcompare_key((float)(a)) < ps2_fcompare_key((float)(b)))
+ #define FPU_C_ULT_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_OLE_S(a, b) ((float)(a) <= (float)(b))
++#define FPU_C_OLE_S(a, b) (ps2_fcompare_key((float)(a)) <= ps2_fcompare_key((float)(b)))
+ #define FPU_C_ULE_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+ #define FPU_C_SF_S(a, b) (0)
+ #define FPU_C_NGLE_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_SEQ_S(a, b) ((float)(a) == (float)(b))
++#define FPU_C_SEQ_S(a, b) (ps2_fcompare_key((float)(a)) == ps2_fcompare_key((float)(b)))
+ #define FPU_C_NGL_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_LT_S(a, b) ((float)(a) < (float)(b))
++#define FPU_C_LT_S(a, b) (ps2_fcompare_key((float)(a)) < ps2_fcompare_key((float)(b)))
+ #define FPU_C_NGE_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+-#define FPU_C_LE_S(a, b) ((float)(a) <= (float)(b))
++#define FPU_C_LE_S(a, b) (ps2_fcompare_key((float)(a)) <= ps2_fcompare_key((float)(b)))
+ #define FPU_C_NGT_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+ 
+ // QFSRV: Quadword Funnel Shift Right Variable

@@ -118,3 +118,76 @@ run.
   test. Missing, among others: QFSRV, PMFHL, PEXT5/PPAC5, MADD.S/MSUB.S,
   RSQRT.S, LDL/LDR/SDL/SDR, MULT1/DIV1, the C.*.S comparisons, and the rest
   of the VU0 macro operations.
+
+## 8. The next 45 cases (R13, 2026-11-26)
+
+New cases for R5900-specific instructions the game uses (counts from the
+disassembly comments in `generated/default`), plus the rest of the MMI
+instructions that read or write HI/LO as 128 bits:
+
+| Group | Cases | In the game |
+|---|---|---|
+| LDL/LDR/SDL/SDR (alone and as a pair) | 6 | 1,506 LDL, 1,506 LDR, 1,366 SDL, 1,384 SDR |
+| QFSRV after MTSAB | 1 | 8 |
+| RSQRT.S | 3 | 60 |
+| MADD.S/MSUB.S (ACC from ADDA.S) | 3 | 0 (1 ADDA.S) |
+| C.F/C.EQ/C.LT/C.LE | 8 | 1,205 C.LT.S, 851 C.EQ.S, 456 C.LE.S |
+| MAX.S/MIN.S | 2 | 24, 14 |
+| PMFHL (LW, UW, SLW, LH, SH) | 6 | 36 PMFHL.UW |
+| PMULTH, PMADDH, PMSUBH, PHMADH, PHMSBH | 5 | 36 PMULTH |
+| PMULTW, PMULTUW, PMADDW, PMSUBW, PMADDUW | 5 | 0 |
+| PDIVW, PDIVUW, PDIVBW | 3 | 0 |
+| PMTHI/PMFHI, PMTLO/PMFLO, PMTHL.LW | 3 | 0 |
+
+Expected values follow PCSX2's interpreter (`pcsx2/MMI.cpp`, `FPU.cpp`,
+`R5900OpcodeImpl.cpp`, commit `15afef6`), cited in each case. As in s.4,
+each encoding was checked against the disassembly `ps2_recomp` writes.
+
+First run: LDL/LDR/SDL/SDR, QFSRV, plain MADD.S/MSUB.S, the plain compares
+and positive RSQRT.S passed. The rest failed, for three reasons:
+
+1. **HI/LO were 32-bit in the MMI translation** (a translator bug). PMTHI
+   was `ctx->hi = GPR_U32(ctx, 5)`; PMFHL read only `hi`/`lo`, never
+   `hi1`/`lo1`, and built its formats from the wrong lanes; PMULTH and the
+   other halfword multiplies added all eight products into one 64-bit sum;
+   the word multiplies summed both lanes; PDIVW/PDIVUW/PDIVBW divided one
+   lane. **The game runs PMULTH then PMFHL.UW 36 times** (the fixed-point
+   loops at `0x1b59d0`-`0x1b6400`), so those loops got wrong values. Fixed
+   by patch 0054: runtime helpers that work on the four 32-bit words of HI
+   and LO, word for word as PCSX2. All 22 HI/LO cases pass.
+2. **Compares and MAX.S/MIN.S used host float order** (a runtime bug by the
+   runtime's own float model). In that model exponent 255 is an ordinary
+   exponent, so x/0 and overflows leave `0x7FFFFFFF`, which the host reads
+   as NaN: `C.LT 1.0, 0x7FFFFFFF` cleared C and `MAX.S 1.0, 0x7FFFFFFF`
+   gave 1.0. A denormal compared as a tiny number instead of zero, and
+   `std::min(+0, -0)` gave +0. Fixed by patch 0055 (sign-magnitude order of
+   the bits, exponent 0 as zero; PCSX2's `fp_max`/`fp_min`).
+3. **Differences that stay, as disabled tests** (no expected value was
+   changed):
+   - The runtime does not keep FCR31's cause and sticky flags (O, U, I, D):
+     `DISABLED_RsqrtsNegativeSetsInvalid` (KNOWN_ISSUES R26). The game has
+     no CFC1, so it never reads them.
+   - PCSX2 and the runtime disagree on exponent-255 values: PCSX2 clamps
+     them to `0x7F7FFFFF` (`fpuDouble`, `checkOverflow`), the runtime treats
+     them as numbers and saturates to `0x7FFFFFFF`, as it says it checked on
+     hardware (ps2autotests). `DISABLED_RsqrtsByZeroGivesSignedFmax`
+     (PCSX2 also takes the sign of ft, the runtime the sign of fs),
+     `DISABLED_MaddsOverflowGivesFmax`, `DISABLED_ClesInfinityCountsAsFmax`
+     (KNOWN_ISSUES R27). The new cases where both agree
+     (`CltsFmaxPatternIsLargest`, `MaxsOrdersByBits`) are active.
+
+After patches 0054 and 0055: **86 cases, 81 pass, 5 disabled** (the 4 above
+and `DISABLED_MulsDenormalOperandIsZero` from s.7). PS2Recomp's own
+`ps2x_tests`: 454/454.
+
+In the game: `ben10_codegen` must run again after these patches, because
+the generated code calls the new helpers (the old `PS2_PMFHL_*` macros are
+gone; an old `generated/default` does not compile). Regenerating changed
+exactly the 36 PMULTH, 36 PMFHL.UW, 24 MAX.S and 14 MIN.S lines; the
+compares changed in the runtime macros. The game builds and reaches the
+first level as before (screenshot checked). The three PMULTH functions are
+only reached through pointers; a 60 s gdb watch in the first level did not
+hit them, so where the game uses them is not known yet.
+
+Still without a case: MULT1/MULTU1/DIV1, MFHI1/MFLO1/MTHI1/MTLO1, MTSAH,
+PEXT5/PPAC5 and most of the VU0 macro operations.
