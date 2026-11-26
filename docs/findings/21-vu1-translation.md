@@ -932,3 +932,20 @@ the timing model and is left for a decision of its own.
   second run, about 0.6 million VU0 calls per 10 seconds (the first run
   started no VU0 program at all). Not yet seen on Windows or past the
   first level.
+
+## 28. Where the replay's VU time goes after patch 0052, and the resolver
+
+- `ben10_vu1_replay user/vu1_captures --native --sum` under callgrind with
+  `--toggle-collect='VU1Interpreter::run(*'`, one pass over the 40
+  workloads: 21.9 M instructions. The largest single part (18.7%) is
+  `vu1_native::resolveFor`, which matches every 8-byte slot of VU code
+  memory against the translated pairs and blocks. The replay has no
+  PS2Memory, so it resolves before every workload; the game resolves only
+  when the code memory's upload generation changes (`resolveNativeCode`).
+- Checked in the game: a gdb breakpoint on `vu1_native::resolve` and
+  `resolveVu0`, attached for 30 s in the first level after the menus, was
+  not hit once. So the resolver is a replay cost, not a game cost, and
+  replay comparisons of VU speed should look at the translated code
+  (here the largest block, `b39E8_434`, with 8.6% plus its inlined
+  helpers) rather than at the total.
+
