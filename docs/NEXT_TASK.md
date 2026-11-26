@@ -70,7 +70,7 @@
    the VRAM accesses (done, patch 0049, s.30: -0.9% only), the transfer
    barriers (done, s.32: uploads into pages queued draws read run ahead
    with page copies, segments -44% on the level recording; to measure on
-   Windows), per-pixel work (s.34, patch 0053: -8%; s.35, patch 0057: the alpha blend, -2.7%), maybe a dispatcher that draws no band itself;
+   Windows), per-pixel work (s.34, patch 0053: -8%; s.35, patch 0057: the alpha blend, -2.7%; s.36, patch 0058: the palette, -4.1%), maybe a dispatcher that draws no band itself;
    measure with `ben10_gs_replay --limit N` under callgrind; check every
    GS change with `ben10_gs_replay --sync` hashes on the level and on
    random recordings, and the band counts against it;
@@ -105,7 +105,7 @@
    common VU0 macro operations (patches 0054-0056 fixed what they
    found). R27 (PCSX2 and the runtime disagree on exponent-255 floats)
    waits for the ps2autotests results.
-5. Send patches 0002-0057 upstream to PS2Recomp.
+5. Send patches 0002-0058 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

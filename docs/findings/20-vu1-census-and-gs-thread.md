@@ -1129,3 +1129,17 @@ per second in one-minute averages in the first level.
   WritePixelWith recomputes for every pixel (alpha-test class, the
   destination-alpha decisions, about 0.3 G) are the next candidate.
 
+## 36. The palette filled once per CLUT key (patch 0058)
+
+- After patch 0057 (10.98 G on the s.34 measure), the indexed-texture
+  path of the sampler cost about 0.5 G: the palette cache was filled
+  lazily, so every T8/T4 texel tested a "looked up yet" bit (index, bit
+  mask, load, test) before reading its colour.
+- The cache key (CLUT format and storage mode, CSA, 4- or 8-bit indices,
+  TEXA) changes rarely: 555 times in the first 60,000 records, against
+  62,847 lazy lookups. Patch 0058 fills all 256 entries when the key
+  changes (142,080 lookups, about 7 M instructions) and reads
+  `m_palette[index]` with no check: 10.98 G -> 10.53 G, -4.1%.
+- Checked: same hashes as before on the level recording and the six
+  random recordings; 6 bands match `--sync`; ps2xTest 454/454.
+

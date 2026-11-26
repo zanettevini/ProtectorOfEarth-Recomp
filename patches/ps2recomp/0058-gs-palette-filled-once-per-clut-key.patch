@@ -1,0 +1,138 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: the palette filled once per CLUT key, no per-texel check
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - The palette cache (LookupCLUT results by source index) was filled
+    lazily: every indexed texel (T8, T4...) tested a "looked up yet" bit
+    before reading its colour. BeginSampling now fills all 256 entries
+    when a primitive brings a new key (CLUT settings and TEXA; a CLUT load
+    resets the key), and sampling reads m_palette[index] directly.
+    m_paletteValid is gone; BeginSampling takes the draw state.
+  - LookupCLUT depends only on the CLUT buffer and the key's fields, so
+    every entry is the value the lazy lookup gave. Keys change rarely (555
+    times in the first 60,000 records of the level recording: 142,080
+    lookups instead of 62,847, about 7 M instructions).
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and the six random recordings; 6
+  bands give the same hashes. ps2xTest 454/454. Instructions for the
+  first 60,000 records of the level recording: 10.98 G -> 10.53 G
+  (findings/20 s.36).
+
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -80,10 +80,11 @@
+     uint32_t SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
+     // SampleTexture with what depends only on the draw state (TEX0, CLAMP,
+     // texture size) decoded once per primitive (SamplerSetup, defined in
+-    // gs_cpu_backend.cpp). BeginSampling checks the palette cache key once.
++    // gs_cpu_backend.cpp). BeginSampling checks the palette cache key once
++    // and fills the palette when the key changed.
+     struct SamplerSetup;
+     SamplerSetup MakeSamplerSetup(const GSDrawState &state) const;
+-    void BeginSampling(const SamplerSetup &setup);
++    void BeginSampling(const GSDrawState &state, const SamplerSetup &setup);
+     uint32_t SampleTextureWith(const SamplerSetup &setup, const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
+     uint32_t LookupCLUT(const GSDrawState &state, uint8_t index, uint8_t cpsm, uint8_t csm, uint8_t csa, uint8_t sourcePsm);
+ 
+@@ -111,12 +112,12 @@
+     std::array<WriteVramFunc, kPsmHandlerCount> m_writeVramFuncs{};
+     std::array<uint16_t, 512> m_clut{};
+     std::array<uint32_t, 2> m_clutCbp{};
+-    // Final colours (CLUT entry after TEXA) by source index, filled lazily.
+-    // The key holds every input of LookupCLUT except the index and m_clut;
+-    // every write to m_clut sets the key to UINT64_MAX, which no draw state
+-    // packs to, so a hit returns exactly what LookupCLUT would.
++    // Final colours (CLUT entry after TEXA) for all 256 source indices,
++    // filled when the key changes (BeginSampling). The key holds every input
++    // of LookupCLUT except the index and m_clut; every write to m_clut sets
++    // the key to UINT64_MAX, which no draw state packs to, so an entry is
++    // exactly what LookupCLUT would return.
+     uint64_t m_paletteKey = UINT64_MAX;
+-    std::array<uint64_t, 4> m_paletteValid{};
+     std::array<uint32_t, 256> m_palette{};
+     GSMem::TexturePageCache m_texturePageCache;
+ 
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -1391,24 +1391,28 @@
+     return setup;
+ }
+ 
+-// The palette cache (m_palette, m_paletteValid) holds LookupCLUT results
+-// for one key; a new key empties it. It only memoises LookupCLUT, whose
+-// result depends on the CLUT buffer (a CLUT load resets the key) and the
+-// key's fields, so emptying it once per primitive instead of at its first
+-// sample gives the same texels.
+-void GSCpuBackend::BeginSampling(const SamplerSetup &setup)
++// The palette cache (m_palette) holds the LookupCLUT results of all 256
++// indices for one key, filled when a primitive brings a new key. LookupCLUT
++// depends only on the CLUT buffer (a CLUT load resets the key) and the key's
++// fields, so the entries are the values the texels would get looked up one
++// by one, and sampling needs no per-texel "already looked up?" check. Keys
++// change rarely (about 550 times in the first 60,000 records of the level
++// recording, findings/20 s.36), so filling all 256 costs little.
++void GSCpuBackend::BeginSampling(const GSDrawState &state, const SamplerSetup &setup)
+ {
+     if (setup.indexed && setup.paletteKey != m_paletteKey)
+     {
+         m_paletteKey = setup.paletteKey;
+-        m_paletteValid.fill(0u);
++        const auto &tex = state.context.tex0;
++        for (uint32_t index = 0; index < 256u; ++index)
++            m_palette[index] = LookupCLUT(state, static_cast<u8>(index), tex.cpsm, tex.csm, tex.csa, tex.psm);
+     }
+ }
+ 
+ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
+ {
+     const SamplerSetup setup = MakeSamplerSetup(state);
+-    BeginSampling(setup);
++    BeginSampling(state, setup);
+     return SampleTextureWith(setup, state, s, t, q, u, v);
+ }
+ 
+@@ -1467,18 +1471,7 @@
+         case GS_PSM_T4HL:
+         case GS_PSM_T4HH:
+             for (int i = 0; i < count; ++i)
+-            {
+-                const uint32_t out = texels[i];
+-                const uint32_t index = out & 0xFFu;
+-                const uint64_t bit = 1ull << (index & 63u);
+-                uint64_t &valid = m_paletteValid[index >> 6u];
+-                if ((valid & bit) == 0u)
+-                {
+-                    m_palette[index] = LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
+-                    valid |= bit;
+-                }
+-                texels[i] = m_palette[index];
+-            }
++                texels[i] = m_palette[texels[i] & 0xFFu];
+             return;
+         default:
+             for (int i = 0; i < count; ++i)
+@@ -1596,7 +1589,7 @@
+     const PixelSetup pixelSetup = MakePixelSetup(state);
+     const SamplerSetup samplerSetup = MakeSamplerSetup(state);
+     if (state.prim.tme)
+-        BeginSampling(samplerSetup);
++        BeginSampling(state, samplerSetup);
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+     const auto &ctx = state.context;
+@@ -1754,7 +1747,7 @@
+     const PixelSetup pixelSetup = MakePixelSetup(state);
+     const SamplerSetup samplerSetup = MakeSamplerSetup(state);
+     if (state.prim.tme)
+-        BeginSampling(samplerSetup);
++        BeginSampling(state, samplerSetup);
+     const GSVertex &v0 = batch.vertices[0];
+     const GSVertex &v1 = batch.vertices[1];
+     const GSVertex &v2 = batch.vertices[2];

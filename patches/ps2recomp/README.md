@@ -65,8 +65,9 @@ fix and how it was found.
 | `0055-fpu-compares-and-max-min-in-ps2-order.patch` | FPU: C.EQ/C.LT/C.LE and MAX.S/MIN.S order the bits as PS2 floats (0x7FFFFFFF is the largest value, not NaN; exponent 0 compares as zero) | findings/14 s.8 |
 | `0056-vu0-macro-div-sqrt-rsqrt.patch` | VU0 macro mode: VRSQRT divides fs (it computed 1/sqrt(ft)); VDIV by zero and roots of negatives as PCSX2's and the runtime's VU interpreters | findings/14 s.8 |
 | `0057-gs-alpha-blend-three-channels-at-once.patch` | GS CPU backend: alpha blending of R, G and B in one SSE4.1 vector, each selector chosen once; same results | findings/20 s.35 |
+| `0058-gs-palette-filled-once-per-clut-key.patch` | GS CPU backend: the palette (CLUT after TEXA) filled for all 256 indices when its key changes, no per-texel lookup check; same results | findings/20 s.36 |
 
-Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053 and 0057 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
+Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053, 0057 and 0058 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the
