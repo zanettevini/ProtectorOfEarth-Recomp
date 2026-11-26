@@ -1074,3 +1074,36 @@ per second in one-minute averages in the first level.
   40 VU1 and 60 VU0 workloads (interpreted, translated, without blocks);
   ps2xTest 454/454. VU1 replay: 410.2 M -> 406.8 M instructions in
   `VU1::run` (with the coverage counters of patch 0048 in between).
+
+## 34. Per-pixel work of the GS rasteriser: bilinear texel addresses, fog, clip checks (patch 0053)
+
+- Measured with `ben10_gs_replay user/gs_rec/level.gsr --sync --limit
+  60000 --every 0` under callgrind (the hash points left out; with them
+  the same part takes 0.9 G more): 12.27 G instructions. By source line,
+  the swizzled address of texels was the largest single cost: the page
+  table lookup about 0.67 G and PageId's row and column about 0.6 G, four
+  times per bilinear sample.
+- Patch 0053, same results bit for bit, with the count after each part:
+  - `GSMem::ReadTextureQuad`: the four texels of a bilinear sample with
+    each row's (v0, v1) and column's (u0, u1) part of the page address
+    computed once, then the same reads in the same order through the
+    texture page buffer (12.03 G);
+  - DrawTriangle interpolates fog only with PRIM.FGE set; WritePixelWith
+    reads it only then (11.88 G);
+  - DrawTriangle and DrawSprite clamp their loops to the scissor and skip
+    rows of other bands already, so WritePixelWith's per-pixel scissor
+    and band checks are left out for them (`knownInside`; not with an
+    inverted scissor) (11.29 G).
+  -8.0% in all.
+- Tried and dropped: copying the per-draw fields WritePixelWith reads
+  (TEST, ALPHA, FBMSK, FBA, the fog colour...) into PixelSetup, on the
+  idea that stores to GS memory through byte pointers make the compiler
+  read the draw state again after every pixel: 11.48 G, worse.
+- Checked: same hashes as before on the level recording (35 points and
+  the end) and the six random recordings; three new random recordings
+  with draws sampling their own buffers (`--any-texture 1`, seeds 21-23)
+  give the same hashes with the backend before and after the patch; 6
+  bands match `--sync`; ps2xTest 454/454; the game draws the first level.
+- Also tried: segments of 1,024 or 2,048 commands instead of 512 (fewer
+  ends of segment by length): no difference on the 2-core machine (best
+  of four runs 6.5-6.6 s for each), so the limit stays.

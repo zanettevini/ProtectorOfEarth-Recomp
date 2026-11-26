@@ -70,7 +70,7 @@
    the VRAM accesses (done, patch 0049, s.30: -0.9% only), the transfer
    barriers (done, s.32: uploads into pages queued draws read run ahead
    with page copies, segments -44% on the level recording; to measure on
-   Windows), the segment length limit (512 commands), maybe a dispatcher that draws no band itself;
+   Windows), per-pixel work (s.34, patch 0053: -8%), maybe a dispatcher that draws no band itself;
    measure with `ben10_gs_replay --limit N` under callgrind; check every
    GS change with `ben10_gs_replay --sync` hashes on the level and on
    random recordings, and the band counts against it;
@@ -99,7 +99,7 @@
 4. More per-instruction tests for the game's instructions still untested
    (KNOWN_ISSUES R13): RSQRT.S, MADD.S/MSUB.S, C.*.S, LDL/LDR/SDL/SDR,
    QFSRV, PMFHL and the rest of VU0 macro mode.
-5. Send patches 0002-0052 upstream to PS2Recomp.
+5. Send patches 0002-0053 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

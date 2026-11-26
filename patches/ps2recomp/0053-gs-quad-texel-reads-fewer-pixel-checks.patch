@@ -1,0 +1,252 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] GS CPU backend: bilinear texel addresses by row and column, fog and clip checks only when needed
+
+What it is for:
+  Per-pixel work of the software rasteriser, which limits Protector of
+  Earth Recomp's frame rate in busy scenes.
+
+The changes:
+  - GSMem::ReadTextureQuad: the four texels of a bilinear sample with the
+    page address of each row (v0, v1) and column (u0, u1) worked out once
+    instead of once per texel; the same reads, in the same order, through
+    the texture page buffer. SampleTextureWith uses it.
+  - DrawTriangle interpolates the fog value only when PRIM.FGE is set
+    (WritePixelWith reads it only then).
+  - WritePixelWith takes knownInside: DrawTriangle and DrawSprite already
+    clamp their loops to the scissor rectangle and skip rows of other
+    bands, so they pass true (unless the scissor is inverted) and the
+    per-pixel scissor and band checks are left out.
+  Same results bit for bit.
+
+How it was checked:
+  ben10_gs_replay --sync: the same hashes as before on the first level's
+  recording (35 points and the end) and six random recordings, and on
+  three random recordings with draws sampling their own buffers
+  (--any-texture 1) built before and after; 6 bands give the same hashes.
+  ps2xTest 454/454. Instructions for the first 60,000 records of the
+  level recording: 12.27 G -> 11.29 G (findings/20 s.34).
+
+--- a/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
++++ b/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h
+@@ -73,8 +73,10 @@
+     // per primitive (PixelSetup, defined in gs_cpu_backend.cpp).
+     struct PixelSetup;
+     PixelSetup MakePixelSetup(const GSDrawState &state) const;
++    // knownInside: the caller's loops already keep (x, y) inside the
++    // scissor and the row band, so those checks are left out.
+     void WritePixelWith(const PixelSetup &setup, const GSDrawState &state, int x, int y, int z,
+-                        uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog);
++                        uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog, bool knownInside = false);
+     uint32_t SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v);
+     // SampleTexture with what depends only on the draw state (TEX0, CLAMP,
+     // texture size) decoded once per primitive (SamplerSetup, defined in
+--- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+@@ -548,6 +548,13 @@
+     void ReadTexture4(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
+                       const u32 (&x)[4], const u32 (&y)[4], u32 (&out)[4]);
+ 
++    // The four texels of a bilinear sample, (u0, v0), (u1, v0), (u0, v1),
++    // (u1, v1), read in that order through the cache: the same values as
++    // ReadTexture4 with those coordinates, with each row's and column's part
++    // of the page address worked out once (findings/20 s.34).
++    void ReadTextureQuad(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
++                         u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4]);
++
+ 	// The byte address in GS memory of pixel (x, y) of a buffer, the same
+ 	// one Read*/Write* below compute, for the frame and Z formats: a pixel
+ 	// read and then written computes it once (findings/20 s.30). C32/Z32 and
+--- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
+@@ -1067,13 +1067,16 @@
+ // The same steps as before the setup was split out; the frame and Z reads
+ // and writes call the accessors ReadVramUnlocked/WriteVramUnlocked picked.
+ PS2_GS_FORCEINLINE void GSCpuBackend::WritePixelWith(const PixelSetup &setup, const GSDrawState &state, int x, int y, int z,
+-                                         uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
++                                         uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog, bool knownInside)
+ {
+     const auto &ctx = state.context;
+-    if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+-        return;
+-    if (!rowInBand(y))
+-        return;
++    if (!knownInside)
++    {
++        if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
++            return;
++        if (!rowInBand(y))
++            return;
++    }
+ 
+     if (state.prim.fge)
+     {
+@@ -1480,11 +1483,9 @@
+     const uint32_t wu1 = static_cast<uint32_t>(wrapTextureCoordinate(u1, texW, wrapU, minU, maxU));
+     const uint32_t wv0 = static_cast<uint32_t>(wrapTextureCoordinate(v0, texH, wrapV, minV, maxV));
+     const uint32_t wv1 = static_cast<uint32_t>(wrapTextureCoordinate(v1, texH, wrapV, minV, maxV));
+-    const uint32_t xs[4] = {wu0, wu1, wu0, wu1};
+-    const uint32_t ys[4] = {wv0, wv0, wv1, wv1};
+     uint32_t raw[4] = {0u, 0u, 0u, 0u};
+     if (m_vram)
+-        GSMem::ReadTexture4(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, xs, ys, raw);
++        GSMem::ReadTextureQuad(m_texturePageCache, m_vram, tex.psm, tex.tbp0, tex.tbw, wu0, wu1, wv0, wv1, raw);
+     convertTexels(raw, 4);
+     return bilinearFilter(raw[0], raw[1], raw[2], raw[3], fx, fy);
+ }
+@@ -1600,6 +1601,10 @@
+ 
+     const int drawX0 = clampInt(unclippedX0, ctx.scissor.x0, ctx.scissor.x1);
+     const int drawY0 = clampInt(unclippedY0, ctx.scissor.y0, ctx.scissor.y1);
++    // The loops below stay inside the clamped rectangle and skip rows of
++    // other bands, so WritePixelWith need not check either again; only an
++    // inverted scissor (x0 > x1 or y0 > y1) is left to its checks.
++    const bool insideScissor = ctx.scissor.x0 <= ctx.scissor.x1 && ctx.scissor.y0 <= ctx.scissor.y1;
+     const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
+     const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
+ 
+@@ -1671,7 +1676,7 @@
+                 uint8_t ta = static_cast<uint8_t>((texel >> 24) & 0xFF);
+ 
+                 const TextureCombineResult color = combineTexture(tex, r, g, b, a, tr, tg, tb, ta);
+-                WritePixelWith(pixelSetup, state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
++                WritePixelWith(pixelSetup, state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog, insideScissor);
+             }
+         }
+     }
+@@ -1710,7 +1715,7 @@
+             if (!rowInBand(y))
+                 continue;
+             for (int x = drawX0; x <= drawX1; ++x)
+-                WritePixelWith(pixelSetup, state, x, y, z1, r, g, b, a, v1.fog);
++                WritePixelWith(pixelSetup, state, x, y, z1, r, g, b, a, v1.fog, insideScissor);
+         }
+     }
+ }
+@@ -1746,6 +1751,9 @@
+     maxX = clampInt(maxX, ctx.scissor.x0, ctx.scissor.x1);
+     minY = clampInt(minY, ctx.scissor.y0, ctx.scissor.y1);
+     maxY = clampInt(maxY, ctx.scissor.y0, ctx.scissor.y1);
++    // As in DrawSprite: the pixel loops stay inside these bounds and skip
++    // rows of other bands.
++    const bool insideScissor = ctx.scissor.x0 <= ctx.scissor.x1 && ctx.scissor.y0 <= ctx.scissor.y1;
+ 
+     float denom = (fy1 - fy2) * (fx0 - fx2) + (fx2 - fx1) * (fy0 - fy2);
+     if (std::fabs(denom) < 0.001f)
+@@ -1849,8 +1857,9 @@
+             a = color.a;
+         }
+ 
+-        const uint8_t fog = clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2));
+-        WritePixelWith(pixelSetup, state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
++        // WritePixelWith reads the fog value only with PRIM.FGE set.
++        const uint8_t fog = state.prim.fge ? clampU8(static_cast<int>(v0.fog * w0 + v1.fog * w1 + v2.fog * w2)) : 0u;
++        WritePixelWith(pixelSetup, state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog, insideScissor);
+     };
+ 
+ #if PS2_GS_BILINEAR_SIMD
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -1,7 +1,15 @@
+ #include <array>
++#include <cstring>
+ 
+ #include "runtime/gs/ps2_gs_memory.h"
+ 
++// Forced inline for the per-texel steps of ReadTextureQuad.
++#if defined(_MSC_VER)
++#define PS2_GS_MEMORY_INLINE __forceinline
++#else
++#define PS2_GS_MEMORY_INLINE inline __attribute__((always_inline))
++#endif
++
+ namespace GSMem
+ {
+     using C32Traits  = PixelStorageTraits<C32>;
+@@ -266,6 +274,87 @@
+         }
+     }
+ 
++    namespace
++    {
++        // PixelStorageTraits<M>::Read for a texel whose page-local address
++        // is already known: the same steps after Address().
++        template <PixelStorageMode M>
++        PS2_GS_MEMORY_INLINE u32 readAtPixel(TexturePageCache& cache, const u8* data, u32 pixel_addr)
++        {
++            using Traits = PixelStorageTraits<M>;
++            using PackedT = typename Traits::PackedT;
++            const u32 bits = pixel_addr * UnpackedBitWidth(M) + Traits::BitOffset();
++            const u32 byte_addr = (bits / 8) & (MEMORY_SIZE - sizeof(PackedT));
++            const u32 shift = bits % 8;
++            const u8* source = cache.Resolve(data, byte_addr);
++            PackedT v;
++            std::memcpy(&v, source, sizeof(PackedT));
++            switch (M)
++            {
++            case C24:
++            case Z24:
++                return v & 0x00FFFFFF;
++            case P4:
++            case P4HL:
++            case P4HH:
++                return (v >> shift) & 0x0F;
++            default:
++                return v;
++            }
++        }
++
++        // The four texels of a bilinear sample: Address() split into the
++        // part of each row (v) and of each column (u), as PageId and the
++        // page table compute them.
++        template <PixelStorageMode M, typename TableT>
++        void readQuad(const TableT& table, TexturePageCache& cache, const u8* data, u32 bp, u32 bw,
++                      u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
++        {
++            using Traits = PixelStorageTraits<M>;
++            constexpr auto page_extent = Traits::PageExtent();
++            constexpr u32 blocks = static_cast<u32>(Traits::BlocksPerPage());
++            constexpr u32 pixels_per_page = static_cast<u32>(Traits::PixelsPerPage());
++            const u32 base_page = bp / blocks;
++            const auto& pageTable = table[bp % blocks];
++            const u32 rowPages = (bw * 64) / page_extent.x;
++            const u32 row0 = base_page + (v0 / page_extent.y) * rowPages;
++            const u32 row1 = base_page + (v1 / page_extent.y) * rowPages;
++            const u32 col0 = u0 / page_extent.x;
++            const u32 col1 = u1 / page_extent.x;
++            const u32 y0 = v0 % page_extent.y, y1 = v1 % page_extent.y;
++            const u32 x0 = u0 % page_extent.x, x1 = u1 % page_extent.x;
++            out[0] = readAtPixel<M>(cache, data, (row0 + col0) * pixels_per_page + pageTable[y0][x0]);
++            out[1] = readAtPixel<M>(cache, data, (row0 + col1) * pixels_per_page + pageTable[y0][x1]);
++            out[2] = readAtPixel<M>(cache, data, (row1 + col0) * pixels_per_page + pageTable[y1][x0]);
++            out[3] = readAtPixel<M>(cache, data, (row1 + col1) * pixels_per_page + pageTable[y1][x1]);
++        }
++    }
++
++    void ReadTextureQuad(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
++                         u32 u0, u32 u1, u32 v0, u32 v1, u32 (&out)[4])
++    {
++        switch (static_cast<PixelStorageMode>(psm & 0x3Fu))
++        {
++        case C32: readQuad<C32>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case C24: readQuad<C24>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case C16: readQuad<C16>(PageTableC16, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case C16S: readQuad<C16S>(PageTableC16S, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case P8: readQuad<P8>(PageTableP8, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case P4: readQuad<P4>(PageTableP4, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case P8H: readQuad<P8H>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case P4HL: readQuad<P4HL>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case P4HH: readQuad<P4HH>(PageTableC32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case Z32: readQuad<Z32>(PageTableZ32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case Z24: readQuad<Z24>(PageTableZ32, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case Z16: readQuad<Z16>(PageTableZ16, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        case Z16S: readQuad<Z16S>(PageTableZ16S, cache, data, bp, bw, u0, u1, v0, v1, out); return;
++        default:
++            for (int i = 0; i < 4; ++i)
++                out[i] = 0u;
++            return;
++        }
++    }
++
+     void ReadTexture4(TexturePageCache& cache, const u8* data, u32 psm, u32 bp, u32 bw,
+                       const u32 (&x)[4], const u32 (&y)[4], u32 (&out)[4])
+     {
