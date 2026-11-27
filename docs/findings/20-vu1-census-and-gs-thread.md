@@ -1200,3 +1200,29 @@ per second in one-minute averages in the first level.
   recordings, 6 bands match `--sync`; ps2xTest 454/454.
 - Since s.34 (12.27 G): 10.13 G, -17.4% (patches 0053, 0057-0062).
 
+## 41. Windows after patches 0045-0063: the first level at the game's own 30 fps
+
+- Measured by the maintainer with `run-worker.bat` (MSVC Release,
+  `BEN10_ASYNC_VU1=1`, `BEN10_GS_THREADS=6`, the sampling profiler on the
+  VIF1 worker), about 50 s into the first level.
+- The game runs at 30 game frames per second for 60 VBlanks, its own
+  rate on the console, in almost every second of the level (earlier on
+  the same machine: 28-32 when quiet, 19-26 with enemies, s.26-27). Short
+  dips to 24-28 come with fewer VBlanks per second (48-58): the EE waited
+  for the VIF1 worker at the VBlank 305 times in the last 10 s, 11.3 ms on
+  average; 20-30% of the frames took 34-50 ms there.
+- Threads (CPU time per second of wall time, last windows): VIF1 worker
+  up to 846 ms, the six GS bands 560-790 ms each, the game thread
+  550-610 ms. The VIF1 worker is the first limit again, then GS band 0
+  (it drew 6.9 s and waited 1.8 s for the other bands in 10 s; the
+  producers hit the queue limit 938 times, 0.57 s).
+- Worker profile, last window: idle 16%; translated VU1 code 40.5% (the
+  largest blocks b14F8_194 4.5%, b0A68_113 3.3%, b0E98_148 3.1%, b39E8_434
+  2.8%); the interpreter's helpers 10.3% (`materializeFlags` 1.7%,
+  `normalizeOperand` 1.3%, `applyFmacSlow` 1.2%, `commitReadyPipelines`,
+  `queueClip`); XGKICK and the GIF path 11.2% inclusive
+  (`progressXgkick`, `GifArbiter::drain`, `GS::vertexKick`); VIF unpack
+  3.1%; `vu1_native::resolveFor` 0.6% (so the resolver does run in the
+  game, at some upload, unlike the 30 s Linux watch of findings/21 s.28).
+- `[vu-native]`: 0 pairs interpreted on VU1 and VU0.
+

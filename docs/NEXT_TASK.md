@@ -3,6 +3,11 @@
 ## For the agent
 
 1. **Next: faster translated VU code (decision D14, findings/21 s.11).**
+   Windows after patches 0045-0063 (findings/20 s.41): the first level
+   runs at the game's own 30 fps almost all the time; dips to 24-28 when
+   the EE waits for the VIF1 worker, which is the first limit again
+   (translated VU1 code 40%, interpreter helpers 10%, XGKICK/GIF 11%),
+   then GS band 0. The maintainer's target (25-30 fps) is reached.
    Every VU1 pair is translated (`tools/vu1_translate`, `generated/vu1/`,
    `src/vu/`); patches 0019-0026 brought the translated code from 793 M to
    159 M instructions on the replay (patches 0027-0031: about 290 per VU cycle). On Windows the
