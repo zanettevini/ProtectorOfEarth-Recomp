@@ -70,8 +70,9 @@ fix and how it was found.
 | `0060-gs-wrap-mode-once-per-coordinate-pair.patch` | GS CPU backend: the wrap mode of a bilinear sample's two columns and two rows dispatched once per pair; same results | findings/20 s.38 |
 | `0061-gs-indexed-quad-reads-inline.patch` | GS CPU backend: indexed (P8, P4, P8H, P4HL, P4HH) bilinear quads read inline as C32 already was; same results | findings/20 s.39 |
 | `0062-gs-bits-per-pixel-table.patch` | GS: `bitsPerPixel` as a constexpr table instead of a switch (asked per pixel); same results | findings/20 s.40 |
+| `0063-vu-translator-probes-call-upper-out-of-line.patch` | VU: the translator's probes call the upper executor out of line (MSVC needed over 6 GB for the translator); same translated code | findings/19 s.11 |
 
-Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053 and 0057-0062 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 an MSVC build fix with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
+Patches 0002-0010, 0012, 0015, 0017 and 0054-0056 fix PS2 behaviour (0011 is a keyboard-mapping fix of the runtime, 0013, 0014, 0016 and 0019-0022 and 0024-0031, 0033, 0035-0042, 0044, 0045, 0047, 0049, 0050, 0052, 0053 and 0057-0062 speed-ups, 0034 an optional speed-up that moves the end of VIF1 transfers later in EE time, 0023 and 0063 MSVC build fixes with the same results, 0018, 0032, 0046 and 0048 hooks for translated VU code, 0051 a hook for the port's banded GS renderer) and should also go to upstream
 PS2Recomp.
 
 CMake keeps a stamp (`thirdparty/PS2Recomp/.ben10_patches_applied`, the

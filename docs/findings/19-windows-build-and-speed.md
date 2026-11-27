@@ -222,3 +222,19 @@ cycle loop that drains PATH1 after a microprogram ends (`flushPipelines`,
 - With a real disc image (`.iso`), the EE's `sceCdSearchFile` still gives
   pseudo LSNs while the IOP reads the image's own: the same mismatch would
   come back. The EE should then read the image's ISO 9660 directory.
+
+## 11. The VU translator and MSVC's memory (patch 0063)
+
+- The first Windows Release build after patches 0045-0062 stopped on
+  `tools/vu1_translate/vu1_translate.cpp`: the build script's guard
+  stopped a `cl.exe` that passed 6 GB (the guard exists because one
+  translated VU1 file once needed over 30 GB). Nothing else had failed.
+- Cause: patches 0046 and 0052 gave the translator two probes
+  (`VU1NativeAccess::upperQueuesFmacFlags`, `upperLowerMayWriteZeroRegs`)
+  that call `execUpper`, which is forced inline. MSVC compiled the whole
+  upper executor, with its forced-inline helpers, into the translator
+  twice; GCC needs no such memory, so the Linux builds did not show it.
+- Patch 0063: the probes call `execUpperOutOfLine`, a plain call into
+  `ps2_vu1_upper.cpp`. The translator writes `generated/vu1` byte for
+  byte as before on Linux; the VU replay checksums are the same.
+

@@ -1,0 +1,68 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] VU: the translator's probes call the upper executor out of line
+
+What it broke:
+  The MSVC Release build of Protector of Earth Recomp's VU translator
+  (tools/vu1_translate) stopped: one cl.exe process passed 6 GB on
+  vu1_translate.cpp. Patches 0046 and 0052 added two probes the
+  translator calls (VU1NativeAccess::upperQueuesFmacFlags and
+  upperLowerMayWriteZeroRegs), and both called execUpper, which is
+  forced inline: MSVC compiled the whole upper (FMAC) executor, with its
+  forced-inline helpers, into the translator twice. GCC needs no such
+  memory, so the Linux builds did not show it.
+
+The changes:
+  - VU1Interpreter::execUpperOutOfLine (ps2_vu1_upper.cpp) calls
+    execUpper; the two probes call it. They run a few thousand times while
+    the translator runs, so the call costs nothing that matters. The
+    probes' answers, and so the translated code, are the same.
+
+How it was checked:
+  Linux: the translator rebuilt and run again writes generated/vu1 byte
+  for byte as before; ben10_vu1_replay --sum gives the same checksums
+  (interpreted, translated, without blocks, VU0). ps2xTest 454/454.
+  Windows: the build no longer stops on vu1_translate.cpp (findings/19).
+
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -501,6 +501,10 @@
+     void rebuildDecodedCodeCache(const uint8_t *vuCode, uint32_t codeSize, const PS2Memory *memory, uint64_t generation);
+ 
+     void execUpper(uint32_t instr); // inline, runtime/ps2_vu1_upper_inl.h
++    // execUpper as a call (ps2_vu1_upper.cpp), for code that runs it rarely:
++    // the translator's probes. Forced inline there, MSVC compiled the whole
++    // upper executor into the translator twice and needed over 6 GB.
++    void execUpperOutOfLine(uint32_t instr);
+     // The upper executor for any word (kConst false) or for the word kInstr
+     // known at build time (runtime/ps2_vu1_upper_inl.h).
+     template <bool kConst, uint32_t kInstr>
+@@ -1509,7 +1513,7 @@
+             for (uint32_t lane = 0; lane < 4u; ++lane)
+                 vu.m_state.vf[0][lane] = kMarks[pass] + static_cast<float>(lane);
+             vu.m_state.vi[0] = kViMarks[pass];
+-            vu.execUpper(upper);
++            vu.execUpperOutOfLine(upper);
+             if ((upper & 0x80000000u) == 0u)
+                 vu.execLower(lower, data, dataSize, gs, nullptr, upper);
+             for (uint32_t lane = 0; lane < 4u; ++lane)
+@@ -1527,7 +1531,7 @@
+     static bool upperQueuesFmacFlags(VU1Interpreter &vu, uint32_t word)
+     {
+         vu.reset();
+-        vu.execUpper(word);
++        vu.execUpperOutOfLine(word);
+         for (uint32_t i = 0; i < vu.m_flagCount; ++i)
+             if ((vu.m_flagPipeline[(vu.m_flagHead + i) & (VU1Interpreter::kMaxFlagEntries - 1u)].writes &
+                  VU1Interpreter::kFlagWritesMac) != 0u)
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_upper.cpp
+@@ -1,3 +1,9 @@
+ // The upper (FMAC) executor is inline in runtime/ps2_vu1_upper_inl.h
+ // (included by runtime/ps2_vu1.h).
+ #include "runtime/ps2_vu1.h"
++
++// The upper executor as a call, for rarely run code (the translator's probes).
++void VU1Interpreter::execUpperOutOfLine(uint32_t instr)
++{
++    execUpper(instr);
++}

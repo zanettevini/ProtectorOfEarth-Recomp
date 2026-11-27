@@ -105,7 +105,7 @@
    common VU0 macro operations (patches 0054-0056 fixed what they
    found). R27 (PCSX2 and the runtime disagree on exponent-255 floats)
    waits for the ps2autotests results.
-5. Send patches 0002-0062 upstream to PS2Recomp.
+5. Send patches 0002-0063 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 
