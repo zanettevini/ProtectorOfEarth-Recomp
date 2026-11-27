@@ -60,6 +60,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -260,11 +261,16 @@ int main(int argc, char **argv)
                  << "    }\n    namespace\n    {\n";
     }
 
-    VU1Interpreter vu(VU1Interpreter::Unit::VU1);
+    // The interpreters (about 230 KB each) and the GS (about 115 KB) are on
+    // the heap: four interpreters and a GS on the stack passed Windows'
+    // default 1 MB main-thread stack ("Stack overflow", findings/19 s.11).
+    const auto vuOwner = std::make_unique<VU1Interpreter>(VU1Interpreter::Unit::VU1);
+    VU1Interpreter &vu = *vuOwner;
     // The same pairs decoded as VU0 code: a pair may run on VU0 only if it
     // decodes the same there (the EFU instructions, XGKICK and opcode 0x64
     // do not exist on VU0 and decode as reserved).
-    VU1Interpreter vu0(VU1Interpreter::Unit::VU0);
+    const auto vu0Owner = std::make_unique<VU1Interpreter>(VU1Interpreter::Unit::VU0);
+    VU1Interpreter &vu0 = *vu0Owner;
     std::vector<uint8_t> code(kVuCodeSize, 0);
     size_t n = 0;
     size_t vu0Pairs = 0; // pairs that may also run on VU0
@@ -453,9 +459,11 @@ int main(int argc, char **argv)
     size_t noZeroResetPairs = 0;
     // Whether a pair can write VF0 or VI0, asked of the interpreter's own
     // executors (VU1NativeAccess::upperLowerMayWriteZeroRegs).
-    GS probeGs;
+    const auto probeGsOwner = std::make_unique<GS>();
+    GS &probeGs = *probeGsOwner;
     std::vector<uint8_t> probeData(16384u, 0u);
-    VU1Interpreter zeroProbe(VU1Interpreter::Unit::VU1);
+    const auto zeroProbeOwner = std::make_unique<VU1Interpreter>(VU1Interpreter::Unit::VU1);
+    VU1Interpreter &zeroProbe = *zeroProbeOwner;
     std::map<std::pair<uint32_t, uint32_t>, bool> zeroMemo;
     const auto mayWriteZero = [&](uint32_t lower, uint32_t upper)
     {
@@ -469,7 +477,8 @@ int main(int argc, char **argv)
     };
     // Whether an upper word queues an FMAC flag entry, asked once per word
     // of the interpreter itself (VU1NativeAccess::upperQueuesFmacFlags).
-    VU1Interpreter probe(VU1Interpreter::Unit::VU1);
+    const auto probeOwner = std::make_unique<VU1Interpreter>(VU1Interpreter::Unit::VU1);
+    VU1Interpreter &probe = *probeOwner;
     std::map<uint32_t, bool> queuesFmacMemo;
     const auto queuesFmac = [&](uint32_t upper)
     {

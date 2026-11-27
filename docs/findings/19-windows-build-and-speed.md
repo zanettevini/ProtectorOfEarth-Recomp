@@ -237,4 +237,12 @@ cycle loop that drains PATH1 after a microprogram ends (`flushPipelines`,
 - Patch 0063: the probes call `execUpperOutOfLine`, a plain call into
   `ps2_vu1_upper.cpp`. The translator writes `generated/vu1` byte for
   byte as before on Linux; the VU replay checksums are the same.
+- The next Windows build compiled the translator and then stopped when
+  it ran: "Stack overflow" (exit code 0xC00000FD). The same patches had
+  given it two more interpreter objects on the stack for the probes: four
+  `VU1Interpreter` (about 230 KB each) and a `GS` (about 115 KB), past
+  the 1 MB default stack of a Windows main thread (Linux gives 8 MB).
+  Reproduced on Linux with `ulimit -s 1024` (segmentation fault). The
+  translator now keeps them on the heap: with a 1 MB stack it runs, and
+  writes `generated/vu1` byte for byte as before.
 
