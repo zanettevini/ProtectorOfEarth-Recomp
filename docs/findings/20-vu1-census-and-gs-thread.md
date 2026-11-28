@@ -1204,10 +1204,12 @@ per second in one-minute averages in the first level.
 
 - Measured by the maintainer with `run-worker.bat` (MSVC Release,
   `BEN10_ASYNC_VU1=1`, `BEN10_GS_THREADS=6`, the sampling profiler on the
-  VIF1 worker), about 50 s into the first level.
+  VIF1 worker), about 50 s into the first level, including a fight with
+  several enemies (the maintainer's account).
 - The game runs at 30 game frames per second for 60 VBlanks, its own
-  rate on the console, in almost every second of the level (earlier on
-  the same machine: 28-32 when quiet, 19-26 with enemies, s.26-27). Short
+  rate on the console, in almost every second of the level, the fight
+  included (earlier on the same machine: 28-32 when quiet, 19-26 with
+  enemies, s.26-27). Short
   dips to 24-28 come with fewer VBlanks per second (48-58): the EE waited
   for the VIF1 worker at the VBlank 305 times in the last 10 s, 11.3 ms on
   average; 20-30% of the frames took 34-50 ms there.

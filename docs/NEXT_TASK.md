@@ -4,7 +4,8 @@
 
 1. **Next: faster translated VU code (decision D14, findings/21 s.11).**
    Windows after patches 0045-0063 (findings/20 s.41): the first level
-   runs at the game's own 30 fps almost all the time; dips to 24-28 when
+   runs at the game's own 30 fps almost all the time, in a fight with
+   several enemies too; dips to 24-28 when
    the EE waits for the VIF1 worker, which is the first limit again
    (translated VU1 code 40%, interpreter helpers 10%, XGKICK/GIF 11%),
    then GS band 0. The maintainer's target (25-30 fps) is reached.
