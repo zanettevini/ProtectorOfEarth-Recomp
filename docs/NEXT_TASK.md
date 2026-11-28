@@ -11,6 +11,11 @@
    then GS band 0. The maintainer's target (25-30 fps) is reached.
    VIF1/VU1 on the worker thread is now the default (D15;
    `BEN10_ASYNC_VU1=0` turns it off).
+   Two full levels on Windows (s.43): the first level runs 21-27 fps
+   for most of its length, limited by the GS (producers held by the
+   queue limit 30-60% of the time); the second ran too fast (VBlank
+   catch-up, fixed by patch 0064). Measure `BEN10_GS_THREADS=10`
+   (`run-gs10.bat`), then band 0's double duty.
    Next on the worker (s.41): the GS dispatcher now polls before sleeping,
    so pushes skip the wake-up call (s.42, to measure on Windows); then the
    VU1 helpers (`materializeFlags`, `normalizeOperand`, `applyFmacSlow`,
@@ -117,7 +122,7 @@
    common VU0 macro operations (patches 0054-0056 fixed what they
    found). R27 (PCSX2 and the runtime disagree on exponent-255 floats)
    waits for the ps2autotests results.
-5. Send patches 0002-0063 upstream to PS2Recomp.
+5. Send patches 0002-0064 upstream to PS2Recomp.
 
 ## For the maintainer (when testing on Windows)
 

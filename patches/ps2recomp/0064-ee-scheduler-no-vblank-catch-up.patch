@@ -1,0 +1,50 @@
+From: Protector of Earth Recomp
+Subject: [PATCH] EE scheduler: late VBlanks leave no debt to catch up
+
+What it broke:
+  A VBlank is due when the EE has run its cycles AND the host clock has
+  reached its host deadline; each VBlank's host deadline was the previous
+  one's plus 16.667 ms. When the game ran slower than real time, the host
+  deadlines fell into the past, and when it later ran fast enough, the
+  VBlanks came as soon as the EE cycles allowed until the chain had caught
+  up with the clock: in a 20-minute Windows session of Protector of Earth
+  Recomp the first level fell 86 s behind real time, and the loading and
+  the second level then ran with up to 104 VBlanks per second (the game up
+  to 1.7 times too fast) for several minutes.
+
+The changes:
+  - EeScheduler::processDueDeadlines: the next VBlank's host deadline is
+    one period after max(this VBlank's host deadline, now - one period),
+    so it is never before now. A game that falls behind runs in slow
+    motion while it is slow and at 60 VBlanks per second again as soon as
+    it can, with no fast stretch afterwards. The EE cycle at which each
+    VBlank falls is unchanged.
+
+How it was checked:
+  Linux: the game reaches the first level; with BEN10_FPS_LOG=1 no second
+  has more than 61 VBlanks (findings/20 s.43). ps2xTest 454/454.
+
+--- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
++++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+@@ -1885,11 +1885,19 @@
+         {
+             if (scheduled.event.type == EeEventType::VBlankStart)
+             {
++                // The next VBlank is due one period after this one's host
++                // time, but never before now: a VBlank that comes late (the
++                // game ran slower than real time) does not leave a debt the
++                // following ones pay back by coming faster than 60 per
++                // second. With the debt, a long slow stretch made the game
++                // run up to 1.7 times too fast afterwards to catch up.
++                const auto pacedNow = std::chrono::steady_clock::now();
++                const auto hostBase = std::max(scheduled.hostDeadline, pacedNow - kVBlankPeriod);
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
+-                              scheduled.hostDeadline + kVBlankDuration,
++                              hostBase + kVBlankDuration,
+                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankPeriodCycles,
+-                              scheduled.hostDeadline + kVBlankPeriod,
++                              hostBase + kVBlankPeriod,
+                               EeEvent{EeEventType::VBlankStart, 0, 0});
+             }
+             processEvent(scheduled.event);

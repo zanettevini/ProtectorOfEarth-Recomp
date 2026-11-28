@@ -1253,3 +1253,35 @@ per second in one-minute averages in the first level.
   BEN10_GS_IDLE_SPIN_US=100` on Linux. The gain must be measured on
   Windows (`run-worker.bat`, the worker's share in `ntdll` under `push`).
 
+## 43. Two full levels on Windows: the GS limits the first level, and VBlank catch-up (patch 0064)
+
+- The maintainer played the first two levels to the end (about 20
+  minutes, `run-worker.bat`, the build before s.42; 1,185 `[fps]` lines).
+- First level, after the first minute: mostly 21-27 game frames per
+  second, at times 16-18. Here the GS is the limit, not the VIF1 worker:
+  band 0 drew 7.6-8.2 s of every 10 s and waited 1.0-1.5 s for the other
+  bands, the busiest band thread used 800-900 ms per second, and the
+  producers were held by the GS queue limit 7,000-19,000 times per 10 s
+  (2.8-6.0 s). The VIF1 worker used 400-800 ms per second, the game
+  thread 350-650. The short measurement of s.41 (30 fps) was the start of
+  the level.
+- Second level: 30-46 game frames per second, with up to 104 VBlanks per
+  second. That was the runtime's VBlank pacing paying back lost time: a
+  VBlank's host deadline was the previous one's plus 16.667 ms, so while
+  the first level ran slower than real time the deadlines fell behind the
+  clock (86 s at the worst, summing `60 x seconds - VBlanks` over the
+  `[fps]` lines), and from the loading screen on, every VBlank came as
+  soon as the EE cycles allowed until the debt was paid: the game ran up
+  to 1.7 times too fast for several minutes. The end of the second level
+  (a heavy fight) dropped to 17-25 fps with the VIF1 worker at 90%.
+- Patch 0064: the next VBlank's host deadline is one period after
+  max(this one's, now - one period), never before now. A slow stretch is
+  slow motion while it lasts and leaves no fast stretch after it. Linux:
+  the game reaches the first level; no second of the `[fps]` log has more
+  than 61 VBlanks (before: catch-up bursts after loading screens);
+  ps2xTest 454/454.
+- Next for the first level: more GS throughput. The machine has 16
+  hardware threads and runs 6 bands; `run-gs10.bat` (maintainer's
+  folder) runs the same session with `BEN10_GS_THREADS=10` to see whether
+  more bands help; then band 0's double duty (dispatcher and one band).
+
