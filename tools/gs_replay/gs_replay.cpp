@@ -11,6 +11,9 @@
 //   ben10_gs_replay FILE [--sync | --bands N] [--every N] [--reps N]
 //     --sync     PS2Recomp's GSCpuBackend, on this thread (the reference)
 //     --bands N  the port's async backend with N row bands (default 1)
+//     --idle-spin US  with --bands: the dispatcher polls an empty queue for
+//                US microseconds before sleeping (default 0; the game's
+//                default is 100 on 8+ hardware threads, findings/20 s.42)
 //     --row-band K N
 //                GSCpuBackend on this thread drawing only row band K of N
 //                (what one band thread does), to time one band's share:
@@ -289,11 +292,12 @@ int main(int argc, char **argv)
 {
     if (argc < 2)
     {
-        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N] [--every N] [--reps N] [--row-band K N] [--dump N FILE] [--list A B] [--limit N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s FILE [--sync | --bands N [--idle-spin US]] [--every N] [--reps N] [--row-band K N] [--dump N FILE] [--list A B] [--limit N]\n", argv[0]);
         return 2;
     }
     bool sync = false;
     uint32_t bands = 1;
+    uint32_t idleSpin = 0;
     int rowBand = -1;
     uint32_t rowBandCount = 1;
     long long every = 20000;
@@ -311,6 +315,8 @@ int main(int argc, char **argv)
         }
         else if (arg == "--bands" && i + 1 < argc)
             bands = static_cast<uint32_t>(std::atoi(argv[++i]));
+        else if (arg == "--idle-spin" && i + 1 < argc)
+            idleSpin = static_cast<uint32_t>(std::atoi(argv[++i]));
         else if (arg == "--every" && i + 1 < argc)
             every = std::atoll(argv[++i]);
         else if (arg == "--dump" && i + 2 < argc)
@@ -353,7 +359,7 @@ int main(int argc, char **argv)
             backend = std::move(cpu);
         }
         else
-            backend = ben10::gs_async::makeAsyncBackend(bands);
+            backend = ben10::gs_async::makeAsyncBackend(bands, idleSpin);
         const auto start = std::chrono::steady_clock::now();
         records = replay(recording, *backend, vram, every, rep == 0, draws);
         seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();

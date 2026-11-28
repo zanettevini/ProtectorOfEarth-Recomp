@@ -99,6 +99,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cmath>
@@ -558,8 +559,8 @@ namespace ben10::gs_async
     class AsyncBackend final : public GSRasterBackend
     {
     public:
-        explicit AsyncBackend(uint32_t bandCount)
-            : m_main(std::make_unique<GSCpuBackend>())
+        AsyncBackend(uint32_t bandCount, uint32_t idleSpinMicros)
+            : m_main(std::make_unique<GSCpuBackend>()), m_idleSpin(std::chrono::microseconds(idleSpinMicros))
         {
             m_queue.reserve(kMaxPending + kSegmentLimit);
             bandCount = std::clamp<uint32_t>(bandCount, 1u, 16u);
@@ -693,6 +694,7 @@ namespace ben10::gs_async
                 }
                 m_queue.push_back(std::move(command));
                 ++m_submitted;
+                m_submittedSeen.store(m_submitted, std::memory_order_release);
                 wake = m_workerIdle;
             }
             if (wake)
@@ -907,8 +909,18 @@ namespace ben10::gs_async
             batch.reserve(kMaxPending + kSegmentLimit);
             std::vector<Command *> segment;
             const bool banded = m_bands.size() > 1u;
+            uint64_t taken = 0; // m_submitted when the last batch was taken
             for (;;)
             {
+                // Poll for a while before sleeping (m_idleSpin): a producer
+                // that pushes meanwhile finds the dispatcher awake and makes
+                // no wake-up call (findings/20 s.42).
+                if (m_idleSpin.count() > 0)
+                {
+                    const auto until = Clock::now() + m_idleSpin;
+                    while (m_submittedSeen.load(std::memory_order_acquire) == taken && Clock::now() < until)
+                        std::this_thread::yield();
+                }
                 {
                     std::unique_lock<std::mutex> lock(m_mutex);
                     m_workerIdle = true;
@@ -918,6 +930,7 @@ namespace ben10::gs_async
                     if (m_queue.empty() && m_stop)
                         return;
                     batch.swap(m_queue);
+                    taken = m_submitted;
                 }
                 for (Command &command : batch)
                 {
@@ -1363,6 +1376,8 @@ namespace ben10::gs_async
         mutable std::condition_variable m_drained;
         std::vector<Command> m_queue; // reserved in the constructor (see run())
         uint64_t m_submitted = 0;
+        std::atomic<uint64_t> m_submittedSeen{0}; // m_submitted, for the dispatcher's polling
+        const Clock::duration m_idleSpin;         // see makeAsyncBackend
         uint64_t m_completed = 0;
         bool m_workerIdle = false;
         bool m_stop = false;
@@ -1383,8 +1398,8 @@ namespace ben10::gs_async
         std::thread m_worker; // started last, in the constructor body
     };
 
-    std::unique_ptr<GSRasterBackend> makeAsyncBackend(uint32_t bandCount)
+    std::unique_ptr<GSRasterBackend> makeAsyncBackend(uint32_t bandCount, uint32_t idleSpinMicros)
     {
-        return std::make_unique<AsyncBackend>(bandCount);
+        return std::make_unique<AsyncBackend>(bandCount, idleSpinMicros);
     }
 }

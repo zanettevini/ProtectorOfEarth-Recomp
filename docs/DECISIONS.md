@@ -175,3 +175,23 @@ Each decision: what, why, alternatives, and status
   at run time), or a translation that ignores VU timing (programs read
   flags and Q/P with fixed delays; results would differ from the
   interpreter and from the hardware).
+
+## D15. VIF1/VU1 on a worker thread by default
+
+- **Status**: accepted (maintainer decision, 2026-11-28).
+- **What**: the VIF1 transfers and the VU1 programs they run go to a
+  worker thread beside the game thread (patch 0034,
+  [findings/21](findings/21-vu1-translation.md) s.22) unless
+  `BEN10_ASYNC_VU1=0` is set. Until now it was opt-in
+  (`BEN10_ASYNC_VU1=1`).
+- **Why**: on Windows the first level, a fight with several enemies
+  included, runs at the game's own 30 frames per second with it
+  ([findings/20](findings/20-vu1-census-and-gs-thread.md) s.41); without
+  it the game thread also does all the VU1 work.
+- **How**: `src/vu/async_vu1_install.cpp`. A transfer still ends for the
+  EE at fixed points of the EE's own execution (an access to VIF1/GIF/DMA/
+  VU1/GS-control state, the EE going idle, the next VBlank), so the result
+  does not depend on which thread is faster.
+- **Instead of**: keeping it opt-in. `BEN10_ASYNC_VU1=0` stays, to compare
+  and to rule it out when something looks wrong.
+

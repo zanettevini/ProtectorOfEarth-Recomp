@@ -1228,3 +1228,28 @@ per second in one-minute averages in the first level.
   game, at some upload, unlike the 30 s Linux watch of findings/21 s.28).
 - `[vu-native]`: 0 pairs interpreted on VU1 and VU0.
 
+## 42. The GS dispatcher polls before sleeping
+
+- In the Windows worker profile of s.41 (last window), 5.1% of the VIF1
+  worker's samples sat in `ntdll`/`KERNELBASE` under `MSVCP140` under
+  `AsyncBackend::push`, from `Submit` (each GS draw): the condition
+  variable's wake-up call. The dispatcher sleeps every time it empties the
+  queue, and the next push then has to wake it; the `[gs-async]` line
+  counted about 2,600 such ends of a batch per second in the fight
+  ("idle" 26,447 in 10 s). Another 9.1% is the worker itself waiting for
+  work (`vif1WorkerLoop`), which is idle time.
+- Change (port code, `src/gs`): after a batch, the dispatcher polls the
+  queue's submitted count (an atomic copy of `m_submitted`) for up to
+  `BEN10_GS_IDLE_SPIN_US` microseconds, yielding, before it marks itself
+  idle and waits. A push in that time finds it awake and makes no wake-up
+  call, and the dispatcher takes the new commands at once. Default: 100 us
+  with 8 or more hardware threads and more than one band (the case where
+  six bands are the default too), otherwise 0, so the 2-core Linux test
+  machine keeps its old behaviour. It changes only when the dispatcher
+  looks at the queue, not what it draws or in which order.
+- Checked: `ben10_gs_replay --bands 6 --idle-spin 200` gives the same
+  hashes as `--sync` on the level recording and three random ones; the
+  game boots to the title with `BEN10_GS_THREADS=2
+  BEN10_GS_IDLE_SPIN_US=100` on Linux. The gain must be measured on
+  Windows (`run-worker.bat`, the worker's share in `ntdll` under `push`).
+

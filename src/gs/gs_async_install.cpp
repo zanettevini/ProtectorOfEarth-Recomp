@@ -11,6 +11,9 @@
 //                        the same frame rate in the first level); one band on
 //                        machines with fewer than 4 hardware threads
 //     BEN10_GS_THREADS=N N bands (1..16)
+//     BEN10_GS_IDLE_SPIN_US=N how long the dispatcher polls an empty queue
+//                        before sleeping (default 100 with 8+ hardware
+//                        threads and more than one band, else 0)
 //     BEN10_GS_SYNC=1    nothing is swapped: the original synchronous backend
 //   With BEN10_GS_RECORD=<file> the backend is wrapped in the GS command
 //   recorder (gs_record.h) for tools/gs_replay.
@@ -50,7 +53,13 @@ namespace ben10::gs_async
         uint32_t bands = hw >= 4u ? std::min(6u, hw - 2u) : 1u;
         if (const char *threads = std::getenv("BEN10_GS_THREADS"); threads && *threads)
             bands = static_cast<uint32_t>(std::clamp(std::atoi(threads), 1, 16));
-        std::unique_ptr<GSRasterBackend> backend = makeAsyncBackend(bands);
+        // The dispatcher polls an empty queue for 100 us before sleeping when
+        // there are threads to spare (8 or more hardware threads, more than
+        // one band); BEN10_GS_IDLE_SPIN_US=N sets it (0 = off). findings/20 s.42.
+        uint32_t idleSpinMicros = (hw >= 8u && bands > 1u) ? 100u : 0u;
+        if (const char *spin = std::getenv("BEN10_GS_IDLE_SPIN_US"); spin && *spin)
+            idleSpinMicros = static_cast<uint32_t>(std::clamp(std::atoi(spin), 0, 10000));
+        std::unique_ptr<GSRasterBackend> backend = makeAsyncBackend(bands, idleSpinMicros);
         if (const char *record = std::getenv("BEN10_GS_RECORD"); record && *record)
         {
             backend = std::make_unique<gs_record::RecordingBackend>(
@@ -59,7 +68,9 @@ namespace ben10::gs_async
             std::fprintf(stderr, "[gs-record] will record into %s (BEN10_GS_RECORD_AFTER, BEN10_GS_RECORD_SECONDS)\n", record);
         }
         runtime.gs().setRasterBackend(std::move(backend));
-        std::fprintf(stderr, "[gs] rasteriser off the game thread, %u row band(s) (BEN10_GS_THREADS; BEN10_GS_SYNC=1 turns it off)\n", bands);
+        std::fprintf(stderr, "[gs] rasteriser off the game thread, %u row band(s) (BEN10_GS_THREADS; BEN10_GS_SYNC=1 turns it off), "
+                             "idle poll %u us (BEN10_GS_IDLE_SPIN_US)\n",
+                     bands, idleSpinMicros);
     }
 }
 

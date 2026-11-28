@@ -9,6 +9,13 @@
    the EE waits for the VIF1 worker, which is the first limit again
    (translated VU1 code 40%, interpreter helpers 10%, XGKICK/GIF 11%),
    then GS band 0. The maintainer's target (25-30 fps) is reached.
+   VIF1/VU1 on the worker thread is now the default (D15;
+   `BEN10_ASYNC_VU1=0` turns it off).
+   Next on the worker (s.41): the GS dispatcher now polls before sleeping,
+   so pushes skip the wake-up call (s.42, to measure on Windows); then the
+   VU1 helpers (`materializeFlags`, `normalizeOperand`, `applyFmacSlow`,
+   about 10%) and the XGKICK/GIF path (11%), and the resolver after VU
+   code uploads (0.9%).
    Every VU1 pair is translated (`tools/vu1_translate`, `generated/vu1/`,
    `src/vu/`); patches 0019-0026 brought the translated code from 793 M to
    159 M instructions on the replay (patches 0027-0031: about 290 per VU cycle). On Windows the
@@ -84,8 +91,7 @@
    PATH1 in batches (s.11 item 3) and more static scheduling in blocks;
    the IOP scheduler walks its threads once per step (patch 0050,
    findings/20 s.31; speed not measured);
-   the maintainer decides later whether the async option becomes the
-   default. Profile the game thread with
+   the async option is the default since D15. Profile the game thread with
    `perf` (`linux-tools`): `perf record -t <GameThread tid>`. VU0 checks: `capture_vu0.gdb` and
    `ben10_vu1_replay user/vu0_captures --vu0 --sum [--native]`. After each step
    `ben10_vu1_replay user/vu1_captures --sum --native` must print the same
